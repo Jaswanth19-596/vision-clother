@@ -15,6 +15,11 @@ struct AnalyticsView: View {
     @Query private var pairFeedbacks: [PairFeedback]
     @Query private var outfitFeedbacks: [OutfitFeedback]
     @Query private var itemRatings: [ItemRating]
+    @Query private var styleProfiles: [UserStyleProfile]
+
+    /// Single-row profile (PRD §3.8) — `Data/WardrobeRepository.swift`'s
+    /// `saveUserProfile` guarantees at most one row exists.
+    private var styleProfile: UserStyleProfile? { styleProfiles.first }
 
     private var itemsByID: [UUID: WardrobeItem] {
         Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
@@ -102,6 +107,35 @@ struct AnalyticsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Style Profile") {
+                    if let styleProfile {
+                        HStack {
+                            Text("Undertone")
+                            Spacer()
+                            Text(styleProfile.undertone.rawValue.capitalized)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Text("Body Type")
+                            Spacer()
+                            Text(styleProfile.bodyType)
+                                .foregroundStyle(.secondary)
+                        }
+                        if !styleProfile.styleKeywords.isEmpty {
+                            HStack {
+                                Text("Style")
+                                Spacer()
+                                Text(styleProfile.styleKeywords.joined(separator: ", "))
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                    } else {
+                        Text("Add a portrait photo from Manual Outfit Pairing to derive your personal color and style profile.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Your Taste") {
                     if itemRatings.isEmpty {
                         Text("No item ratings yet — rate items from your closet or after a try-on to see your learned style preferences here.")
@@ -169,7 +203,10 @@ struct AnalyticsView: View {
 #Preview {
     AnalyticsView()
         .modelContainer(
-            for: [WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self],
+            for: [
+                WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
+                SavedCombination.self, ItemRating.self, UserStyleProfile.self,
+            ],
             inMemory: true
         )
 }

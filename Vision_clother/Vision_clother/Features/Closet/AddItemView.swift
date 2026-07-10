@@ -169,6 +169,13 @@ struct AddItemView: View {
                     }
                 }
 
+                Picker("Undertone", selection: Bindable(viewModel).undertone) {
+                    Text("Unknown").tag(Undertone?.none)
+                    ForEach(Undertone.allCases, id: \.self) { tone in
+                        Text(tone.rawValue.capitalized).tag(Undertone?.some(tone))
+                    }
+                }
+
                 Picker("Pattern", selection: Bindable(viewModel).pattern) {
                     ForEach(GarmentPattern.allCases, id: \.self) { pat in
                         Text(pat.rawValue.capitalized).tag(pat)
@@ -178,6 +185,24 @@ struct AddItemView: View {
                 Picker("Fabric Weight", selection: Bindable(viewModel).fabricWeight) {
                     ForEach(FabricWeight.allCases, id: \.self) { weight in
                         Text(weight.rawValue.capitalized).tag(weight)
+                    }
+                }
+            }
+
+            Section("Description") {
+                TextField("e.g. Charcoal crewneck tee in a soft cotton blend", text: Bindable(viewModel).itemDescription, axis: .vertical)
+                    .lineLimit(2...4)
+                if !viewModel.styleTags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack {
+                            ForEach(viewModel.styleTags, id: \.self) { tag in
+                                Text(tag)
+                                    .font(.caption)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                            }
+                        }
                     }
                 }
             }

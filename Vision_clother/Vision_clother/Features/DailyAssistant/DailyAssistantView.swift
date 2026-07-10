@@ -15,6 +15,11 @@ struct DailyAssistantView: View {
     @State private var isTryOnSheetPresented = false
     @State private var isRateOutfitSheetPresented = false
     @State private var ratingSheetItems: [WardrobeItem] = []
+    /// Privacy opt-out (PRD §3.8) — backed by the same key
+    /// `RecommendationSettings.useAIRecommendations` reads, so toggling here
+    /// takes effect on the next `requestOutfitIdeas()` call without any
+    /// extra plumbing between the view and the view model.
+    @AppStorage("com.visionclother.useAIRecommendations") private var useAIRecommendations = true
 
     var body: some View {
         NavigationStack {
@@ -33,7 +38,10 @@ struct DailyAssistantView: View {
                 repository: SwiftDataWardrobeRepository(modelContext: modelContext),
                 intentService: ServiceFactory.makeIntentExtractionService(),
                 tryOnService: ServiceFactory.makeTryOnRenderService(),
-                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver()
+                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
+                recommendationService: ServiceFactory.makeOutfitRecommendationService(),
+                weatherProvider: ServiceFactory.makeWeatherProvider(),
+                profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )
         }
     }
@@ -58,10 +66,10 @@ struct DailyAssistantView: View {
                 ProgressView("Thinking through your closet…")
                 Spacer()
 
-            case .failed(let error):
+            case .failed(let message):
                 Spacer()
                 VStack(spacing: 12) {
-                    Label(error.errorDescription ?? "Couldn't understand that.", systemImage: "exclamationmark.bubble")
+                    Label(message, systemImage: "exclamationmark.bubble")
                         .foregroundStyle(.secondary)
                     Button("Retry") {
                         Task { await viewModel.requestOutfitIdeas() }
@@ -118,6 +126,13 @@ struct DailyAssistantView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+
+            // Privacy opt-out (PRD §3.8): off sends nothing off-device for
+            // recommendations — no wardrobe catalog, no style profile — and
+            // uses only the deterministic engine.
+            Toggle("AI-personalized recommendations", isOn: $useAIRecommendations)
+                .font(.caption)
+                .tint(.accentColor)
         }
         .padding(.horizontal)
     }

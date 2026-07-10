@@ -9,9 +9,14 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct OutfitCardView: View {
     let outfit: OutfitCombination
+
+    /// Tapping a slot opens the full item detail (`ItemDetailView`, reused
+    /// from the Closet feature) for that exact garment.
+    @State private var detailItem: WardrobeItem?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -38,12 +43,60 @@ struct OutfitCardView: View {
             Text("Match score \(Int(outfit.score * 100))%")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+
+            // `rationale` is only set for outfits from the primary
+            // recommendation LLM path (PRD §3.7) — outfits from the
+            // deterministic fallback engine have none, and simply omit this.
+            if let rationale = outfit.rationale {
+                Text(rationale)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .italic()
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
         }
         .padding()
+        .sheet(item: $detailItem) { item in
+            ItemDetailView(items: outfit.items, selectedItemID: item.id)
+        }
     }
 
     private func slotRow(title: String, item: WardrobeItem) -> some View {
         HStack {
+            thumbnail(for: item)
+
+            VStack(alignment: .leading) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(item.displayLabel)
+                    .font(.subheadline)
+            }
+
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !item.isGhostElement else { return }
+            detailItem = item
+        }
+    }
+
+    /// Ingested items (`imageAssetName` set — see `ImageStorage.swift`)
+    /// render their actual isolated photo, matching the pattern used by
+    /// `ClosetItemCell.swatch`; Ghost Elements have no photo and fall back
+    /// to the flat-color swatch from `colorProfile`.
+    @ViewBuilder
+    private func thumbnail(for item: WardrobeItem) -> some View {
+        if let imageAssetName = item.imageAssetName,
+           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        } else {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(width: 44, height: 44)
@@ -53,16 +106,6 @@ struct OutfitCardView: View {
                             .foregroundStyle(.white)
                     }
                 }
-
-            VStack(alignment: .leading) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(item.pattern.rawValue.capitalized)
-                    .font(.subheadline)
-            }
-
-            Spacer()
         }
     }
 }

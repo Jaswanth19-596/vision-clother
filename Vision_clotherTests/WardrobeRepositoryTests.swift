@@ -16,7 +16,8 @@ struct WardrobeRepositoryTests {
 
     private func makeRepository() throws -> SwiftDataWardrobeRepository {
         let container = try ModelContainer(
-            for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
+            for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self,
+            ItemRating.self, UserStyleProfile.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         return SwiftDataWardrobeRepository(modelContext: ModelContext(container))
@@ -102,6 +103,53 @@ struct WardrobeRepositoryTests {
 
         #expect(history.attributeProfile.colorVibeAffinity[.vibrant] != nil)
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
+    }
+
+    // MARK: - User Style Profile (PRD §3.8)
+
+    private func makeProfileWire(bodyType: String = "athletic build") -> UserStyleProfileWire {
+        UserStyleProfileWire(
+            skinTone: "medium, warm olive",
+            undertone: .warm,
+            bodyType: bodyType,
+            styleKeywords: ["classic"],
+            recommendedColors: ["#8A5A44"],
+            avoidColors: ["#B983FF"]
+        )
+    }
+
+    @Test func fetchUserProfileReturnsNilWhenNeverDerived() throws {
+        let repository = try makeRepository()
+        #expect(try repository.fetchUserProfile() == nil)
+    }
+
+    @Test func saveUserProfilePersistsAndFetchReturnsIt() throws {
+        let repository = try makeRepository()
+        try repository.saveUserProfile(makeProfileWire())
+
+        let fetched = try repository.fetchUserProfile()
+        #expect(fetched?.bodyType == "athletic build")
+        #expect(fetched?.undertone == .warm)
+        #expect(fetched?.styleKeywords == ["classic"])
+    }
+
+    @Test func savingAProfileTwiceUpsertsRatherThanAccumulating() throws {
+        let container = try ModelContainer(
+            for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self,
+            ItemRating.self, UserStyleProfile.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let modelContext = ModelContext(container)
+        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+
+        try repository.saveUserProfile(makeProfileWire(bodyType: "athletic build"))
+        try repository.saveUserProfile(makeProfileWire(bodyType: "slim build"))
+
+        // Single-row upsert: exactly one profile row should exist, and it
+        // must be the most recent derivation.
+        let allProfiles = try modelContext.fetch(FetchDescriptor<UserStyleProfile>())
+        #expect(allProfiles.count == 1)
+        #expect(allProfiles.first?.bodyType == "slim build")
     }
 
     @Test func fetchFeedbackHistorySkipsRatingsForDeletedItems() throws {

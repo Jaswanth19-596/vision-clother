@@ -39,10 +39,21 @@ enum ColorVibe: String, Codable, CaseIterable {
     case pastel
 }
 
+/// Personal-color undertone, captured both per-garment (ingestion, PRD §3.1)
+/// and on the derived `UserStyleProfile` (PRD §3.8) — used by
+/// `Domain/ColorHarmony.swift`'s `undertoneCompatibility` term.
+enum Undertone: String, Codable, CaseIterable {
+    case warm, cool, neutral
+}
+
 struct ColorProfile: Codable, Hashable {
     var primaryHex: String
     var secondaryHex: String?
     var category: ColorVibe
+    /// Optional so existing persisted rows (pre-2026-07-10) decode as `nil`
+    /// under SwiftData's automatic lightweight migration — no schema
+    /// version bump needed. `nil` degrades gracefully wherever it's read.
+    var undertone: Undertone? = nil
 }
 
 /// A garment in the user's wardrobe — either a real ingested item or a
@@ -67,6 +78,17 @@ final class WardrobeItem {
     /// Ghost Elements, which render from `colorProfile` alone.
     var imageAssetName: String?
     var isGhostElement: Bool
+    /// One concise natural-language sentence (≤140 chars), captured at
+    /// ingestion (PRD §3.1) — this is the text a real (non-ghost) item
+    /// contributes to `Domain/WardrobeCatalogBuilder.swift`'s catalog entry
+    /// for the recommendation LLM. `nil` for items ingested before the
+    /// 2026-07-10 reversal or via manual entry without a description.
+    var itemDescription: String?
+    /// Free-form style descriptors (e.g. "minimalist", "streetwear") from
+    /// vision tagging — additional recommendation-nuance signal, unused by
+    /// the deterministic scoring engine. Defaulted so old rows migrate
+    /// automatically to `[]`.
+    var styleTags: [String] = []
 
     init(
         id: UUID = UUID(),
@@ -77,7 +99,9 @@ final class WardrobeItem {
         seasonality: [Season],
         fabricWeight: FabricWeight,
         imageAssetName: String? = nil,
-        isGhostElement: Bool = false
+        isGhostElement: Bool = false,
+        itemDescription: String? = nil,
+        styleTags: [String] = []
     ) {
         self.id = id
         self.slot = slot
@@ -88,11 +112,13 @@ final class WardrobeItem {
         self.fabricWeight = fabricWeight
         self.imageAssetName = imageAssetName
         self.isGhostElement = isGhostElement
+        self.itemDescription = itemDescription
+        self.styleTags = styleTags
     }
 
-    /// Items have no free-text name — this synthesizes a readable label
-    /// (e.g. "Striped Vibrant Top") for contexts that need one, such as
-    /// `SavedCombination`'s denormalized provenance display.
+    /// Items may have no free-text description — this synthesizes a
+    /// readable label (e.g. "Striped Vibrant Top") for contexts that need
+    /// one, such as `SavedCombination`'s denormalized provenance display.
     var displayLabel: String {
         let colorLabel = colorProfile.category.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
         return "\(pattern.rawValue.capitalized) \(colorLabel) \(slot.rawValue.capitalized)"

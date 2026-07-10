@@ -112,7 +112,19 @@ struct ManualPairingViewModelTests {
         viewModel.selectBottom(bottom)
 
         viewModel.generatePreview()
-        try await waitUntil { viewModel.state != .validatingPhoto && viewModel.state != .preparingImages }
+        // Waits for a *terminal* state specifically — `.generatingPreview`
+        // is a legitimate intermediate stop on the way to `.success` (see
+        // ControllableTryOnRenderService's `.submitting` -> `.succeeded`
+        // sequence), so a condition that only excludes `.validatingPhoto`/
+        // `.preparingImages` can observe it and return before `.succeeded`
+        // actually lands — a real, if narrow, race independent of this
+        // test's own timing.
+        try await waitUntil {
+            switch viewModel.state {
+            case .success, .failed: return true
+            default: return false
+            }
+        }
 
         guard case .success(let imageURL) = viewModel.state else {
             Issue.record("Expected .success, got \(viewModel.state)")
@@ -194,7 +206,15 @@ struct ManualPairingViewModelTests {
         viewModel.selectBottom(bottom)
 
         viewModel.generatePreview()
-        try await waitUntil { viewModel.state != .validatingPhoto && viewModel.state != .preparingImages }
+        // See the identical comment in successfulGenerationReachesSuccessState
+        // above — waits for a terminal state, not just "past the first two
+        // intermediate states."
+        try await waitUntil {
+            switch viewModel.state {
+            case .success, .failed: return true
+            default: return false
+            }
+        }
         guard case .success = viewModel.state else {
             Issue.record("Expected .success, got \(viewModel.state)")
             return
@@ -284,6 +304,19 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func saveCombination(_ combination: SavedCombination) throws { savedCombinations.append(combination) }
     func deleteCombination(_ combination: SavedCombination) throws {
         savedCombinations.removeAll { $0.id == combination.id }
+    }
+
+    private(set) var savedUserProfile: UserStyleProfile?
+    func fetchUserProfile() throws -> UserStyleProfile? { savedUserProfile }
+    func saveUserProfile(_ wire: UserStyleProfileWire) throws {
+        savedUserProfile = UserStyleProfile(
+            skinTone: wire.skinTone,
+            undertone: wire.undertone,
+            bodyType: wire.bodyType,
+            styleKeywords: wire.styleKeywords,
+            recommendedColors: wire.recommendedColors,
+            avoidColors: wire.avoidColors
+        )
     }
 }
 

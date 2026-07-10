@@ -24,6 +24,7 @@ struct Vision_clotherApp: App {
             PairFeedback.self,
             SavedCombination.self,
             ItemRating.self,
+            UserStyleProfile.self,
         ])
     }
 }

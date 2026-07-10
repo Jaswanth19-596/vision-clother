@@ -99,4 +99,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func fetchSavedCombinations() throws -> [SavedCombination] { [] }
     func saveCombination(_ combination: SavedCombination) throws {}
     func deleteCombination(_ combination: SavedCombination) throws {}
+
+    func fetchUserProfile() throws -> UserStyleProfile? { nil }
+    func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
 }

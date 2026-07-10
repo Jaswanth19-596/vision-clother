@@ -2,18 +2,21 @@
 //  VisionMetadataExtractionService.swift
 //  Vision_clother
 //
-//  Vision-LLM Tag Generation (PRD.md §3.1, ingestion stage 2) — CLAUDE.md
-//  guardrail #1. Takes an already background-isolated garment photo (see
+//  Vision-LLM Tag Generation (PRD.md §3.1, ingestion stage 2). Takes an
+//  already background-isolated garment photo (see
 //  Services/BackgroundIsolationService.swift, which runs first — this
 //  service never performs background removal itself, since returning an
 //  edited image isn't something a chat-completion vision model can do) and
-//  returns only the structural metadata fields defined by PRD §3.1.
+//  returns only the structural metadata fields defined by PRD §3.1 (as of
+//  the 2026-07-10 reversal, this now includes a short `description` and
+//  `style_tags` used later as catalog text by the recommendation LLM).
 //
 //  This is a distinct LLM call from
-//  Services/OpenRouterIntentExtractionService.swift: it sees a single
-//  garment photo, never the wardrobe, and never sees free-text scenario
-//  prompts — the two services share a provider and a resilience pattern,
-//  not a code path.
+//  Services/OpenRouterIntentExtractionService.swift and
+//  Services/OutfitRecommendationService.swift: it sees exactly one garment
+//  photo per call, never the wardrobe collection, and never free-text
+//  scenario prompts — all three services share a provider and a resilience
+//  pattern, not a code path.
 //
 //  Same structured-output-with-fallback shape as the intent-extraction
 //  service (see that file's header for why `minimax/minimax-m3` needs it).
@@ -145,7 +148,13 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         You tag a single garment photo with structural metadata for a wardrobe app. \
         The photo shows exactly one clothing item with its background already removed. \
         You do not know what else the user owns and must never reference other garments \
-        — only output the metadata fields defined by the schema, based solely on this photo.
+        — only output the metadata fields defined by the schema, based solely on this photo. \
+        For "description", write one concise sentence (140 characters or fewer) describing \
+        the garment — this text is later shown to a separate recommendation model that never \
+        sees the photo, so make it specific (cut, material, notable detail) rather than generic. \
+        For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
+        "streetwear", "tailored"). For "color_profile.undertone", classify the primary color's \
+        undertone as "warm", "cool", or "neutral".
         """
 
         let userContent: [[String: Any]] = [
@@ -190,7 +199,9 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         return try JSONSerialization.data(withJSONObject: body)
     }
 
-    /// Matches PRD.md §3.1's ingestion metadata table.
+    /// Matches PRD.md §3.1's ingestion metadata table (extended 2026-07-10
+    /// with `description`/`style_tags`/`undertone` — the recommendation LLM's
+    /// catalog entry text, see `Domain/WardrobeCatalogBuilder.swift`).
     private static let garmentMetadataJSONSchema: [String: Any] = [
         "type": "object",
         "properties": [
@@ -202,8 +213,9 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
                     "primary_hex": ["type": "string"],
                     "secondary_hex": ["type": ["string", "null"]],
                     "category": ["type": "string", "enum": ColorVibe.allCases.map(\.rawValue)],
+                    "undertone": ["type": "string", "enum": Undertone.allCases.map(\.rawValue)],
                 ],
-                "required": ["primary_hex", "secondary_hex", "category"],
+                "required": ["primary_hex", "secondary_hex", "category", "undertone"],
                 "additionalProperties": false,
             ],
             "pattern": ["type": "string", "enum": GarmentPattern.allCases.map(\.rawValue)],
@@ -212,8 +224,13 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
                 "items": ["type": "string", "enum": Season.allCases.map(\.rawValue)],
             ],
             "fabric_weight": ["type": "string", "enum": FabricWeight.allCases.map(\.rawValue)],
+            "description": ["type": "string"],
+            "style_tags": ["type": "array", "items": ["type": "string"]],
         ],
-        "required": ["slot", "formality_score", "color_profile", "pattern", "seasonality", "fabric_weight"],
+        "required": [
+            "slot", "formality_score", "color_profile", "pattern", "seasonality", "fabric_weight",
+            "description", "style_tags",
+        ],
         "additionalProperties": false,
     ]
 }
@@ -236,10 +253,12 @@ struct MockVisionMetadataExtractionService: VisionMetadataExtractionService {
     var result = GarmentMetadata(
         slot: .top,
         formalityScore: 2.0,
-        colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#3A3A3A", secondaryHex: nil, category: .neutral),
+        colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#3A3A3A", secondaryHex: nil, category: .neutral, undertone: .neutral),
         pattern: .solid,
         seasonality: [.springFall, .summer],
-        fabricWeight: .light
+        fabricWeight: .light,
+        description: "Charcoal crewneck tee in a soft cotton blend.",
+        styleTags: ["minimalist", "everyday"]
     )
 
     func extractMetadata(imageData: Data) async throws -> GarmentMetadata {

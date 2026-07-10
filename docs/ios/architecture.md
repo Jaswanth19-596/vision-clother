@@ -22,9 +22,10 @@ The dependency direction is strictly downward — `Domain/` never imports `Data/
 
 ## Persistence (CLAUDE.md guardrail #3 — SwiftData)
 
-- `Models/WardrobeItem.swift`, `Models/FeedbackEvent.swift`, `Models/SavedCombination.swift` — `@Model` classes.
+- `Models/WardrobeItem.swift`, `Models/FeedbackEvent.swift`, `Models/SavedCombination.swift`, `Models/UserStyleProfile.swift` — `@Model` classes.
 - `Data/WardrobeRepository.swift` — the `WardrobeRepository` protocol (marked `@MainActor` to match `SwiftDataWardrobeRepository`'s isolation) and its SwiftData-backed implementation. Every view model takes a `WardrobeRepository`, never a concrete `ModelContext`, so the storage technology could change later without touching `Domain/` or `Features/`.
-- `Vision_clotherApp.swift` registers the model container for `WardrobeItem`, `OutfitFeedback`, `ItemFeedback`, `PairFeedback`, `SavedCombination`.
+- `Vision_clotherApp.swift` registers the model container for `WardrobeItem`, `OutfitFeedback`, `ItemFeedback`, `PairFeedback`, `SavedCombination`, `ItemRating`, `UserStyleProfile`.
+- `UserStyleProfile` is deliberately a single-row SwiftData model (queried, upserted via `WardrobeRepository.saveUserProfile`) rather than a disk file like `UserPortraitStorage` — it's structured data the Analytics tab renders, with no image blob to store.
 
 ## Networking (CLAUDE.md guardrails #1 and #2)
 
@@ -39,9 +40,39 @@ Both are hidden behind a protocol (`IntentExtractionService`, `TryOnRenderServic
 
 `Services/APIKeys.swift` reads from a bundled `Config/Secrets.plist`, which is gitignored (see `Config/README.md`). To bypass bundling limitations during simulator local development, it falls back to loading the file directly from the local absolute path `/Users/jaswanth/mydocs/ios-apps/vision_clother/Vision_clother/Vision_clother/Config/Secrets.plist` in debug mode. This means the app can call OpenRouter/Fal directly with an embedded key — acceptable for personal development, **not** for any distributed build. Before shipping to TestFlight/App Store, this needs to move behind a thin proxy backend that holds the keys server-side (see `docs/backend/architecture.md`).
 
+## LLM-as-Recommender pipeline (2026-07-10 reversal — PRD §2.1a)
+
+`DailyAssistantViewModel.requestOutfitIdeas()` now tries a primary path before falling back to the original §2.1 flow:
+
+```
+prompt ─┬─> WardrobeCatalogBuilder.build(inventory)  ──┐
+        │      (Domain/, bounded/text-only catalog)    │
+        ├─> WardrobeRepository.fetchUserProfile()      ├─> OutfitRecommendationService
+        │      (lazy-derives once from portrait if nil) │      (Services/, LLM call)
+        └─> CurrentWeatherProviding.currentWeather() ───┘
+                                                          │
+                                                          ▼
+                                          OutfitRecommendationValidator.validate
+                                          (Domain/ — rejects unknown/wrong-slot/
+                                           duplicate/Ghost ids, re-scores survivors
+                                           via OutfitRecommendationEngine.outfitScore)
+                                                          │
+                                onEmpty/onThrow ──────────┼──────────> success
+                                     │                                    │
+                                     ▼                                    ▼
+                    fallback: intentService.extractConstraints    candidates shown
+                    + OutfitRecommendationEngine.generateCandidates
+                    (original §2.1 flow, unchanged)
+```
+
+- `Services/OutfitRecommendationService.swift` / `Services/UserProfileDerivationService.swift` / `Services/WeatherProvider.swift` follow the same protocol + `Mock*` + `ServiceFactory` gate as every other network-facing service — the mock recommendation service reads the real catalog it's given and returns valid picks, so the keyless-Simulator path still exercises the validator with genuinely valid data.
+- `Services/RecommendationSettings.swift` — a `UserDefaults`-backed privacy toggle (`useAIRecommendations`, default `true`). When off, the primary path is skipped entirely and no catalog/profile leaves the device.
+- The fallback engine (`Domain/OutfitRecommendationEngine.swift`) and its tests are untouched — the validator *calls* it for re-scoring, never modifies it, and it remains the deterministic floor when the LLM is unavailable.
+
 ## What's deliberately not built yet
 
 - **Dedicated onboarding for base portrait capture.** The photo is captured the first time the user opens Manual Outfit Pairing (`Features/Pairing/ManualPairingView.swift` + `Services/UserPortraitStorage.swift`), not during a first-run onboarding flow. `DailyAssistantView`'s recommendation-engine try-on reads the same stored portrait.
+- **Real WeatherKit integration.** `Services/WeatherProvider.swift`'s `WeatherKitWeatherProvider` is a placeholder that always returns `nil` — it needs the WeatherKit entitlement/capability added to the app target first. `ServiceFactory.makeWeatherProvider()` defaults to `MockCurrentWeatherProvider` so the app stays fully interactive without it; wiring the real provider is a follow-up.
 
 ## Saved combinations (Tab 4)
 

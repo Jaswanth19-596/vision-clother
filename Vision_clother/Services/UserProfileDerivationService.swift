@@ -1,0 +1,239 @@
+//
+//  UserProfileDerivationService.swift
+//  Vision_clother
+//
+//  User Style Profile derivation (PRD.md §3.8) — the 2026-07-10
+//  LLM-as-Recommender reversal (docs/decisions/resolved-v1.md). Takes the
+//  user's existing onboarding portrait (Services/UserPortraitStorage.swift)
+//  and returns a personal-color/style profile that the recommendation call
+//  (Services/OutfitRecommendationService.swift) uses to personalize picks.
+//
+//  This is the *only* recommendation-adjacent call that sends an image, and
+//  it runs once per derivation (triggered on portrait save, or lazily
+//  backfilled), never per recommendation request — see
+//  `Data/WardrobeRepository.swift`'s `saveUserProfile` for the persistence
+//  side.
+//
+//  Same structured-output-with-fallback shape as
+//  Services/VisionMetadataExtractionService.swift (see that file's header
+//  for why `minimax/minimax-m3` needs it) — a distinct call because it tags
+//  a person, not a garment, and produces `UserStyleProfileWire`, not
+//  `GarmentMetadata`.
+//
+
+import Foundation
+
+protocol UserProfileDerivationService {
+    func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire
+}
+
+enum UserProfileDerivationError: Error, LocalizedError {
+    case missingAPIKey
+    case network(Error)
+    case httpStatus(Int)
+    case emptyChoices
+    case decoding(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAPIKey:
+            return "No OpenRouter API key configured."
+        case .network:
+            return "Couldn't reach the styling service. Check your connection."
+        case .httpStatus(let code):
+            return "Styling service returned an error (\(code))."
+        case .emptyChoices:
+            return "The styling service didn't return a profile."
+        case .decoding:
+            return "Couldn't read that photo — try a clearer one."
+        }
+    }
+}
+
+final class OpenRouterUserProfileDerivationService: UserProfileDerivationService {
+    private let session: URLSession
+    private let model: String
+    private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+
+    init(session: URLSession = .shared, model: String = "minimax/minimax-m3") {
+        self.session = session
+        self.model = model
+    }
+
+    func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire {
+        do {
+            return try await performRequest(portraitData: portraitData, useStructuredOutput: true)
+        } catch UserProfileDerivationError.emptyChoices, UserProfileDerivationError.decoding {
+            do {
+                return try await performRequest(portraitData: portraitData, useStructuredOutput: true)
+            } catch {
+                return try await performUnstructuredFallback(portraitData: portraitData)
+            }
+        } catch UserProfileDerivationError.httpStatus(400) {
+            // Most likely `response_format: json_schema` itself was rejected
+            // by the provider — retrying the same structured request would
+            // just 400 again, so switch modes instead of retrying.
+            return try await performUnstructuredFallback(portraitData: portraitData)
+        }
+    }
+
+    private func performUnstructuredFallback(portraitData: Data) async throws -> UserStyleProfileWire {
+        do {
+            return try await performRequest(portraitData: portraitData, useStructuredOutput: false)
+        } catch UserProfileDerivationError.emptyChoices, UserProfileDerivationError.decoding {
+            return try await performRequest(portraitData: portraitData, useStructuredOutput: false)
+        }
+    }
+
+    private func performRequest(portraitData: Data, useStructuredOutput: Bool) async throws -> UserStyleProfileWire {
+        guard let apiKey = APIKeys.openRouter else {
+            throw UserProfileDerivationError.missingAPIKey
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try Self.encodeRequestBody(
+            model: model,
+            portraitData: portraitData,
+            useStructuredOutput: useStructuredOutput
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw UserProfileDerivationError.network(error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw UserProfileDerivationError.httpStatus(statusCode)
+        }
+
+        let decoded: OpenRouterProfileChatResponse
+        do {
+            decoded = try JSONDecoder().decode(OpenRouterProfileChatResponse.self, from: data)
+        } catch {
+            throw UserProfileDerivationError.decoding(error)
+        }
+
+        guard let content = decoded.choices.first?.message.content, !content.isEmpty else {
+            throw UserProfileDerivationError.emptyChoices
+        }
+
+        let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
+        do {
+            return try JSONDecoder().decode(UserStyleProfileWire.self, from: payload)
+        } catch {
+            throw UserProfileDerivationError.decoding(error)
+        }
+    }
+
+    private static func encodeRequestBody(
+        model: String,
+        portraitData: Data,
+        useStructuredOutput: Bool
+    ) throws -> Data {
+        let dataURI = "data:image/jpeg;base64,\(portraitData.base64EncodedString())"
+
+        var systemPrompt = """
+        You analyze a single full-body portrait photo to build a personal styling profile for a \
+        wardrobe app. Describe the person's apparent skin tone, undertone (warm/cool/neutral), \
+        and general body type in neutral, respectful, non-judgmental language focused only on \
+        attributes relevant to color and fit recommendations. Do not identify the person or \
+        speculate about anything besides coloring, body type, and style affinities. \
+        "recommended_colors" and "avoid_colors" should be a short list of hex codes or common \
+        color names that complement or clash with the derived undertone.
+        """
+
+        let userContent: [[String: Any]] = [
+            ["type": "text", "text": "Build a style profile from this photo."],
+            ["type": "image_url", "image_url": ["url": dataURI]],
+        ]
+
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userContent],
+            ],
+        ]
+
+        if useStructuredOutput {
+            body["response_format"] = [
+                "type": "json_schema",
+                "json_schema": [
+                    "name": "UserStyleProfile",
+                    "strict": true,
+                    "schema": userStyleProfileJSONSchema,
+                ],
+            ]
+        } else {
+            let schemaData = try JSONSerialization.data(
+                withJSONObject: userStyleProfileJSONSchema,
+                options: [.sortedKeys]
+            )
+            let schemaText = String(decoding: schemaData, as: UTF8.self)
+            systemPrompt += """
+            \n\nRespond with ONLY a single JSON object matching this exact schema — no markdown \
+            code fences, no explanation, no text before or after the JSON:
+            \(schemaText)
+            """
+            body["messages"] = [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": userContent],
+            ]
+        }
+
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Matches PRD.md §3.8's User Style Profile table.
+    private static let userStyleProfileJSONSchema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "skin_tone": ["type": "string"],
+            "undertone": ["type": "string", "enum": Undertone.allCases.map(\.rawValue)],
+            "body_type": ["type": "string"],
+            "style_keywords": ["type": "array", "items": ["type": "string"]],
+            "recommended_colors": ["type": "array", "items": ["type": "string"]],
+            "avoid_colors": ["type": "array", "items": ["type": "string"]],
+        ],
+        "required": [
+            "skin_tone", "undertone", "body_type", "style_keywords", "recommended_colors", "avoid_colors",
+        ],
+        "additionalProperties": false,
+    ]
+}
+
+// MARK: - OpenAI-compatible chat completions response shape
+
+private struct OpenRouterProfileChatResponse: Decodable {
+    struct Choice: Decodable {
+        struct Message: Decodable {
+            let content: String
+        }
+        let message: Message
+    }
+    let choices: [Choice]
+}
+
+// MARK: - Mock for previews/tests — never touches the network.
+
+struct MockUserProfileDerivationService: UserProfileDerivationService {
+    var result = UserStyleProfileWire(
+        skinTone: "medium, warm olive",
+        undertone: .warm,
+        bodyType: "athletic build",
+        styleKeywords: ["classic", "minimalist"],
+        recommendedColors: ["#8A5A44", "#3A7CA5", "#F5F5F0"],
+        avoidColors: ["#B983FF"]
+    )
+
+    func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire {
+        result
+    }
+}

@@ -35,9 +35,16 @@ final class AddItemViewModel {
     var primaryHex: String = "#FFFFFF"
     var secondaryHex: String? = nil
     var colorCategory: ColorVibe = .neutral
+    var undertone: Undertone? = nil
     var pattern: GarmentPattern = .solid
     var seasonality: [Season] = [.summer, .springFall, .winter]
     var fabricWeight: FabricWeight = .medium
+    /// One concise sentence describing the garment — becomes the catalog
+    /// entry text `Domain/WardrobeCatalogBuilder.swift` sends to the
+    /// recommendation LLM (PRD §3.7). Empty for fully manual entries with no
+    /// vision-tagging pass.
+    var itemDescription: String = ""
+    var styleTags: [String] = []
 
     private(set) var isolatedImageData: Data? = nil
 
@@ -79,9 +86,12 @@ final class AddItemViewModel {
             self.primaryHex = metadata.colorProfile.primaryHex
             self.secondaryHex = metadata.colorProfile.secondaryHex
             self.colorCategory = metadata.colorProfile.category
+            self.undertone = metadata.colorProfile.undertone
             self.pattern = metadata.pattern
             self.seasonality = metadata.seasonality
             self.fabricWeight = metadata.fabricWeight
+            self.itemDescription = metadata.description
+            self.styleTags = metadata.styleTags
 
             state = .editingMetadata
         } catch {
@@ -100,11 +110,14 @@ final class AddItemViewModel {
         self.primaryHex = "#FFFFFF"
         self.secondaryHex = nil
         self.colorCategory = .neutral
+        self.undertone = nil
         self.pattern = .solid
         self.seasonality = [.summer, .springFall, .winter]
         self.fabricWeight = .medium
+        self.itemDescription = ""
+        self.styleTags = []
         self.isolatedImageData = nil
-        
+
         state = .editingMetadata
     }
 
@@ -123,12 +136,15 @@ final class AddItemViewModel {
                 colorProfile: ColorProfile(
                     primaryHex: primaryHex,
                     secondaryHex: secondaryHex,
-                    category: colorCategory
+                    category: colorCategory,
+                    undertone: undertone
                 ),
                 pattern: pattern,
                 seasonality: seasonality,
                 fabricWeight: fabricWeight,
-                imageAssetName: filename
+                imageAssetName: filename,
+                itemDescription: itemDescription.isEmpty ? nil : itemDescription,
+                styleTags: styleTags
             )
             try repository.save(item)
 

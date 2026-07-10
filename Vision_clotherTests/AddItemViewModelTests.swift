@@ -60,10 +60,12 @@ struct AddItemViewModelTests {
         let mockVision = MockVisionMetadataExtractionService(result: GarmentMetadata(
             slot: .outerwear,
             formalityScore: 2.5,
-            colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#00FF00", secondaryHex: nil, category: .vibrant),
+            colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#00FF00", secondaryHex: nil, category: .vibrant, undertone: .warm),
             pattern: .plaid,
             seasonality: [.winter],
-            fabricWeight: .medium
+            fabricWeight: .medium,
+            description: "Olive field jacket with brass buttons.",
+            styleTags: ["utility", "outdoorsy"]
         ))
         let vm = AddItemViewModel(
             repository: repo,
@@ -79,10 +81,42 @@ struct AddItemViewModelTests {
         #expect(vm.formalityScore == 2.5)
         #expect(vm.primaryHex == "#00FF00")
         #expect(vm.colorCategory == .vibrant)
+        #expect(vm.undertone == .warm)
         #expect(vm.pattern == .plaid)
         #expect(vm.seasonality == [.winter])
         #expect(vm.fabricWeight == .medium)
+        #expect(vm.itemDescription == "Olive field jacket with brass buttons.")
+        #expect(vm.styleTags == ["utility", "outdoorsy"])
         #expect(vm.isolatedImageData == dummyData)
+    }
+
+    @Test func savedItemPersistsDescriptionUndertoneAndStyleTags() async {
+        let repo = MockWardrobeRepository()
+        let vm = AddItemViewModel(repository: repo)
+
+        vm.startManualEntry(defaultSlot: .top)
+        vm.itemDescription = "Cream linen popover shirt."
+        vm.undertone = .neutral
+        vm.styleTags = ["resort", "linen"]
+
+        await vm.saveItem()
+
+        let saved = repo.savedItems.first
+        #expect(saved?.itemDescription == "Cream linen popover shirt.")
+        #expect(saved?.colorProfile.undertone == .neutral)
+        #expect(saved?.styleTags == ["resort", "linen"])
+    }
+
+    @Test func emptyDescriptionPersistsAsNilNotAnEmptyString() async {
+        let repo = MockWardrobeRepository()
+        let vm = AddItemViewModel(repository: repo)
+
+        vm.startManualEntry(defaultSlot: .top)
+        // itemDescription left at its default "" (no vision tagging pass).
+
+        await vm.saveItem()
+
+        #expect(repo.savedItems.first?.itemDescription == nil)
     }
 }
 
@@ -115,4 +149,7 @@ private final class MockWardrobeRepository: WardrobeRepository {
     func fetchSavedCombinations() throws -> [SavedCombination] { [] }
     func saveCombination(_ combination: SavedCombination) throws {}
     func deleteCombination(_ combination: SavedCombination) throws {}
+
+    func fetchUserProfile() throws -> UserStyleProfile? { nil }
+    func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
 }

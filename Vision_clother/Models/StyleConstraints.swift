@@ -2,9 +2,14 @@
 //  StyleConstraints.swift
 //  Vision_clother
 //
-//  Wire type returned by the intent-extraction LLM call (PRD.md §3.3). The
-//  LLM never sees the wardrobe — it only ever produces this constraint
-//  payload, which the on-device engine then uses to filter/score locally.
+//  Wire type returned by the intent-extraction LLM call (PRD.md §3.3).
+//  Intent extraction itself never sees the wardrobe — it only ever produces
+//  this constraint payload. As of the 2026-07-10 LLM-as-Recommender reversal
+//  (docs/decisions/resolved-v1.md), this is no longer the primary
+//  recommendation path: it now feeds the deterministic *fallback* engine
+//  (`Domain/OutfitRecommendationEngine.swift`), used when the primary
+//  `Services/OutfitRecommendationService.swift` call fails or returns
+//  nothing valid. See PRD.md §2.1a for the primary flow.
 //
 
 import Foundation

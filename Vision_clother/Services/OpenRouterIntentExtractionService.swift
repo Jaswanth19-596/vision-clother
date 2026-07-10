@@ -2,10 +2,16 @@
 //  OpenRouterIntentExtractionService.swift
 //  Vision_clother
 //
-//  Intent Extraction Layer (PRD.md §2.1, stage 1) — CLAUDE.md guardrail #1.
-//  The LLM NEVER receives the wardrobe (CLAUDE.md core invariant); it only
-//  ever sees free text + weather and only ever produces a `StyleConstraints`
-//  payload, ideally enforced via OpenRouter's `response_format: json_schema`.
+//  Intent Extraction Layer (PRD.md §2.1, stage 1). This call itself never
+//  receives the wardrobe — it only ever sees free text + weather and only
+//  ever produces a `StyleConstraints` payload, ideally enforced via
+//  OpenRouter's `response_format: json_schema`. Since the 2026-07-10
+//  LLM-as-Recommender reversal (CLAUDE.md core invariant,
+//  docs/decisions/resolved-v1.md), this service backs the deterministic
+//  *fallback* path only — the primary recommendation path is
+//  `Services/OutfitRecommendationService.swift`, which does see a bounded
+//  wardrobe catalog. Kept as its own narrow call because the fallback engine
+//  (`Domain/OutfitRecommendationEngine.swift`) still needs `StyleConstraints`.
 //
 //  `minimax/minimax-m3`'s structured-output support isn't confirmed the way
 //  OpenAI's is (CLAUDE.md §5.1), so a `response_format: json_schema` request

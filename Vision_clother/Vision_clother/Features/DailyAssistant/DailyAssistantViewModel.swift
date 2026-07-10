@@ -16,7 +16,14 @@ final class DailyAssistantViewModel {
     enum ExtractionState: Equatable {
         case idle
         case loading
-        case failed(IntentExtractionError)
+        /// Broadened from a single `IntentExtractionError` (pre-2026-07-10)
+        /// to a pre-formatted message: the primary path
+        /// (`Services/OutfitRecommendationService.swift`) and the fallback
+        /// path (`Services/OpenRouterIntentExtractionService.swift`) each
+        /// have their own error types, and the fallback itself only
+        /// surfaces once *both* paths have failed — so there's no single
+        /// error type left to hold here.
+        case failed(String)
 
         static func == (lhs: ExtractionState, rhs: ExtractionState) -> Bool {
             switch (lhs, rhs) {
@@ -42,6 +49,15 @@ final class DailyAssistantViewModel {
     private let tryOnService: TryOnRenderService
     private let repository: WardrobeRepository
     private let photoLibrarySaver: PhotoLibrarySaver
+    /// Primary recommendation path (PRD §2.1a, the 2026-07-10
+    /// LLM-as-Recommender reversal — docs/decisions/resolved-v1.md).
+    private let recommendationService: OutfitRecommendationService
+    private let weatherProvider: CurrentWeatherProviding
+    /// Backs the lazy profile backfill in `requestOutfitIdeas()` — derives
+    /// once from an existing portrait if `fetchUserProfile()` is still nil,
+    /// mirroring the eager derivation `ManualPairingViewModel.savePortrait`
+    /// already does on a fresh portrait save.
+    private let profileDerivationService: UserProfileDerivationService
     private var tryOnTask: Task<Void, Never>?
     /// Kept so the try-on retry button can resend without the caller
     /// re-selecting the card, and so `saveCombination` knows which top/bottom
@@ -52,17 +68,29 @@ final class DailyAssistantViewModel {
         repository: WardrobeRepository,
         intentService: IntentExtractionService = MockIntentExtractionService(),
         tryOnService: TryOnRenderService = MockTryOnRenderService(),
-        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver()
+        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver(),
+        recommendationService: OutfitRecommendationService = MockOutfitRecommendationService(),
+        weatherProvider: CurrentWeatherProviding = MockCurrentWeatherProvider(),
+        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService()
     ) {
         self.repository = repository
         self.intentService = intentService
         self.tryOnService = tryOnService
         self.photoLibrarySaver = photoLibrarySaver
+        self.recommendationService = recommendationService
+        self.weatherProvider = weatherProvider
+        self.profileDerivationService = profileDerivationService
     }
 
-    /// Runs the full 3-stage local pipeline for the current `prompt`. Safe
-    /// to call again while `.failed` — that's exactly the manual-retry path
-    /// the UI's Retry button uses.
+    /// Primary path (PRD §2.1a): prompt + bounded wardrobe catalog + style
+    /// profile + weather -> recommendation LLM -> validated outfits. Falls
+    /// back to the fully deterministic §2.1 pipeline (intent extraction ->
+    /// `OutfitRecommendationEngine`) when AI recommendations are disabled
+    /// (`RecommendationSettings.useAIRecommendations`), the recommendation
+    /// call fails, or validation yields nothing usable — so the app always
+    /// produces an outfit when the inventory can support one. Safe to call
+    /// again while `.failed` — that's exactly the manual-retry path the
+    /// UI's Retry button uses.
     func requestOutfitIdeas() async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -70,10 +98,31 @@ final class DailyAssistantViewModel {
         extractionState = .loading
         candidates = []
 
+        let weather = await weatherProvider.currentWeather()
+
         do {
-            let constraints = try await intentService.extractConstraints(prompt: trimmed, weather: nil)
             let inventory = try repository.fetchInventory()
             let history = try repository.fetchFeedbackHistory()
+
+            if RecommendationSettings.useAIRecommendations {
+                let profile = await resolvedUserProfile()
+                let (catalog, index) = WardrobeCatalogBuilder.build(from: inventory)
+                if !catalog.isEmpty,
+                   let response = try? await recommendationService.recommendOutfits(
+                       prompt: trimmed, catalog: catalog, profile: profile, weather: weather
+                   ) {
+                    let validated = OutfitRecommendationValidator.validate(response, index: index, history: history)
+                    if !validated.isEmpty {
+                        candidates = validated
+                        extractionState = .idle
+                        return
+                    }
+                }
+                // Falls through to the deterministic pipeline below when the
+                // recommendation call throws or every pick fails validation.
+            }
+
+            let constraints = try await intentService.extractConstraints(prompt: trimmed, weather: weather)
             candidates = OutfitRecommendationEngine.generateCandidates(
                 inventory: inventory,
                 constraints: constraints,
@@ -81,10 +130,25 @@ final class DailyAssistantViewModel {
             )
             extractionState = .idle
         } catch let error as IntentExtractionError {
-            extractionState = .failed(error)
+            extractionState = .failed(error.errorDescription ?? "Couldn't understand that.")
         } catch {
-            extractionState = .failed(.decoding(error))
+            extractionState = .failed(error.localizedDescription)
         }
+    }
+
+    /// Reads the persisted style profile, lazily deriving it once from an
+    /// existing portrait if none is saved yet (PRD §3.8). Best-effort: a
+    /// derivation failure just means this and future calls proceed with
+    /// `nil` until the user saves a fresh portrait (which derives eagerly,
+    /// see `ManualPairingViewModel.savePortrait`).
+    private func resolvedUserProfile() async -> UserStyleProfile? {
+        if let existing = try? repository.fetchUserProfile() {
+            return existing
+        }
+        guard let portraitData = UserPortraitStorage.load() else { return nil }
+        guard let wire = try? await profileDerivationService.deriveProfile(portraitData: portraitData) else { return nil }
+        try? repository.saveUserProfile(wire)
+        return try? repository.fetchUserProfile()
     }
 
     // MARK: - Try-on

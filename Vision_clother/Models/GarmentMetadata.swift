@@ -19,11 +19,13 @@ struct GarmentMetadata: Codable, Equatable {
         var primaryHex: String
         var secondaryHex: String?
         var category: ColorVibe
+        var undertone: Undertone?
 
         enum CodingKeys: String, CodingKey {
             case primaryHex = "primary_hex"
             case secondaryHex = "secondary_hex"
             case category
+            case undertone
         }
     }
 
@@ -33,6 +35,12 @@ struct GarmentMetadata: Codable, Equatable {
     var pattern: GarmentPattern
     var seasonality: [Season]
     var fabricWeight: FabricWeight
+    /// One concise sentence (≤140 chars) describing the garment — becomes
+    /// the catalog entry text for the recommendation LLM
+    /// (`Domain/WardrobeCatalogBuilder.swift`).
+    var description: String
+    /// Free-form style descriptors (e.g. "minimalist", "streetwear").
+    var styleTags: [String]
 
     enum CodingKeys: String, CodingKey {
         case slot
@@ -41,5 +49,7 @@ struct GarmentMetadata: Codable, Equatable {
         case pattern
         case seasonality
         case fabricWeight = "fabric_weight"
+        case description
+        case styleTags = "style_tags"
     }
 }

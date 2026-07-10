@@ -45,7 +45,8 @@ struct ManualPairingView: View {
                 repository: SwiftDataWardrobeRepository(modelContext: modelContext),
                 validationService: ServiceFactory.makePersonPhotoValidationService(),
                 tryOnService: ServiceFactory.makeTryOnRenderService(),
-                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver()
+                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
+                profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )
         }
         .onChange(of: viewModel?.didSaveOutfit) { _, didSave in

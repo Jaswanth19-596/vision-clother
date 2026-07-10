@@ -36,6 +36,16 @@ protocol WardrobeRepository {
     func fetchSavedCombinations() throws -> [SavedCombination]
     func saveCombination(_ combination: SavedCombination) throws
     func deleteCombination(_ combination: SavedCombination) throws
+
+    /// User Style Profile (PRD §3.8) — single row, `nil` if never derived.
+    /// Read by the recommendation call to personalize picks
+    /// (Services/OutfitRecommendationService.swift).
+    func fetchUserProfile() throws -> UserStyleProfile?
+    /// Upserts the single profile row from a fresh derivation
+    /// (Services/UserProfileDerivationService.swift) — replaces any existing
+    /// row rather than accumulating history, mirroring
+    /// Services/UserPortraitStorage.swift's "one portrait" posture.
+    func saveUserProfile(_ wire: UserStyleProfileWire) throws
 }
 
 @MainActor
@@ -164,6 +174,27 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // correctness issue worth failing the delete over.
         ImageStorage.delete(combination.imageAssetName)
         modelContext.delete(combination)
+        try modelContext.save()
+    }
+
+    func fetchUserProfile() throws -> UserStyleProfile? {
+        try modelContext.fetch(FetchDescriptor<UserStyleProfile>()).first
+    }
+
+    func saveUserProfile(_ wire: UserStyleProfileWire) throws {
+        // Single-row upsert: delete any prior profile(s) before inserting
+        // the fresh one, so a re-derivation never accumulates history.
+        for existing in try modelContext.fetch(FetchDescriptor<UserStyleProfile>()) {
+            modelContext.delete(existing)
+        }
+        modelContext.insert(UserStyleProfile(
+            skinTone: wire.skinTone,
+            undertone: wire.undertone,
+            bodyType: wire.bodyType,
+            styleKeywords: wire.styleKeywords,
+            recommendedColors: wire.recommendedColors,
+            avoidColors: wire.avoidColors
+        ))
         try modelContext.save()
     }
 }

@@ -14,6 +14,30 @@ A `Double` from 1.0 (loungewear/gym) to 5.0 (black tie), per item. `StyleConstra
 
 One shared enum (`ColorVibe`) used both for a garment's `color_profile.category` and for the LLM's `color_palette_vibe` output: `neutral`, `earth_tones`, `monochrome`, `vibrant`, `pastel`. Reusing one enum for both sides means the aesthetic-prior scoring function (below) can compare a constraint's palette directly against an item's category without a translation layer.
 
+Since the 2026-07-10 LLM-as-Recommender reversal (`docs/decisions/resolved-v1.md`), `ColorProfile` also carries an optional `undertone` (`warm`/`cool`/`neutral`) — see "Color theory" below. It's optional purely for migration safety (older persisted rows have no `undertone` key and decode as `nil`); the coarse `ColorVibe` category remains the fallback signal whenever hex/undertone data is unavailable.
+
+## Color theory (`Domain/ColorHarmony.swift`)
+
+Real hue-based color theory, replacing the old flat `-0.2` "both vibrant" penalty in `PairCompatibilityScoring.aestheticPrior`. Operates on the hex values every `WardrobeItem.colorProfile` already carries (`primaryHex`), which were previously captured at ingestion but never used for scoring:
+
+- `hsl(fromHex:)` parses `#RRGGBB` into hue/saturation/lightness; malformed hex returns `nil` — never crashes, never NaNs.
+- `harmonyScore(_:_:)` rewards **complementary** (~180° hue apart) and **analogous/monochrome** (<40° apart) pairings, and penalizes the **muddy mid-hue clash zone** (60°–150° apart), scaled up by how saturated both colors are. Either color being near-achromatic (gray/white/black) always scores as a safe pairing — neutrals anchor any outfit regardless of the other hue.
+- `undertoneCompatibility(_:_:)` scores `warm`/`cool`/`neutral` pairs, with `nil` on either side reading as "no signal" (neutral 0.5), never a penalty.
+- **Graceful degrade**: when either item's hex is unparseable, `aestheticPrior` falls back to the original coarse `ColorVibe`-category check — real color-theory scoring and the old category check are never both applied, and there's always a valid score either way.
+
+Color theory is applied in **two places**: as prompt guidance to the primary recommendation LLM (see below), and as this deterministic module inside `aestheticPrior` — used both by the fallback engine and by the validator's re-scoring pass, so an outfit is chromatically sane on every path, LLM-reachable or not.
+
+## User Style Profile & recommendation LLM (PRD §2.1a, §3.7, §3.8)
+
+The **2026-07-10 LLM-as-Recommender reversal** changed the core invariant: the LLM is now the primary outfit recommender, not just a constraint extractor. Full rationale in `docs/decisions/resolved-v1.md`; summary of the moving pieces:
+
+- **`Domain/WardrobeCatalogBuilder.swift`** builds the bounded, text-only payload sent to the recommendation LLM: one compact `CatalogEntry` per real (non-Ghost) item — id, slot, formality, color category/hex/undertone, pattern, seasonality, fabric weight, a truncated description. Capped at `maxItems` (default 150) with slot-balanced sampling if the closet is larger, so payload size and cost stay bounded regardless of wardrobe growth. Garment *images* are never sent at recommendation time — only this text catalog.
+- **`Services/OutfitRecommendationService.swift`** sends the user's prompt + catalog + `UserStyleProfile` + weather + color-theory guidance to the LLM (`temperature: 0`), which returns up to 5 outfit picks referencing catalog item IDs plus a short rationale each.
+- **`Domain/OutfitRecommendationValidator.swift`** is the deterministic trust boundary: every returned id must resolve to a real, correctly-slotted, non-Ghost item, with no id reused across slots in the same outfit — anything else is dropped. Survivors are re-scored with the same `OutfitRecommendationEngine.outfitScore` the fallback path uses, so ranking stays consistent regardless of which path produced the outfit.
+- **Fallback**: if the recommendation call throws or validation yields zero outfits, `DailyAssistantViewModel` falls back to the original §2.1 pipeline (intent extraction → `OutfitRecommendationEngine.generateCandidates`) unchanged — the deterministic engine is a permanent floor, not something this feature replaces.
+- **`Models/UserStyleProfile.swift`** — a single-row SwiftData profile (skin tone, undertone, body type, style keywords, recommended/avoid colors) derived once from the existing onboarding portrait via `Services/UserProfileDerivationService.swift`, not re-sent per recommendation request. This is the only recommendation-adjacent call that sends an image.
+- **Privacy**: a user-facing toggle (`RecommendationSettings.useAIRecommendations`) forces the fully deterministic path, skipping the recommendation call (and the catalog/profile it would send) entirely.
+
 ## Ghost Elements (PRD §3.2)
 
 If a slot has zero real items, `Domain/GhostElementProvider.swift` injects a default placeholder garment (a white tee, black jeans, white sneakers, or a neutral jacket) so the recommendation engine — and the Closet grid — never see an empty slot. This is a deliberate onboarding-friction reducer: a brand-new user with an empty wardrobe still gets real, complete outfit suggestions on day one.

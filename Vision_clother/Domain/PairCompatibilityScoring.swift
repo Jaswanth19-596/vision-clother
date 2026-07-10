@@ -42,7 +42,20 @@ enum PairCompatibilityScoring {
             score -= 0.3
         }
 
-        if a.colorProfile.category == .vibrant, b.colorProfile.category == .vibrant {
+        if ColorHarmony.hsl(fromHex: a.colorProfile.primaryHex) != nil,
+           ColorHarmony.hsl(fromHex: b.colorProfile.primaryHex) != nil {
+            // Real hue-based color theory (Domain/ColorHarmony.swift) —
+            // rewards complementary/analogous/monochrome pairings and
+            // penalizes muddy mid-hue clashes, replacing the old flat
+            // "both vibrant" penalty below.
+            let harmony = ColorHarmony.harmonyScore(a.colorProfile.primaryHex, b.colorProfile.primaryHex)
+            score += (harmony - 0.5) * 0.4
+
+            let undertone = ColorHarmony.undertoneCompatibility(a.colorProfile.undertone, b.colorProfile.undertone)
+            score += (undertone - 0.5) * 0.2
+        } else if a.colorProfile.category == .vibrant, b.colorProfile.category == .vibrant {
+            // Graceful degrade: malformed/missing hex on either item falls
+            // back to the coarse category-level clash check.
             score -= 0.2
         }
 
