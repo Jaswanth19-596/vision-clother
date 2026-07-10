@@ -78,6 +78,7 @@ enum StylistBrain {
             - Only recommend items the user actually owns — never invent a garment.
             - If the wardrobe genuinely lacks a suitable item for this scenario, say so plainly in the rationale rather than forcing a poor match.
             - Use respectful, non-judgmental language about the user's body and appearance.
+            - Return between 3 and 5 distinct outfits in the "outfits" array, unless the wardrobe catalog genuinely cannot support 3 valid, non-duplicate combinations — in that case return as many as are actually valid.
 
             You must reason strictly according to this Decision Hierarchy when picking items — a lower-numbered tier always outranks a higher one; tier 7 may only break ties, never justify violating tiers 1-6:
             \(DecisionHierarchy.allCases.map { " - \($0.description)" }.joined(separator: "\n"))

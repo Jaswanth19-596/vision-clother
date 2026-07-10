@@ -124,7 +124,15 @@ final class DailyAssistantViewModel {
                         history: history
                     )
                     if !validated.isEmpty {
-                        candidates = validated
+                        candidates = await topUpIfNeeded(
+                            validated: validated,
+                            prompt: trimmed,
+                            inventory: inventory,
+                            resolvedConstraints: response.resolvedConstraints,
+                            profile: profile,
+                            weather: weather,
+                            history: history
+                        )
                         extractionState = .idle
                         return
                     }
@@ -147,6 +155,50 @@ final class DailyAssistantViewModel {
         } catch {
             extractionState = .failed(error.localizedDescription)
         }
+    }
+
+    /// Guarantees the user sees at least `minimumCount` outfits when the LLM
+    /// path under-returns (schema/prompt only hint at 3-5 — the validator can
+    /// still drop picks below that after the fact). Tops up with the
+    /// deterministic engine, excluding any item set already present in
+    /// `validated`, and re-sorts the merged list by score. Never discards a
+    /// validated (rationale-bearing) outfit to make room.
+    private func topUpIfNeeded(
+        validated: [OutfitCombination],
+        prompt: String,
+        inventory: [WardrobeItem],
+        resolvedConstraints: StyleConstraints?,
+        profile: UserStyleProfile?,
+        weather: WeatherContext?,
+        history: FeedbackHistory
+    ) async -> [OutfitCombination] {
+        let minimumCount = 3
+        let shortfall = minimumCount - validated.count
+        guard shortfall > 0 else { return validated }
+
+        let constraints: StyleConstraints
+        if let resolvedConstraints {
+            constraints = resolvedConstraints
+        } else if let extracted = try? await intentService.extractConstraints(prompt: prompt, weather: weather) {
+            constraints = extracted
+        } else {
+            return validated
+        }
+
+        let usedItemSets = Set(validated.map { Set($0.items.map(\.id)) })
+        let deterministic = OutfitRecommendationEngine.generateCandidates(
+            inventory: inventory,
+            constraints: constraints,
+            profile: profile,
+            weather: weather,
+            history: history,
+            limit: shortfall + 5
+        )
+        let additions = deterministic
+            .filter { !usedItemSets.contains(Set($0.items.map(\.id))) }
+            .prefix(shortfall)
+
+        return (validated + additions).sorted { $0.score > $1.score }
     }
 
     /// Reads the persisted style profile, lazily deriving it once from an

@@ -242,6 +242,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         "properties": [
             "outfits": [
                 "type": "array",
+                "minItems": 3,
                 "maxItems": 5,
                 "items": [
                     "type": "object",

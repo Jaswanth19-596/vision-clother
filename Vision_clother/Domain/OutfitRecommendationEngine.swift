@@ -197,6 +197,7 @@ enum OutfitRecommendationEngine {
             }
         }
 
-        return meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus
+        return (meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus)
+            .clamped(to: 0...1)
     }
 }
