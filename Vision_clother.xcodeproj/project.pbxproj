@@ -1,0 +1,610 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		AC57969E2FFF8A8D00DEEE33 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AC5796882FFF8A8C00DEEE33 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AC57968F2FFF8A8C00DEEE33;
+			remoteInfo = Vision_clother;
+		};
+		AC5796A82FFF8A8D00DEEE33 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AC5796882FFF8A8C00DEEE33 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AC57968F2FFF8A8C00DEEE33;
+			remoteInfo = Vision_clother;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vision_clother.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC57969D2FFF8A8D00DEEE33 /* Vision_clotherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Vision_clotherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC5796A72FFF8A8D00DEEE33 /* Vision_clotherUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Vision_clotherUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Data/CLAUDE.md,
+				Domain/CLAUDE.md,
+				Models/CLAUDE.md,
+				Services/CLAUDE.md,
+				Vision_clother/Features/Analytics/CLAUDE.md,
+				Vision_clother/Features/CLAUDE.md,
+				Vision_clother/Features/Closet/CLAUDE.md,
+				Vision_clother/Features/DailyAssistant/CLAUDE.md,
+				Vision_clother/Features/Pairing/CLAUDE.md,
+				Vision_clother/Features/Root/CLAUDE.md,
+				Vision_clother/Services/CLAUDE.md,
+			);
+			target = AC57968F2FFF8A8C00DEEE33 /* Vision_clother */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AC5796922FFF8A8C00DEEE33 /* Vision_clother */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */,
+			);
+			path = Vision_clother;
+			sourceTree = "<group>";
+		};
+		AC5796A02FFF8A8D00DEEE33 /* Vision_clotherTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Vision_clotherTests;
+			sourceTree = "<group>";
+		};
+		AC5796AA2FFF8A8D00DEEE33 /* Vision_clotherUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Vision_clotherUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AC57968D2FFF8A8C00DEEE33 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC57969A2FFF8A8D00DEEE33 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC5796A42FFF8A8D00DEEE33 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AC5796872FFF8A8C00DEEE33 = {
+			isa = PBXGroup;
+			children = (
+				AC5796922FFF8A8C00DEEE33 /* Vision_clother */,
+				AC5796A02FFF8A8D00DEEE33 /* Vision_clotherTests */,
+				AC5796AA2FFF8A8D00DEEE33 /* Vision_clotherUITests */,
+				AC5796912FFF8A8C00DEEE33 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AC5796912FFF8A8C00DEEE33 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */,
+				AC57969D2FFF8A8D00DEEE33 /* Vision_clotherTests.xctest */,
+				AC5796A72FFF8A8D00DEEE33 /* Vision_clotherUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AC57968F2FFF8A8C00DEEE33 /* Vision_clother */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC5796B12FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clother" */;
+			buildPhases = (
+				AC57968C2FFF8A8C00DEEE33 /* Sources */,
+				AC57968D2FFF8A8C00DEEE33 /* Frameworks */,
+				AC57968E2FFF8A8C00DEEE33 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AC5796922FFF8A8C00DEEE33 /* Vision_clother */,
+			);
+			name = Vision_clother;
+			packageProductDependencies = (
+			);
+			productName = Vision_clother;
+			productReference = AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AC57969C2FFF8A8D00DEEE33 /* Vision_clotherTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC5796B42FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clotherTests" */;
+			buildPhases = (
+				AC5796992FFF8A8D00DEEE33 /* Sources */,
+				AC57969A2FFF8A8D00DEEE33 /* Frameworks */,
+				AC57969B2FFF8A8D00DEEE33 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AC57969F2FFF8A8D00DEEE33 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AC5796A02FFF8A8D00DEEE33 /* Vision_clotherTests */,
+			);
+			name = Vision_clotherTests;
+			packageProductDependencies = (
+			);
+			productName = Vision_clotherTests;
+			productReference = AC57969D2FFF8A8D00DEEE33 /* Vision_clotherTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AC5796A62FFF8A8D00DEEE33 /* Vision_clotherUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC5796B72FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clotherUITests" */;
+			buildPhases = (
+				AC5796A32FFF8A8D00DEEE33 /* Sources */,
+				AC5796A42FFF8A8D00DEEE33 /* Frameworks */,
+				AC5796A52FFF8A8D00DEEE33 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AC5796A92FFF8A8D00DEEE33 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AC5796AA2FFF8A8D00DEEE33 /* Vision_clotherUITests */,
+			);
+			name = Vision_clotherUITests;
+			packageProductDependencies = (
+			);
+			productName = Vision_clotherUITests;
+			productReference = AC5796A72FFF8A8D00DEEE33 /* Vision_clotherUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AC5796882FFF8A8C00DEEE33 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					AC57968F2FFF8A8C00DEEE33 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					AC57969C2FFF8A8D00DEEE33 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = AC57968F2FFF8A8C00DEEE33;
+					};
+					AC5796A62FFF8A8D00DEEE33 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = AC57968F2FFF8A8C00DEEE33;
+					};
+				};
+			};
+			buildConfigurationList = AC57968B2FFF8A8C00DEEE33 /* Build configuration list for PBXProject "Vision_clother" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AC5796872FFF8A8C00DEEE33;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AC5796912FFF8A8C00DEEE33 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AC57968F2FFF8A8C00DEEE33 /* Vision_clother */,
+				AC57969C2FFF8A8D00DEEE33 /* Vision_clotherTests */,
+				AC5796A62FFF8A8D00DEEE33 /* Vision_clotherUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AC57968E2FFF8A8C00DEEE33 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC57969B2FFF8A8D00DEEE33 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC5796A52FFF8A8D00DEEE33 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AC57968C2FFF8A8C00DEEE33 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC5796992FFF8A8D00DEEE33 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC5796A32FFF8A8D00DEEE33 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AC57969F2FFF8A8D00DEEE33 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AC57968F2FFF8A8C00DEEE33 /* Vision_clother */;
+			targetProxy = AC57969E2FFF8A8D00DEEE33 /* PBXContainerItemProxy */;
+		};
+		AC5796A92FFF8A8D00DEEE33 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AC57968F2FFF8A8C00DEEE33 /* Vision_clother */;
+			targetProxy = AC5796A82FFF8A8D00DEEE33 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AC5796AF2FFF8A8D00DEEE33 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AC5796B02FFF8A8D00DEEE33 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AC5796B22FFF8A8D00DEEE33 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clother";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AC5796B32FFF8A8D00DEEE33 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clother";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AC5796B52FFF8A8D00DEEE33 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vision_clother.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vision_clother";
+			};
+			name = Debug;
+		};
+		AC5796B62FFF8A8D00DEEE33 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vision_clother.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vision_clother";
+			};
+			name = Release;
+		};
+		AC5796B82FFF8A8D00DEEE33 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Vision_clother;
+			};
+			name = Debug;
+		};
+		AC5796B92FFF8A8D00DEEE33 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 79QZ3H49GZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Vision_clother;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AC57968B2FFF8A8C00DEEE33 /* Build configuration list for PBXProject "Vision_clother" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC5796AF2FFF8A8D00DEEE33 /* Debug */,
+				AC5796B02FFF8A8D00DEEE33 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AC5796B12FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clother" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC5796B22FFF8A8D00DEEE33 /* Debug */,
+				AC5796B32FFF8A8D00DEEE33 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AC5796B42FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clotherTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC5796B52FFF8A8D00DEEE33 /* Debug */,
+				AC5796B62FFF8A8D00DEEE33 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AC5796B72FFF8A8D00DEEE33 /* Build configuration list for PBXNativeTarget "Vision_clotherUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC5796B82FFF8A8D00DEEE33 /* Debug */,
+				AC5796B92FFF8A8D00DEEE33 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AC5796882FFF8A8C00DEEE33 /* Project object */;
+}

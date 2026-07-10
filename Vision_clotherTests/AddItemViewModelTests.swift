@@ -1,0 +1,118 @@
+//
+//  AddItemViewModelTests.swift
+//  Vision_clotherTests
+//
+
+import Foundation
+import Testing
+@testable import Vision_clother
+
+@MainActor
+struct AddItemViewModelTests {
+
+    @Test func initialSetupIsIdle() async {
+        let repo = MockWardrobeRepository()
+        let vm = AddItemViewModel(repository: repo)
+        #expect(vm.state == .idle)
+        #expect(!vm.didSave)
+    }
+
+    @Test func startManualEntrySeedsPropertiesCorrectly() async {
+        let repo = MockWardrobeRepository()
+        let vm = AddItemViewModel(repository: repo)
+
+        vm.startManualEntry(defaultSlot: .bottom)
+
+        #expect(vm.state == .editingMetadata)
+        #expect(vm.slot == .bottom)
+        #expect(vm.formalityScore == 3.0)
+        #expect(vm.pattern == .solid)
+        #expect(vm.primaryHex == "#FFFFFF")
+        #expect(vm.isolatedImageData == nil)
+    }
+
+    @Test func saveManuallyEnteredItemPersistsToRepository() async {
+        let repo = MockWardrobeRepository()
+        let vm = AddItemViewModel(repository: repo)
+
+        vm.startManualEntry(defaultSlot: .footwear)
+        vm.formalityScore = 4.5
+        vm.primaryHex = "#FF0000"
+        vm.pattern = .striped
+        vm.fabricWeight = .heavy
+
+        await vm.saveItem()
+
+        #expect(vm.didSave)
+        #expect(repo.savedItems.count == 1)
+        
+        let saved = repo.savedItems.first
+        #expect(saved?.slot == .footwear)
+        #expect(saved?.formalityScore == 4.5)
+        #expect(saved?.colorProfile.primaryHex == "#FF0000")
+        #expect(saved?.pattern == .striped)
+        #expect(saved?.fabricWeight == .heavy)
+        #expect(saved?.imageAssetName == nil)
+    }
+
+    @Test func ingestSetsStateToEditingAndPopulatesTags() async {
+        let repo = MockWardrobeRepository()
+        let mockVision = MockVisionMetadataExtractionService(result: GarmentMetadata(
+            slot: .outerwear,
+            formalityScore: 2.5,
+            colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#00FF00", secondaryHex: nil, category: .vibrant),
+            pattern: .plaid,
+            seasonality: [.winter],
+            fabricWeight: .medium
+        ))
+        let vm = AddItemViewModel(
+            repository: repo,
+            backgroundIsolationService: MockBackgroundIsolationService(),
+            visionMetadataService: mockVision
+        )
+
+        let dummyData = Data([1, 2, 3])
+        await vm.ingest(rawImageData: dummyData)
+
+        #expect(vm.state == .editingMetadata)
+        #expect(vm.slot == .outerwear)
+        #expect(vm.formalityScore == 2.5)
+        #expect(vm.primaryHex == "#00FF00")
+        #expect(vm.colorCategory == .vibrant)
+        #expect(vm.pattern == .plaid)
+        #expect(vm.seasonality == [.winter])
+        #expect(vm.fabricWeight == .medium)
+        #expect(vm.isolatedImageData == dummyData)
+    }
+}
+
+@MainActor
+private final class MockWardrobeRepository: WardrobeRepository {
+    var savedItems: [WardrobeItem] = []
+
+    func fetchInventory() throws -> [WardrobeItem] {
+        savedItems
+    }
+
+    func save(_ item: WardrobeItem) throws {
+        savedItems.append(item)
+    }
+
+    func delete(_ item: WardrobeItem) throws {
+        savedItems.removeAll { $0.id == item.id }
+    }
+
+    func fetchFeedbackHistory() throws -> FeedbackHistory {
+        FeedbackHistory()
+    }
+
+    func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
+    func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
+    func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {}
+    func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
+
+    func fetchSavedCombinations() throws -> [SavedCombination] { [] }
+    func saveCombination(_ combination: SavedCombination) throws {}
+    func deleteCombination(_ combination: SavedCombination) throws {}
+}

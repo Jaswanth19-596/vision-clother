@@ -1,0 +1,23 @@
+# Xcode
+build/
+DerivedData/
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Dev-only secrets — see Vision_clother/Config/README.md.
+# Secrets.example.plist stays tracked as the template.
+Vision_clother/Config/Secrets.plist
+
+# macOS
+.DS_Store
+
+# Tool-generated output (graphify, etc.)
+graphify-out/
