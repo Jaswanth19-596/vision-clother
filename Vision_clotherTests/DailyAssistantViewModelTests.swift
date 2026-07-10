@@ -23,6 +23,17 @@ import Testing
 @MainActor
 struct DailyAssistantViewModelTests {
 
+    private func makeRationale(_ text: String) -> StructuredRationaleWire {
+        StructuredRationaleWire(
+            occasion: text,
+            colorHarmony: "",
+            bodyProfile: "",
+            weather: "",
+            style: "",
+            confidence: 90
+        )
+    }
+
     @Test func saveCombinationWithoutARenderedOutfitDoesNothing() async throws {
         let repository = InMemoryWardrobeRepository()
         let viewModel = DailyAssistantViewModel(repository: repository)
@@ -49,7 +60,7 @@ struct DailyAssistantViewModelTests {
             RecommendedOutfitWire(
                 topID: top.id.uuidString, bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString, outerwearID: nil,
-                rationale: "A clean, neutral pairing."
+                rationale: makeRationale("A clean, neutral pairing.")
             ),
         ]))
         let intentService = ControllableIntentExtractionService()
@@ -64,7 +75,7 @@ struct DailyAssistantViewModelTests {
         await viewModel.requestOutfitIdeas()
 
         #expect(viewModel.candidates.count == 1)
-        #expect(viewModel.candidates.first?.rationale == "A clean, neutral pairing.")
+        #expect(viewModel.candidates.first?.structuredRationale?.occasion == "A clean, neutral pairing.")
         #expect(viewModel.extractionState == .idle)
         #expect(intentService.callCount == 0) // fallback pipeline never engaged
     }
@@ -112,7 +123,7 @@ struct DailyAssistantViewModelTests {
             RecommendedOutfitWire(
                 topID: UUID().uuidString, bottomID: UUID().uuidString,
                 footwearID: UUID().uuidString, outerwearID: nil,
-                rationale: "Hallucinated."
+                rationale: makeRationale("Hallucinated.")
             ),
         ]))
         let intentService = ControllableIntentExtractionService()
@@ -129,6 +140,64 @@ struct DailyAssistantViewModelTests {
         #expect(!viewModel.candidates.isEmpty)
         #expect(viewModel.extractionState == .idle)
         #expect(intentService.callCount == 1)
+    }
+
+    @Test func resolvedConstraintsFromTheRecommendationResponseEnforceFormalityAlignmentOnTheLLMPath() async throws {
+        // Stylist Intelligence Engine ADR: the LLM path previously passed
+        // `constraints: nil` to the validator, so Tier 1 dress-code alignment
+        // was only ever prompt guidance, never a deterministic check. Now the
+        // recommendation response self-reports `resolved_constraints` and the
+        // view model threads it through — without a second intent-extraction
+        // call (`intentService.callCount` must stay 0, same as the existing
+        // happy-path invariant).
+        RecommendationSettings.useAIRecommendations = true
+        defer { RecommendationSettings.useAIRecommendations = true }
+
+        let repository = InMemoryWardrobeRepository()
+        // All three items are mutually coherent (formality 2.0, small
+        // pairwise deltas) so PairCompatibilityScoring's *internal*
+        // formality-delta check alone wouldn't flag anything — only a
+        // constraints-aware Tier 1 check against the resolved scenario band
+        // (4.5-5.0) can catch this outfit being wildly under-formal for it.
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [top, bottom, footwear]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.result = .success(OutfitRecommendationResponse(
+            outfits: [
+                RecommendedOutfitWire(
+                    topID: top.id.uuidString, bottomID: bottom.id.uuidString,
+                    footwearID: footwear.id.uuidString, outerwearID: nil,
+                    rationale: makeRationale("Black tie gala.")
+                ),
+            ],
+            resolvedConstraints: StyleConstraints(
+                formalityRange: FormalityRange(lowerBound: 4.5, upperBound: 5.0),
+                weatherLayeringRequired: false,
+                colorPaletteVibe: [.neutral],
+                seasonSuitability: .summer
+            )
+        ))
+        let intentService = ControllableIntentExtractionService()
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            intentService: intentService,
+            recommendationService: recommendationService
+        )
+        viewModel.prompt = "Black tie gala"
+
+        await viewModel.requestOutfitIdeas()
+
+        let candidate = try #require(viewModel.candidates.first)
+        let scoreWithoutConstraints = OutfitRecommendationEngine.outfitScore(
+            for: candidate.items, constraints: nil, history: FeedbackHistory()
+        )
+
+        #expect(candidate.score < scoreWithoutConstraints)
+        #expect(intentService.callCount == 0) // still no extra LLM round-trip on the happy path
     }
 
     @Test func privacyOptOutSkipsTheRecommendationServiceEntirely() async throws {
@@ -234,8 +303,10 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
 
     func fetchSavedCombinations() throws -> [SavedCombination] { savedCombinations }
     func saveCombination(_ combination: SavedCombination) throws { savedCombinations.append(combination) }
@@ -268,7 +339,8 @@ private final class ControllableOutfitRecommendationService: OutfitRecommendatio
         prompt: String,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
-        weather: WeatherContext?
+        weather: WeatherContext?,
+        history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
         callCount += 1
         return try result.get()

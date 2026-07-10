@@ -55,6 +55,8 @@ enum OutfitRecommendationEngine {
     static func generateCandidates(
         inventory: [WardrobeItem],
         constraints: StyleConstraints,
+        profile: UserStyleProfile? = nil,
+        weather: WeatherContext? = nil,
         history: FeedbackHistory = FeedbackHistory(),
         limit: Int = 5
     ) -> [OutfitCombination] {
@@ -84,7 +86,13 @@ enum OutfitRecommendationEngine {
                 for shoe in footwear {
                     for outer in outerwearOptions {
                         let items = [top, bottom, shoe] + (outer.map { [$0] } ?? [])
-                        let score = outfitScore(for: items, history: history)
+                        let score = outfitScore(
+                            for: items,
+                            constraints: constraints,
+                            profile: profile,
+                            weather: weather,
+                            history: history
+                        )
                         combos.append(
                             OutfitCombination(top: top, bottom: bottom, footwear: shoe, outerwear: outer, score: score)
                         )
@@ -97,15 +105,15 @@ enum OutfitRecommendationEngine {
     }
 
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))
-    /// + mean(AttributeAffinityBonus(Item))` across every item in the
-    /// combination — the PRD §3.4 formula applied outfit-wide rather than to
-    /// a single pair, plus a bounded learned-taste bias term (Item Rating &
-    /// Preference Learning feature; see `Domain/AttributePreferenceProfile.swift`).
-    /// Guarded against empty pair/item sets so a malformed (e.g. single-item)
-    /// call never divides by zero. With an empty `attributeProfile` (no
-    /// ratings yet) the bonus term is always 0, so this is byte-for-byte the
-    /// same score as before the feature existed.
-    static func outfitScore(for items: [WardrobeItem], history: FeedbackHistory) -> Double {
+    /// + mean(AttributeAffinityBonus(Item)) + FormalityPenalty + WeatherPenalty + ProfileColorsBonus`
+    /// across every item in the combination — applying the Decision Rubric (added 2026-07-10).
+    static func outfitScore(
+        for items: [WardrobeItem],
+        constraints: StyleConstraints? = nil,
+        profile: UserStyleProfile? = nil,
+        weather: WeatherContext? = nil,
+        history: FeedbackHistory
+    ) -> Double {
         let pairs = PairCompatibilityScoring.pairwiseCombinations(items)
         let pairScores: [Double] = pairs.map { a, b in
             let feedback = history.pairFeedback[PairKey(a.id, b.id)]
@@ -129,6 +137,66 @@ enum OutfitRecommendationEngine {
         let affinityBonuses: [Double] = items.map { history.attributeProfile.affinityBonus(for: $0) }
         let meanAffinityBonus = affinityBonuses.isEmpty ? 0 : affinityBonuses.reduce(0, +) / Double(affinityBonuses.count)
 
-        return meanPairScore + meanPreference + meanAffinityBonus
+        // 1. Formality Alignment Penalty (added 2026-07-10)
+        var formalityPenalty: Double = 0.0
+        if let constraints {
+            for item in items {
+                if !constraints.formalityRange.contains(item.formalityScore, tolerance: 0.5) {
+                    formalityPenalty -= 0.15
+                }
+            }
+        }
+
+        // 2. Weather & Temperature Suitability Penalty (added 2026-07-10)
+        var weatherPenalty: Double = 0.0
+        if let weather {
+            let isCold = weather.temperatureFahrenheit < 50
+            let isHot = weather.temperatureFahrenheit > 80
+            let isWet = weather.conditions.lowercased().contains("rain") ||
+                        weather.conditions.lowercased().contains("snow") ||
+                        weather.conditions.lowercased().contains("shower")
+
+            if isCold || isWet || (constraints?.weatherLayeringRequired == true) {
+                let hasOuterwear = items.contains { $0.slot == .outerwear }
+                if !hasOuterwear {
+                    weatherPenalty -= 0.25 // Missing layers in cold/wet weather
+                }
+            }
+
+            for item in items {
+                if isCold && item.fabricWeight == .light {
+                    weatherPenalty -= 0.15 // Light fabric in cold weather
+                }
+                if isHot && item.fabricWeight == .heavy {
+                    weatherPenalty -= 0.15 // Heavy fabric in hot weather
+                }
+            }
+        }
+
+        // 3. User Style Profile Colors Alignment (added 2026-07-10)
+        var profileBonus: Double = 0.0
+        if let profile {
+            for item in items {
+                let hex = item.colorProfile.primaryHex.lowercased().replacingOccurrences(of: "#", with: "")
+
+                let isRecommended = profile.recommendedColors.contains { color in
+                    let sanitized = color.lowercased().replacingOccurrences(of: "#", with: "")
+                    return hex == sanitized || item.displayLabel.lowercased().contains(color.lowercased())
+                }
+                if isRecommended {
+                    profileBonus += 0.10
+                }
+
+                let isAvoided = profile.avoidColors.contains { color in
+                    let sanitized = color.lowercased().replacingOccurrences(of: "#", with: "")
+                    return hex == sanitized || item.displayLabel.lowercased().contains(color.lowercased())
+                }
+                if isAvoided {
+                    profileBonus -= 0.20
+                }
+            }
+        }
+
+        return meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus
     }
 }

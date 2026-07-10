@@ -46,6 +46,13 @@ final class AddItemViewModel {
     var itemDescription: String = ""
     var styleTags: [String] = []
 
+    // Rich styling attributes (added 2026-07-10)
+    var garmentSubtype: String = ""
+    var fit: String = ""
+    var silhouette: String = ""
+    var material: String = ""
+    var texture: String = ""
+
     private(set) var isolatedImageData: Data? = nil
 
     private let repository: WardrobeRepository
@@ -92,6 +99,11 @@ final class AddItemViewModel {
             self.fabricWeight = metadata.fabricWeight
             self.itemDescription = metadata.description
             self.styleTags = metadata.styleTags
+            self.garmentSubtype = metadata.garmentSubtype ?? ""
+            self.fit = metadata.fit ?? ""
+            self.silhouette = metadata.silhouette ?? ""
+            self.material = metadata.material ?? ""
+            self.texture = metadata.texture ?? ""
 
             state = .editingMetadata
         } catch {
@@ -116,6 +128,11 @@ final class AddItemViewModel {
         self.fabricWeight = .medium
         self.itemDescription = ""
         self.styleTags = []
+        self.garmentSubtype = ""
+        self.fit = ""
+        self.silhouette = ""
+        self.material = ""
+        self.texture = ""
         self.isolatedImageData = nil
 
         state = .editingMetadata
@@ -144,7 +161,12 @@ final class AddItemViewModel {
                 fabricWeight: fabricWeight,
                 imageAssetName: filename,
                 itemDescription: itemDescription.isEmpty ? nil : itemDescription,
-                styleTags: styleTags
+                styleTags: styleTags,
+                garmentSubtype: garmentSubtype.isEmpty ? nil : garmentSubtype,
+                fit: fit.isEmpty ? nil : fit,
+                silhouette: silhouette.isEmpty ? nil : silhouette,
+                material: material.isEmpty ? nil : material,
+                texture: texture.isEmpty ? nil : texture
             )
             try repository.save(item)
 

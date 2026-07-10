@@ -23,6 +23,7 @@ Read the relevant doc **before** modifying a layer:
 * Domain vocabulary (slots, formality, ghost elements, scoring): `docs/domain/vision-clother-concepts.md`
 * Coding conventions (testing, error handling, wire schemas, API keys): `docs/approach/conventions.md`
 * V1 resolved decisions (LLM driver, diffusion provider, state store): `docs/decisions/resolved-v1.md`
+* Stylist Intelligence Engine — Decision Hierarchy tiers, resolved-constraints self-report, symmetric taste injection, validator reason codes: `docs/decisions/stylist-intelligence-engine.md`
 
 ## 4. Key Invariants (Details in Subdirectory CLAUDE.md Files)
 * **Schema bounds:** Explicit `CodingKeys` on all wire types — see `Models/CLAUDE.md`

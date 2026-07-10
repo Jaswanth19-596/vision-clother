@@ -34,6 +34,10 @@ struct RateItemViewModelTests {
         viewModel.comfort = 2
         viewModel.confidence = 4
         viewModel.wearAgain = false
+        viewModel.versatility = 5
+        viewModel.frequency = 1
+        viewModel.styleIdentity = 4
+        viewModel.qualityPerception = 2
 
         await viewModel.submit()
 
@@ -45,6 +49,10 @@ struct RateItemViewModelTests {
         #expect(recorded?.comfort == 2)
         #expect(recorded?.confidence == 4)
         #expect(recorded?.wearAgain == false)
+        #expect(recorded?.versatility == 5)
+        #expect(recorded?.frequency == 1)
+        #expect(recorded?.styleIdentity == 4)
+        #expect(recorded?.qualityPerception == 2)
     }
 
     @Test func submitFailureSurfacesAsFailedWithoutCrashing() async throws {
@@ -67,6 +75,10 @@ struct RateItemViewModelTests {
         #expect(viewModel.comfort == 3)
         #expect(viewModel.confidence == 3)
         #expect(viewModel.wearAgain == true)
+        #expect(viewModel.versatility == 3)
+        #expect(viewModel.frequency == 3)
+        #expect(viewModel.styleIdentity == 3)
+        #expect(viewModel.qualityPerception == 3)
         #expect(viewModel.state == .idle)
     }
 }
@@ -79,7 +91,7 @@ private struct RecordRatingError: Error {}
 private final class InMemoryWardrobeRepository: WardrobeRepository {
     var savedItems: [WardrobeItem] = []
     var shouldThrowOnRecordRating = false
-    private(set) var recordedRatings: [(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool)] = []
+    private(set) var recordedRatings: [(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int)] = []
 
     func fetchInventory() throws -> [WardrobeItem] { savedItems }
     func save(_ item: WardrobeItem) throws { savedItems.append(item) }
@@ -90,11 +102,13 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
 
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {
         if shouldThrowOnRecordRating { throw RecordRatingError() }
-        recordedRatings.append((itemID, fit, comfort, confidence, wearAgain))
+        recordedRatings.append((itemID, fit, comfort, confidence, wearAgain, versatility, frequency, styleIdentity, qualityPerception))
     }
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
 
     func fetchSavedCombinations() throws -> [SavedCombination] { [] }
     func saveCombination(_ combination: SavedCombination) throws {}

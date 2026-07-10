@@ -29,6 +29,17 @@ struct OutfitRecommendationValidatorTests {
         Dictionary(uniqueKeysWithValues: items.map { ($0.id.uuidString, $0) })
     }
 
+    private func makeRationale(_ text: String) -> StructuredRationaleWire {
+        StructuredRationaleWire(
+            occasion: text,
+            colorHarmony: "",
+            bodyProfile: "",
+            weather: "",
+            style: "",
+            confidence: 90
+        )
+    }
+
     @Test func validPicksResolveToScoredOutfits() {
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -41,7 +52,7 @@ struct OutfitRecommendationValidatorTests {
                 bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString,
                 outerwearID: nil,
-                rationale: "A clean neutral look."
+                rationale: makeRationale("A clean neutral look.")
             ),
         ])
 
@@ -49,7 +60,7 @@ struct OutfitRecommendationValidatorTests {
 
         #expect(validated.count == 1)
         #expect(validated.first?.top.id == top.id)
-        #expect(validated.first?.rationale == "A clean neutral look.")
+        #expect(validated.first?.structuredRationale?.occasion == "A clean neutral look.")
         #expect(!(validated.first?.score.isNaN ?? true))
     }
 
@@ -65,7 +76,7 @@ struct OutfitRecommendationValidatorTests {
                 bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString,
                 outerwearID: nil,
-                rationale: "Hallucinated id."
+                rationale: makeRationale("Hallucinated id.")
             ),
         ])
 
@@ -85,7 +96,7 @@ struct OutfitRecommendationValidatorTests {
                 bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString,
                 outerwearID: nil,
-                rationale: "Slot mismatch."
+                rationale: makeRationale("Slot mismatch.")
             ),
         ])
 
@@ -108,7 +119,7 @@ struct OutfitRecommendationValidatorTests {
                 bottomID: top.id.uuidString, // same id as top_id
                 footwearID: footwear.id.uuidString,
                 outerwearID: nil,
-                rationale: "Reused id."
+                rationale: makeRationale("Reused id.")
             ),
         ])
 
@@ -127,7 +138,7 @@ struct OutfitRecommendationValidatorTests {
                 bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString,
                 outerwearID: nil,
-                rationale: "Ghost picked by mistake."
+                rationale: makeRationale("Ghost picked by mistake.")
             ),
         ])
 
@@ -137,7 +148,7 @@ struct OutfitRecommendationValidatorTests {
     @Test func allInvalidOutfitsYieldsEmptyArray() {
         let index: [String: WardrobeItem] = [:]
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(topID: "x", bottomID: "y", footwearID: "z", outerwearID: nil, rationale: "n/a"),
+            RecommendedOutfitWire(topID: "x", bottomID: "y", footwearID: "z", outerwearID: nil, rationale: makeRationale("n/a")),
         ])
 
         #expect(OutfitRecommendationValidator.validate(response, index: index).isEmpty)
@@ -154,7 +165,7 @@ struct OutfitRecommendationValidatorTests {
             RecommendedOutfitWire(
                 topID: top.id.uuidString, bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString, outerwearID: outerwear.id.uuidString,
-                rationale: "Layered look."
+                rationale: makeRationale("Layered look.")
             ),
         ])
         let validated = OutfitRecommendationValidator.validate(validOuterwear, index: index)
@@ -165,9 +176,112 @@ struct OutfitRecommendationValidatorTests {
             RecommendedOutfitWire(
                 topID: top.id.uuidString, bottomID: bottom.id.uuidString,
                 footwearID: footwear.id.uuidString, outerwearID: UUID().uuidString,
-                rationale: "Hallucinated outerwear."
+                rationale: makeRationale("Hallucinated outerwear.")
             ),
         ])
         #expect(OutfitRecommendationValidator.validate(invalidOuterwear, index: index).isEmpty)
+    }
+
+    // MARK: - Reason codes (validateVerbose) — additive, doesn't change validate()'s behavior.
+
+    @Test func unknownIDRejectionIsTaggedWithTheExpectedSlot() {
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            RecommendedOutfitWire(
+                topID: UUID().uuidString,
+                bottomID: bottom.id.uuidString,
+                footwearID: footwear.id.uuidString,
+                outerwearID: nil,
+                rationale: makeRationale("Hallucinated id.")
+            ),
+        ])
+
+        let result = OutfitRecommendationValidator.validateVerbose(response, index: index)
+        #expect(result.valid.isEmpty)
+        #expect(result.rejections == [.unknownID(slot: .top)])
+    }
+
+    @Test func wrongSlotRejectionIsTaggedWithTheExpectedSlot() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            RecommendedOutfitWire(
+                topID: bottom.id.uuidString, // wrong slot
+                bottomID: bottom.id.uuidString,
+                footwearID: footwear.id.uuidString,
+                outerwearID: nil,
+                rationale: makeRationale("Slot mismatch.")
+            ),
+        ])
+
+        let result = OutfitRecommendationValidator.validateVerbose(response, index: index)
+        #expect(result.rejections == [.wrongSlot(slot: .top)])
+    }
+
+    @Test func ghostElementRejectionIsTaggedWithTheExpectedSlot() {
+        let top = makeItem(slot: .top, isGhost: true)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            RecommendedOutfitWire(
+                topID: top.id.uuidString,
+                bottomID: bottom.id.uuidString,
+                footwearID: footwear.id.uuidString,
+                outerwearID: nil,
+                rationale: makeRationale("Ghost picked by mistake.")
+            ),
+        ])
+
+        let result = OutfitRecommendationValidator.validateVerbose(response, index: index)
+        #expect(result.rejections == [.ghostElement(slot: .top)])
+    }
+
+    @Test func duplicateIDRejectionIsTagged() {
+        let top = makeItem(slot: .top)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            RecommendedOutfitWire(
+                topID: top.id.uuidString,
+                bottomID: top.id.uuidString,
+                footwearID: footwear.id.uuidString,
+                outerwearID: nil,
+                rationale: makeRationale("Reused id.")
+            ),
+        ])
+
+        let result = OutfitRecommendationValidator.validateVerbose(response, index: index)
+        #expect(result.rejections == [.duplicateID])
+    }
+
+    @Test func validateVerboseAgreesWithValidateForSurvivors() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            RecommendedOutfitWire(
+                topID: top.id.uuidString, bottomID: bottom.id.uuidString,
+                footwearID: footwear.id.uuidString, outerwearID: nil,
+                rationale: makeRationale("A clean neutral look.")
+            ),
+        ])
+
+        let plain = OutfitRecommendationValidator.validate(response, index: index)
+        let verbose = OutfitRecommendationValidator.validateVerbose(response, index: index)
+
+        #expect(verbose.rejections.isEmpty)
+        #expect(plain.map(\.top.id) == verbose.valid.map(\.top.id))
+        #expect(plain.map(\.score) == verbose.valid.map(\.score))
     }
 }

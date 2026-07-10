@@ -16,11 +16,12 @@ struct CombinationDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: UUID?
+    @State private var isRateSheetPresented = false
 
     var body: some View {
         TabView(selection: $selectedID) {
             ForEach(viewModel.combinations, id: \.id) { combination in
-                CombinationDetailPage(combination: combination)
+                CombinationDetailPage(combination: combination, onRate: { isRateSheetPresented = true })
                     .tag(Optional(combination.id))
             }
         }
@@ -39,6 +40,15 @@ struct CombinationDetailView: View {
             guard selectedID == nil, viewModel.combinations.indices.contains(startIndex) else { return }
             selectedID = viewModel.combinations[startIndex].id
         }
+        .sheet(isPresented: $isRateSheetPresented) {
+            if let selectedCombination {
+                RateCombinationView(combination: selectedCombination, items: viewModel.resolveItems(for: selectedCombination))
+            }
+        }
+    }
+
+    private var selectedCombination: SavedCombination? {
+        viewModel.combinations.first { $0.id == selectedID }
     }
 
     private func deleteCurrent() {
@@ -52,6 +62,7 @@ struct CombinationDetailView: View {
 
 private struct CombinationDetailPage: View {
     let combination: SavedCombination
+    let onRate: () -> Void
 
     var body: some View {
         ScrollView {
@@ -66,6 +77,14 @@ private struct CombinationDetailPage: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Button {
+                    onRate()
+                } label: {
+                    Label("Rate this outfit", systemImage: "star.bubble")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
             .padding()
         }

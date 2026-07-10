@@ -227,6 +227,10 @@ struct ManualPairingViewModelTests {
         #expect(repository.recordedPairFeedback.count == 1)
         #expect(repository.recordedPairFeedback.first?.likedTogether == true)
         #expect(repository.recordedOutfitFeedback.count == 1)
+        // The outfit-feedback event must reference the same durable id the
+        // Combinations tab reads — previously this was a throwaway random
+        // UUID that could never be looked back up against a saved combination.
+        #expect(repository.recordedOutfitFeedback.first?.outfitID == repository.savedCombinations.first?.id)
         #expect(repository.savedCombinations.count == 1)
         #expect(repository.savedCombinations.first?.origin == "pairing")
         #expect(repository.savedCombinations.first?.topItemID == top.id)
@@ -297,8 +301,10 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {
         recordedPairFeedback.append((itemAID, itemBID, likedTogether))
     }
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
 
     func fetchSavedCombinations() throws -> [SavedCombination] { savedCombinations }
     func saveCombination(_ combination: SavedCombination) throws { savedCombinations.append(combination) }

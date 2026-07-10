@@ -90,6 +90,13 @@ final class WardrobeItem {
     /// automatically to `[]`.
     var styleTags: [String] = []
 
+    // Rich styling attributes (added 2026-07-10)
+    var garmentSubtype: String? = nil
+    var fit: String? = nil
+    var silhouette: String? = nil
+    var material: String? = nil
+    var texture: String? = nil
+
     init(
         id: UUID = UUID(),
         slot: Slot,
@@ -101,7 +108,12 @@ final class WardrobeItem {
         imageAssetName: String? = nil,
         isGhostElement: Bool = false,
         itemDescription: String? = nil,
-        styleTags: [String] = []
+        styleTags: [String] = [],
+        garmentSubtype: String? = nil,
+        fit: String? = nil,
+        silhouette: String? = nil,
+        material: String? = nil,
+        texture: String? = nil
     ) {
         self.id = id
         self.slot = slot
@@ -114,6 +126,11 @@ final class WardrobeItem {
         self.isGhostElement = isGhostElement
         self.itemDescription = itemDescription
         self.styleTags = styleTags
+        self.garmentSubtype = garmentSubtype
+        self.fit = fit
+        self.silhouette = silhouette
+        self.material = material
+        self.texture = texture
     }
 
     /// Items may have no free-text description — this synthesizes a

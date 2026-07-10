@@ -33,6 +33,13 @@ struct CatalogEntry: Codable, Equatable {
     var fabricWeight: FabricWeight
     var description: String?
 
+    // Rich styling attributes (added 2026-07-10)
+    var garmentSubtype: String?
+    var fit: String?
+    var silhouette: String?
+    var material: String?
+    var texture: String?
+
     enum CodingKeys: String, CodingKey {
         case id
         case slot
@@ -45,6 +52,11 @@ struct CatalogEntry: Codable, Equatable {
         case seasonality
         case fabricWeight = "fabric_weight"
         case description
+        case garmentSubtype = "garment_subtype"
+        case fit
+        case silhouette
+        case material
+        case texture
     }
 }
 
@@ -106,7 +118,12 @@ enum WardrobeCatalogBuilder {
                 pattern: item.pattern,
                 seasonality: item.seasonality,
                 fabricWeight: item.fabricWeight,
-                description: truncate(item.itemDescription, to: descriptionCharLimit)
+                description: truncate(item.itemDescription, to: descriptionCharLimit),
+                garmentSubtype: item.garmentSubtype,
+                fit: item.fit,
+                silhouette: item.silhouette,
+                material: item.material,
+                texture: item.texture
             )
         }
 

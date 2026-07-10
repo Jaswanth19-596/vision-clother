@@ -43,6 +43,14 @@ struct ItemDetailView: View {
             .indexViewStyle(.page(backgroundDisplayMode: .always))
             .navigationTitle(currentSlotLabel)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                // Safety net: if `selectedItemID` doesn't match any id in
+                // `items` (e.g. stale state slipping through), fall back to
+                // the first item rather than rendering a blank page.
+                if currentItem == nil, let firstID = items.first?.id {
+                    selectedItemID = firstID
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
@@ -136,6 +144,26 @@ struct ItemDetailView: View {
         VStack(spacing: 0) {
             metadataRow("Category", value: item.slot.rawValue.capitalized)
             Divider()
+            if let subtype = item.garmentSubtype, !subtype.isEmpty {
+                metadataRow("Subtype", value: subtype)
+                Divider()
+            }
+            if let fit = item.fit, !fit.isEmpty {
+                metadataRow("Fit", value: fit)
+                Divider()
+            }
+            if let silhouette = item.silhouette, !silhouette.isEmpty {
+                metadataRow("Silhouette", value: silhouette)
+                Divider()
+            }
+            if let material = item.material, !material.isEmpty {
+                metadataRow("Material", value: material)
+                Divider()
+            }
+            if let texture = item.texture, !texture.isEmpty {
+                metadataRow("Texture", value: texture)
+                Divider()
+            }
             metadataRow("Formality", value: formalityLabel(for: item))
             Divider()
             metadataRow("Pattern", value: item.pattern.rawValue.capitalized)

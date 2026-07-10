@@ -2,9 +2,11 @@
 //  RateItemView.swift
 //  Vision_clother
 //
-//  Item Rating & Preference Learning. Single-scroll rating form (Fit,
-//  Comfort, Confidence, Wear again?) reusing `AddItemView`'s Form/Section
-//  idiom. `RateItemQuestionsView` is the shared question body; `RateItemView`
+//  Item Rating & Preference Learning. Single-scroll rating form — Level 1
+//  (Fit, Comfort, Confidence, Wear again?) plus Level 2 Fashion Evaluation
+//  (Versatility, Predicted Wear Frequency, Style Identity, Quality
+//  Perception) — reusing `AddItemView`'s Form/Section idiom.
+//  `RateItemQuestionsView` is the shared question body; `RateItemView`
 //  wraps it as a standalone sheet for the "Rate this item" entry point on
 //  `Closet/ItemDetailView.swift`. The batch entry point after a try-on save
 //  lives in `RateOutfitView.swift`, reusing the same question body.
@@ -46,10 +48,15 @@ struct RateItemView: View {
     }
 }
 
-/// The four-question form shared by `RateItemView` (single item) and
-/// `RateOutfitView` (sequenced batch after a try-on).
-struct RateItemQuestionsView: View {
-    @Bindable var viewModel: RateItemViewModel
+/// The Level 1 (Fit/Comfort/Confidence/Wear again) + Level 2 Fashion
+/// Evaluation (Versatility/Predicted Wear Frequency/Style Identity/Quality
+/// Perception) form shared by `RateItemView` (single item), `RateOutfitView`
+/// (sequenced batch after a try-on), and `RateCombinationView`'s per-item
+/// step (whole-combination rating from the Combinations tab) — generic over
+/// `RatingQuestionsViewModel` so all three can reuse the same form without
+/// duplicating it.
+struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
+    @Bindable var viewModel: ViewModel
     let submitLabel: String
     let onSaved: () -> Void
 
@@ -86,6 +93,34 @@ struct RateItemQuestionsView: View {
 
             Section("Wear again?") {
                 WearAgainRow(wearAgain: $viewModel.wearAgain)
+            }
+
+            Section("Versatility") {
+                Text("How versatile is this piece?")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                StarRatingRow(rating: $viewModel.versatility)
+            }
+
+            Section("Predicted Wear Frequency") {
+                Text("How often do you see yourself wearing this?")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                StarRatingRow(rating: $viewModel.frequency)
+            }
+
+            Section("Style Identity") {
+                Text("Does this feel like \u{201C}you\u{201D}?")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                StarRatingRow(rating: $viewModel.styleIdentity)
+            }
+
+            Section("Quality Perception") {
+                Text("How would you rate the quality of this piece?")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                StarRatingRow(rating: $viewModel.qualityPerception)
             }
 
             if case .failed(let message) = viewModel.state {
@@ -125,7 +160,9 @@ struct RateItemQuestionsView: View {
 
 // MARK: - Question controls
 
-private struct StarRatingRow: View {
+/// Internal (not `private`) — reused by `RateCombinationView.swift`'s
+/// dimension-based outfit rating form.
+struct StarRatingRow: View {
     @Binding var rating: Int
 
     var body: some View {
@@ -143,7 +180,8 @@ private struct StarRatingRow: View {
     }
 }
 
-private struct ConfidenceEmojiRow: View {
+/// Internal (not `private`) — reused by `RateCombinationView.swift`.
+struct ConfidenceEmojiRow: View {
     @Binding var rating: Int
 
     private let emoji = ["😕", "😐", "🙂", "😊", "😍"]

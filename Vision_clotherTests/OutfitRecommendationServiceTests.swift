@@ -38,7 +38,7 @@ struct OutfitRecommendationServiceTests {
         let catalogIDs = Set(catalog.map(\.id))
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Casual Friday", catalog: catalog, profile: nil, weather: nil
+            prompt: "Casual Friday", catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
         )
 
         #expect(response.outfits.count == 1)
@@ -47,6 +47,21 @@ struct OutfitRecommendationServiceTests {
         #expect(catalogIDs.contains(outfit.bottomID))
         #expect(catalogIDs.contains(outfit.footwearID))
         #expect(outfit.outerwearID == nil)
+        // The mock also self-reports resolved_constraints, matching the real
+        // service's contract, so the validator's Tier 1 formality check
+        // exercises the same code path on the keyless Simulator run.
+        #expect(response.resolvedConstraints != nil)
+    }
+
+    @Test func mockResolvedConstraintsReflectColdWeatherAsLayeringRequired() async throws {
+        let catalog = [makeEntry(slot: .top), makeEntry(slot: .bottom), makeEntry(slot: .footwear)]
+        let cold = WeatherContext(temperatureFahrenheit: 20, conditions: "Snow")
+
+        let response = try await MockOutfitRecommendationService().recommendOutfits(
+            prompt: "Winter errands", catalog: catalog, profile: nil, weather: cold, history: FeedbackHistory()
+        )
+
+        #expect(response.resolvedConstraints?.weatherLayeringRequired == true)
     }
 
     @Test func mockIncludesOuterwearWhenWeatherIsProvidedAndAvailable() async throws {
@@ -59,7 +74,7 @@ struct OutfitRecommendationServiceTests {
         let weather = WeatherContext(temperatureFahrenheit: 40, conditions: "Rain")
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Cold commute", catalog: catalog, profile: nil, weather: weather
+            prompt: "Cold commute", catalog: catalog, profile: nil, weather: weather, history: FeedbackHistory()
         )
 
         #expect(response.outfits.first?.outerwearID != nil)
@@ -71,7 +86,7 @@ struct OutfitRecommendationServiceTests {
         let catalog = [makeEntry(slot: .top), makeEntry(slot: .bottom)]
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Anything", catalog: catalog, profile: nil, weather: nil
+            prompt: "Anything", catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
         )
 
         #expect(response.outfits.isEmpty)

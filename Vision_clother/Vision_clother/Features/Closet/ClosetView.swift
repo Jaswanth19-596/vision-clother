@@ -16,8 +16,7 @@ struct ClosetView: View {
     @State private var isAddItemPresented = false
     @State private var isManualPairingPresented = false
     @State private var selectedSlotForAdd: Slot? = nil
-    @State private var isDetailPresented = false
-    @State private var selectedItemIDForDetail: UUID? = nil
+    @State private var detailSelection: DetailSelection? = nil
 
     private var displayItems: [WardrobeItem] {
         let items = GhostElementProvider.ensureGhostElements(in: storedItems)
@@ -74,10 +73,8 @@ struct ClosetView: View {
             .sheet(isPresented: $isManualPairingPresented) {
                 ManualPairingView()
             }
-            .sheet(isPresented: $isDetailPresented) {
-                if let selectedItemIDForDetail {
-                    ItemDetailView(items: displayItems, selectedItemID: selectedItemIDForDetail)
-                }
+            .sheet(item: $detailSelection) { selection in
+                ItemDetailView(items: selection.items, selectedItemID: selection.id)
             }
         }
     }
@@ -102,8 +99,7 @@ struct ClosetView: View {
                 ForEach(items, id: \.id) { item in
                     ClosetItemCell(item: item)
                         .onTapGesture {
-                            selectedItemIDForDetail = item.id
-                            isDetailPresented = true
+                            detailSelection = DetailSelection(id: item.id, items: displayItems)
                         }
                 }
             }
@@ -118,6 +114,19 @@ struct ClosetView: View {
         case .outerwear: return "Outerwear"
         }
     }
+}
+
+/// Snapshot of the tapped item id and the `displayItems` array it was drawn
+/// from, taken together in a single evaluation. `displayItems` is computed
+/// and re-evaluated on every access, so capturing the id and array
+/// separately (once on tap, once inside the sheet closure) could hand
+/// `ItemDetailView` an id from one evaluation and an array from another —
+/// this couples them so they always agree. Presenting via `.sheet(item:)`
+/// (keyed on this `Identifiable`) also forces a fresh `ItemDetailView`
+/// instance per selection, so its `@State` can't go stale across taps.
+private struct DetailSelection: Identifiable {
+    let id: UUID
+    let items: [WardrobeItem]
 }
 
 private struct ClosetItemCell: View {

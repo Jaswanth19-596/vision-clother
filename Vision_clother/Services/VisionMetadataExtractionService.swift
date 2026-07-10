@@ -154,7 +154,24 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         sees the photo, so make it specific (cut, material, notable detail) rather than generic. \
         For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
         "streetwear", "tailored"). For "color_profile.undertone", classify the primary color's \
-        undertone as "warm", "cool", or "neutral".
+        undertone as "warm", "cool", or "neutral". \
+        For "slot", classify which of these four categories the garment belongs to — use the \
+        garment's own cut and construction, not the color or pattern, to decide: \
+        "top" = worn on the upper body as a primary layer (t-shirts, shirts, blouses, sweaters, \
+        polos, tank tops); \
+        "bottom" = worn on the lower body (trousers, pants, jeans, shorts, skirts, chinos, \
+        leggings); \
+        "footwear" = worn on the feet (sneakers, boots, sandals, heels, loafers, dress shoes); \
+        "outerwear" = worn OVER a top as an extra layer, typically with its own front closure \
+        (jackets, coats, blazers, cardigans, parkas). \
+        Choose exactly one slot; only choose "outerwear" when the item is clearly meant to be \
+        layered over other clothing rather than worn as the primary upper-body garment. \
+        Identify the following additional attributes: \
+        "garment_subtype": the specific item subtype (e.g. "Oxford Shirt", "Linen Camp Collar Shirt", "Chinos", "Jeans", "Sneakers", "Loafers", "Blazer", "Cardigan"); \
+        "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
+        "silhouette": the silhouette shape (e.g. "Straight", "Boxy", "A-line", "Fitted", "Flared"); \
+        "material": the apparent primary material (e.g. "Cotton", "Linen", "Denim", "Wool", "Leather", "Silk", "Knit"); \
+        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede", "Waffle").
         """
 
         let userContent: [[String: Any]] = [
@@ -226,10 +243,15 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
             "fabric_weight": ["type": "string", "enum": FabricWeight.allCases.map(\.rawValue)],
             "description": ["type": "string"],
             "style_tags": ["type": "array", "items": ["type": "string"]],
+            "garment_subtype": ["type": ["string", "null"]],
+            "fit": ["type": ["string", "null"]],
+            "silhouette": ["type": ["string", "null"]],
+            "material": ["type": ["string", "null"]],
+            "texture": ["type": ["string", "null"]],
         ],
         "required": [
             "slot", "formality_score", "color_profile", "pattern", "seasonality", "fabric_weight",
-            "description", "style_tags",
+            "description", "style_tags", "garment_subtype", "fit", "silhouette", "material", "texture",
         ],
         "additionalProperties": false,
     ]
@@ -258,7 +280,12 @@ struct MockVisionMetadataExtractionService: VisionMetadataExtractionService {
         seasonality: [.springFall, .summer],
         fabricWeight: .light,
         description: "Charcoal crewneck tee in a soft cotton blend.",
-        styleTags: ["minimalist", "everyday"]
+        styleTags: ["minimalist", "everyday"],
+        garmentSubtype: "Tee",
+        fit: "Regular",
+        silhouette: "Straight",
+        material: "Cotton",
+        texture: "Smooth"
     )
 
     func extractMetadata(imageData: Data) async throws -> GarmentMetadata {

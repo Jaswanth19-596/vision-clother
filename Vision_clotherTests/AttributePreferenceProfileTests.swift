@@ -45,7 +45,10 @@ struct AttributePreferenceProfileTests {
         let profile = AttributePreferenceProfile.build(from: ratings)
 
         let likedItem = makeItem(colorVibe: .vibrant)
-        let unratedItem = makeItem(colorVibe: .pastel)
+        // Unrated on every axis (not just color) — pattern .solid/band 2
+        // match the trained ratings, so isolating color alone requires
+        // picking pattern/formality values absent from `ratings` too.
+        let unratedItem = makeItem(colorVibe: .pastel, pattern: .graphic, formalityScore: 5.0)
 
         #expect(profile.affinityBonus(for: likedItem) > 0)
         #expect(profile.affinityBonus(for: unratedItem) == 0)
@@ -72,6 +75,122 @@ struct AttributePreferenceProfileTests {
         #expect(!bonus.isNaN)
         #expect(bonus <= AttributePreferenceProfile.maxBonusMagnitude + 0.0001)
         #expect(bonus >= -AttributePreferenceProfile.maxBonusMagnitude - 0.0001)
+    }
+
+    // MARK: - Stylist Intelligence Engine Phase 1: outfit-dimension ratings
+
+    private func makeOutfitDimensionRating(
+        colorHarmony: Double = 0.5,
+        occasionMatch: Double = 0.5,
+        styleMatch: Double = 0.5,
+        silhouette: Double = 0.5,
+        weatherFit: Double = 0.5,
+        colorVibe: ColorVibe = .neutral,
+        styleTags: [String] = [],
+        silhouetteTag: String? = nil,
+        formalityBand: Int = 2,
+        fabricWeight: FabricWeight = .light
+    ) -> OutfitDimensionRatedAttributes {
+        OutfitDimensionRatedAttributes(
+            colorHarmony: colorHarmony,
+            occasionMatch: occasionMatch,
+            styleMatch: styleMatch,
+            silhouette: silhouette,
+            weatherFit: weatherFit,
+            colorVibe: colorVibe,
+            styleTags: styleTags,
+            silhouetteTag: silhouetteTag,
+            formalityBand: formalityBand,
+            fabricWeight: fabricWeight
+        )
+    }
+
+    @Test func styleMatchRaisesStyleTagAffinityAboveNeutral() {
+        let ratings = (0..<5).map { _ in
+            makeOutfitDimensionRating(styleMatch: 1.0, styleTags: ["minimalist"])
+        }
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: ratings)
+
+        let likedItem = makeItem()
+        likedItem.styleTags = ["minimalist"]
+        let unratedItem = makeItem()
+        unratedItem.styleTags = ["streetwear"]
+
+        #expect(profile.affinityBonus(for: likedItem) > 0)
+        #expect(profile.affinityBonus(for: unratedItem) == 0)
+    }
+
+    // MARK: - Stylist Intelligence Engine Phase 1 addendum: item-level Style Identity
+
+    @Test func itemLevelStyleIdentityRaisesStyleTagAffinityAboveNeutral() {
+        let ratings = (0..<5).map { _ in
+            RatedAttributes(value: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
+        }
+        let profile = AttributePreferenceProfile.build(from: ratings)
+
+        let likedItem = makeItem()
+        likedItem.styleTags = ["minimalist"]
+        let unratedItem = makeItem(colorVibe: .pastel, pattern: .graphic, formalityScore: 5.0)
+        unratedItem.styleTags = ["streetwear"]
+
+        #expect(profile.affinityBonus(for: likedItem) > 0)
+        #expect(profile.affinityBonus(for: unratedItem) == 0)
+    }
+
+    @Test func itemLevelAndOutfitLevelStyleSignalsShareTheSameAffinityChannel() {
+        let itemRatings = [
+            RatedAttributes(value: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
+        ]
+        let outfitRatings = [
+            makeOutfitDimensionRating(styleMatch: 1.0, styleTags: ["minimalist"])
+        ]
+        let profile = AttributePreferenceProfile.build(from: itemRatings, outfitDimensionRatings: outfitRatings)
+
+        // Two independent positive signals for the same tag should shrink
+        // toward "liked" more confidently than either alone.
+        let itemOnly = AttributePreferenceProfile.build(from: itemRatings)
+        #expect((profile.styleTagAffinity["minimalist"] ?? 0) >= (itemOnly.styleTagAffinity["minimalist"] ?? 0))
+    }
+
+    @Test func silhouetteRatingLowersSilhouetteAffinityBelowNeutral() {
+        let ratings = (0..<5).map { _ in
+            makeOutfitDimensionRating(silhouette: 0.0, silhouetteTag: "boxy")
+        }
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: ratings)
+
+        let dislikedItem = makeItem()
+        dislikedItem.silhouette = "boxy"
+
+        #expect(profile.affinityBonus(for: dislikedItem) < 0)
+    }
+
+    @Test func weatherFitRaisesFabricWeightAffinityAboveNeutral() {
+        let ratings = (0..<5).map { _ in
+            makeOutfitDimensionRating(weatherFit: 1.0, fabricWeight: .heavy)
+        }
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: ratings)
+
+        let likedItem = makeItem()
+        likedItem.fabricWeight = .heavy
+
+        #expect(profile.affinityBonus(for: likedItem) > 0)
+    }
+
+    @Test func colorHarmonyAndOccasionMatchFoldIntoExistingColorAndFormalityAffinity() {
+        let ratings = (0..<5).map { _ in
+            makeOutfitDimensionRating(colorHarmony: 1.0, occasionMatch: 1.0, colorVibe: .vibrant, formalityBand: 4)
+        }
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: ratings)
+
+        #expect((profile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
+        #expect((profile.formalityAffinity[4] ?? 0) > 0.5)
+    }
+
+    @Test func emptyOutfitDimensionRatingsYieldNeutralZeroBonus() {
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: [])
+        let item = makeItem()
+
+        #expect(profile.affinityBonus(for: item) == 0)
     }
 
     @Test func ghostElementsAreScoredThroughTheIdenticalPath() {

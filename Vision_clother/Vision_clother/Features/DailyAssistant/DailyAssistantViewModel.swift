@@ -103,15 +103,26 @@ final class DailyAssistantViewModel {
         do {
             let inventory = try repository.fetchInventory()
             let history = try repository.fetchFeedbackHistory()
+            let profile = await resolvedUserProfile()
 
             if RecommendationSettings.useAIRecommendations {
-                let profile = await resolvedUserProfile()
                 let (catalog, index) = WardrobeCatalogBuilder.build(from: inventory)
                 if !catalog.isEmpty,
                    let response = try? await recommendationService.recommendOutfits(
-                       prompt: trimmed, catalog: catalog, profile: profile, weather: weather
+                       prompt: trimmed, catalog: catalog, profile: profile, weather: weather, history: history
                    ) {
-                    let validated = OutfitRecommendationValidator.validate(response, index: index, history: history)
+                    let validated = OutfitRecommendationValidator.validate(
+                        response,
+                        index: index,
+                        // Self-reported by the same call, not a second
+                        // intent-extraction round-trip (Stylist Intelligence
+                        // Engine ADR) — closes the gap where Tier 1 dress-code
+                        // alignment was previously unenforced on the LLM path.
+                        constraints: response.resolvedConstraints,
+                        profile: profile,
+                        weather: weather,
+                        history: history
+                    )
                     if !validated.isEmpty {
                         candidates = validated
                         extractionState = .idle
@@ -126,6 +137,8 @@ final class DailyAssistantViewModel {
             candidates = OutfitRecommendationEngine.generateCandidates(
                 inventory: inventory,
                 constraints: constraints,
+                profile: profile,
+                weather: weather,
                 history: history
             )
             extractionState = .idle
@@ -201,6 +214,10 @@ final class DailyAssistantViewModel {
                 bottomItemID: outfit.bottom.id,
                 topLabel: outfit.top.displayLabel,
                 bottomLabel: outfit.bottom.displayLabel,
+                footwearItemID: outfit.footwear.id,
+                footwearLabel: outfit.footwear.displayLabel,
+                outerwearItemID: outfit.outerwear?.id,
+                outerwearLabel: outfit.outerwear?.displayLabel,
                 origin: "assistant"
             )
             try? repository.saveCombination(combination)

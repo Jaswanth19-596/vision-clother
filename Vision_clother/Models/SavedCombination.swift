@@ -23,6 +23,17 @@ final class SavedCombination {
     var bottomItemID: UUID
     var topLabel: String
     var bottomLabel: String
+    /// `nil` for Manual Pairing saves, which only ever select a top+bottom —
+    /// populated for Daily Assistant saves, whose source `OutfitCombination`
+    /// always resolves a footwear item (Stylist Intelligence Engine Phase 1:
+    /// needed so `RateCombinationView`'s Favorite/Weakest Item picker can
+    /// offer every real slot in the outfit, not just top/bottom).
+    var footwearItemID: UUID?
+    var footwearLabel: String?
+    /// `nil` when the outfit had no outerwear (optional slot even for Daily
+    /// Assistant saves).
+    var outerwearItemID: UUID?
+    var outerwearLabel: String?
     var savedAt: Date
     /// Which flow produced this: "pairing" (Manual Pairing) or "assistant"
     /// (Daily Assistant). Plain String to stay Codable-simple — no enum column.
@@ -35,6 +46,10 @@ final class SavedCombination {
         bottomItemID: UUID,
         topLabel: String,
         bottomLabel: String,
+        footwearItemID: UUID? = nil,
+        footwearLabel: String? = nil,
+        outerwearItemID: UUID? = nil,
+        outerwearLabel: String? = nil,
         savedAt: Date = .now,
         origin: String
     ) {
@@ -44,6 +59,10 @@ final class SavedCombination {
         self.bottomItemID = bottomItemID
         self.topLabel = topLabel
         self.bottomLabel = bottomLabel
+        self.footwearItemID = footwearItemID
+        self.footwearLabel = footwearLabel
+        self.outerwearItemID = outerwearItemID
+        self.outerwearLabel = outerwearLabel
         self.savedAt = savedAt
         self.origin = origin
     }

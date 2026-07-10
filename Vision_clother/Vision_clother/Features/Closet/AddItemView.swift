@@ -189,6 +189,14 @@ struct AddItemView: View {
                 }
             }
 
+            Section("Fit & Material") {
+                TextField("Garment Subtype (e.g. Oxford Shirt)", text: Bindable(viewModel).garmentSubtype)
+                TextField("Fit (e.g. Oversized, Slim, Regular)", text: Bindable(viewModel).fit)
+                TextField("Silhouette (e.g. Straight, Boxy, Fitted)", text: Bindable(viewModel).silhouette)
+                TextField("Material (e.g. Linen, Cotton, Denim)", text: Bindable(viewModel).material)
+                TextField("Texture (e.g. Ribbed, Knit, Smooth)", text: Bindable(viewModel).texture)
+            }
+
             Section("Description") {
                 TextField("e.g. Charcoal crewneck tee in a soft cotton blend", text: Bindable(viewModel).itemDescription, axis: .vertical)
                     .lineLimit(2...4)

@@ -143,8 +143,10 @@ private final class MockWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
 
     func fetchSavedCombinations() throws -> [SavedCombination] { [] }
     func saveCombination(_ combination: SavedCombination) throws {}

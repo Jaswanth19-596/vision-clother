@@ -42,6 +42,13 @@ struct GarmentMetadata: Codable, Equatable {
     /// Free-form style descriptors (e.g. "minimalist", "streetwear").
     var styleTags: [String]
 
+    // Rich styling attributes (added 2026-07-10)
+    var garmentSubtype: String?
+    var fit: String?
+    var silhouette: String?
+    var material: String?
+    var texture: String?
+
     enum CodingKeys: String, CodingKey {
         case slot
         case formalityScore = "formality_score"
@@ -51,5 +58,10 @@ struct GarmentMetadata: Codable, Equatable {
         case fabricWeight = "fabric_weight"
         case description
         case styleTags = "style_tags"
+        case garmentSubtype = "garment_subtype"
+        case fit
+        case silhouette
+        case material
+        case texture
     }
 }

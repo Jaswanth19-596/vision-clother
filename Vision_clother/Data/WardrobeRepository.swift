@@ -10,6 +10,25 @@
 import Foundation
 import SwiftData
 
+/// One detailed "Rate this outfit" submission (Stylist Intelligence Engine
+/// Phase 1) — bundled into a struct rather than a long parameter list since
+/// every field is required together (the flow submits all of Level 1 + 2 +
+/// the favorite/weakest picker in one screen-sequence step).
+struct OutfitRatingSubmission {
+    var overallSatisfaction: Int
+    var wearAgain: WearAgainAnswer
+    var confidence: Int
+    var comfort: Int
+    var occasionMatch: Int
+    var styleMatch: Int
+    var colorHarmony: Int
+    var silhouette: Int
+    var weatherSuitability: Int
+    var practicality: Int
+    var favoriteItemID: UUID?
+    var weakestItemID: UUID?
+}
+
 @MainActor
 protocol WardrobeRepository {
     func fetchInventory() throws -> [WardrobeItem]
@@ -26,10 +45,34 @@ protocol WardrobeRepository {
 
     /// Item Rating & Preference Learning: persists one multi-question rating
     /// (`Models/ItemRating.swift`) from `Features/Rating/RateItemView.swift`.
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws
+    /// `versatility`/`frequency`/`styleIdentity`/`qualityPerception` are the
+    /// Level 2 Fashion Evaluation questions (Stylist Intelligence Engine
+    /// Phase 1 addendum, item granularity).
+    func recordItemRating(
+        itemID: UUID,
+        fit: FitRating,
+        comfort: Int,
+        confidence: Int,
+        wearAgain: Bool,
+        versatility: Int,
+        frequency: Int,
+        styleIdentity: Int,
+        qualityPerception: Int
+    ) throws
     /// All ratings for one item, newest first — backs the "already rated"
     /// state on `ItemDetailView`.
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating]
+
+    /// Combination Rating: persists one detailed dimension-based rating for
+    /// a whole saved outfit (`Features/Rating/RateCombinationView.swift`,
+    /// Stylist Intelligence Engine Phase 1). `outfitID` must be a
+    /// `SavedCombination.id`. Distinct from `recordOutfitFeedback` above,
+    /// which stays the simple auto-recorded "liked" write with no detailed
+    /// fields.
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws
+    /// All feedback/ratings for one saved combination, newest first — backs
+    /// the "already rated" state on `CombinationDetailView`.
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback]
 
     /// Saved try-on images from "Save this outfit?" (Manual Pairing / Daily
     /// Assistant), newest first — backs the Combinations tab.
@@ -79,6 +122,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         let pairFeedbacks = try modelContext.fetch(FetchDescriptor<PairFeedback>())
         let itemFeedbacks = try modelContext.fetch(FetchDescriptor<ItemFeedback>())
         let itemRatings = try modelContext.fetch(FetchDescriptor<ItemRating>())
+        let outfitFeedbacks = try modelContext.fetch(FetchDescriptor<OutfitFeedback>())
 
         var history = FeedbackHistory()
 
@@ -109,23 +153,88 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             history.itemFeedback[rating.itemID] = entry
         }
 
-        // Build the learned color/pattern/formality taste profile by joining
-        // each rating to the attributes of the item it rated. Ratings for
-        // items no longer in the inventory (deleted since) are skipped —
-        // there's no attribute to learn from.
-        if !itemRatings.isEmpty {
+        // Stylist Intelligence Engine Phase 1: Favorite/Weakest Item feeds
+        // the same item preference channel directly — a favorite pick is a
+        // strong like, a weakest pick a dislike — reusing
+        // `PairCompatibilityScoring.itemPreference`'s existing shrinkage
+        // with no new scoring math.
+        for feedback in outfitFeedbacks {
+            if let favoriteItemID = feedback.favoriteItemID {
+                var entry = history.itemFeedback[favoriteItemID] ?? (likes: 0, total: 0)
+                entry.total += 1
+                entry.likes += 1
+                history.itemFeedback[favoriteItemID] = entry
+            }
+            if let weakestItemID = feedback.weakestItemID {
+                var entry = history.itemFeedback[weakestItemID] ?? (likes: 0, total: 0)
+                entry.total += 1
+                history.itemFeedback[weakestItemID] = entry
+            }
+        }
+
+        // Build the learned taste profile: `ItemRating` contributes
+        // color/pattern/formality (blended across its own question set);
+        // detailed `OutfitFeedback` rows contribute per-dimension —
+        // Color Harmony/Occasion Match add to the same color/formality
+        // affinities, Personal Style Match/Fit & Silhouette/Weather
+        // Suitability+Practicality seed the three Phase 1 dimensions. Rows
+        // referencing items no longer in the inventory (deleted since) are
+        // skipped — there's no attribute to learn from.
+        let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
+        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty {
             let inventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
             let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
-            let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { rating in
+
+            let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
                 guard let item = itemsByID[rating.itemID] else { return nil }
                 return RatedAttributes(
                     value: rating.normalizedValue,
                     colorVibe: item.colorProfile.category,
                     pattern: item.pattern,
-                    formalityBand: Int(item.formalityScore.rounded())
+                    formalityBand: Int(item.formalityScore.rounded()),
+                    styleIdentity: rating.styleIdentity.map { Double($0 - 1) / 4.0 } ?? 0.5,
+                    styleTags: item.styleTags
                 )
             }
-            history.attributeProfile = AttributePreferenceProfile.build(from: ratedAttributes)
+
+            let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
+            let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
+            let outfitDimensionRatings: [OutfitDimensionRatedAttributes] = detailedOutfitFeedbacks.flatMap { feedback -> [OutfitDimensionRatedAttributes] in
+                guard let combination = combinationsByID[feedback.outfitID],
+                      let colorHarmony = feedback.colorHarmony,
+                      let occasionMatch = feedback.occasionMatch,
+                      let styleMatch = feedback.styleMatch,
+                      let silhouette = feedback.silhouette,
+                      let weatherSuitability = feedback.weatherSuitability,
+                      let practicality = feedback.practicality
+                else { return [] }
+
+                let itemIDs = [combination.topItemID, combination.bottomItemID, combination.footwearItemID, combination.outerwearItemID].compactMap { $0 }
+                let items = itemIDs.compactMap { itemsByID[$0] }
+
+                let colorHarmonyNorm = Double(colorHarmony - 1) / 4.0
+                let occasionMatchNorm = Double(occasionMatch - 1) / 4.0
+                let styleMatchNorm = Double(styleMatch - 1) / 4.0
+                let silhouetteNorm = Double(silhouette - 1) / 4.0
+                let weatherFitNorm = (Double(weatherSuitability - 1) / 4.0 + Double(practicality - 1) / 4.0) / 2.0
+
+                return items.map { item in
+                    OutfitDimensionRatedAttributes(
+                        colorHarmony: colorHarmonyNorm,
+                        occasionMatch: occasionMatchNorm,
+                        styleMatch: styleMatchNorm,
+                        silhouette: silhouetteNorm,
+                        weatherFit: weatherFitNorm,
+                        colorVibe: item.colorProfile.category,
+                        styleTags: item.styleTags,
+                        silhouetteTag: item.silhouette,
+                        formalityBand: Int(item.formalityScore.rounded()),
+                        fabricWeight: item.fabricWeight
+                    )
+                }
+            }
+
+            history.attributeProfile = AttributePreferenceProfile.build(from: ratedAttributes, outfitDimensionRatings: outfitDimensionRatings)
         }
 
         return history
@@ -146,14 +255,69 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.save()
     }
 
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) throws {
-        modelContext.insert(ItemRating(itemID: itemID, fit: fit, comfort: comfort, confidence: confidence, wearAgain: wearAgain))
+    func recordItemRating(
+        itemID: UUID,
+        fit: FitRating,
+        comfort: Int,
+        confidence: Int,
+        wearAgain: Bool,
+        versatility: Int,
+        frequency: Int,
+        styleIdentity: Int,
+        qualityPerception: Int
+    ) throws {
+        modelContext.insert(ItemRating(
+            itemID: itemID,
+            fit: fit,
+            comfort: comfort,
+            confidence: confidence,
+            wearAgain: wearAgain,
+            versatility: versatility,
+            frequency: frequency,
+            styleIdentity: styleIdentity,
+            qualityPerception: qualityPerception
+        ))
         try modelContext.save()
     }
 
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] {
         let descriptor = FetchDescriptor<ItemRating>(
             predicate: #Predicate { $0.itemID == itemID },
+            sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]
+        )
+        return try modelContext.fetch(descriptor)
+    }
+
+    func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {
+        let normalizedValue = OutfitFeedback.normalizedRating(
+            overallSatisfaction: submission.overallSatisfaction, wearAgain: submission.wearAgain,
+            confidence: submission.confidence, comfort: submission.comfort,
+            occasionMatch: submission.occasionMatch, styleMatch: submission.styleMatch,
+            colorHarmony: submission.colorHarmony, silhouette: submission.silhouette,
+            weatherSuitability: submission.weatherSuitability, practicality: submission.practicality
+        )
+        modelContext.insert(OutfitFeedback(
+            outfitID: outfitID,
+            likedOverall: normalizedValue >= 0.6,
+            overallSatisfaction: submission.overallSatisfaction,
+            wearAgain: submission.wearAgain,
+            confidence: submission.confidence,
+            comfort: submission.comfort,
+            occasionMatch: submission.occasionMatch,
+            styleMatch: submission.styleMatch,
+            colorHarmony: submission.colorHarmony,
+            silhouette: submission.silhouette,
+            weatherSuitability: submission.weatherSuitability,
+            practicality: submission.practicality,
+            favoriteItemID: submission.favoriteItemID,
+            weakestItemID: submission.weakestItemID
+        ))
+        try modelContext.save()
+    }
+
+    func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] {
+        let descriptor = FetchDescriptor<OutfitFeedback>(
+            predicate: #Predicate { $0.outfitID == outfitID },
             sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]
         )
         return try modelContext.fetch(descriptor)

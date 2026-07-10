@@ -30,6 +30,55 @@ struct RatedAttributes {
     /// `Int(formalityScore.rounded())`, banding the continuous formality
     /// score so shrinkage has repeat keys to accumulate against.
     let formalityBand: Int
+    /// `ItemRating.styleIdentity`, normalized to `[0,1]` — item-level mirror
+    /// of the outfit-level Personal Style Match question, feeding the same
+    /// `styleTagAffinity` map. Defaulted so pre-existing call sites that only
+    /// care about color/pattern/formality don't need to change.
+    let styleIdentity: Double
+    /// `WardrobeItem.styleTags` for the rated item — paired with
+    /// `styleIdentity` above.
+    let styleTags: [String]
+
+    /// Explicit init (rather than relying on the synthesized memberwise
+    /// init's default-value support) — with two trailing defaulted
+    /// parameters, SourceKit/xcodebuild inference for this struct's implicit
+    /// memberwise init proved unreliable at call sites.
+    init(value: Double, colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleIdentity: Double = 0.5, styleTags: [String] = []) {
+        self.value = value
+        self.colorVibe = colorVibe
+        self.pattern = pattern
+        self.formalityBand = formalityBand
+        self.styleIdentity = styleIdentity
+        self.styleTags = styleTags
+    }
+}
+
+/// One detailed `OutfitFeedback` (Stylist Intelligence Engine Phase 1),
+/// expanded by the caller into one entry per real item in the rated outfit —
+/// the outfit-level questions are asked once but must bias every item that
+/// was actually worn. Each dimension is already normalized to `[0,1]` and
+/// keyed to the specific attribute it teaches, per the mapping in
+/// `docs/decisions/stylist-intelligence-engine.md`:
+/// Color Harmony -> `colorVibeAffinity`, Occasion Match -> `formalityAffinity`,
+/// Personal Style Match -> `styleTagAffinity`, Fit & Silhouette ->
+/// `silhouetteAffinity`, Weather Suitability + Practicality (folded into one
+/// bucket — both describe "does this garment work for the conditions") ->
+/// `fabricWeightAffinity`.
+struct OutfitDimensionRatedAttributes {
+    let colorHarmony: Double
+    let occasionMatch: Double
+    let styleMatch: Double
+    let silhouette: Double
+    /// Mean of Weather Suitability and Practicality — see file header.
+    let weatherFit: Double
+
+    let colorVibe: ColorVibe
+    let styleTags: [String]
+    /// `WardrobeItem.silhouette` — `nil` for items without a silhouette tag
+    /// (pre-2026-07-10 ingestion or manual entry), skipped for this axis.
+    let silhouetteTag: String?
+    let formalityBand: Int
+    let fabricWeight: FabricWeight
 }
 
 /// Bayesian-shrunk affinity per attribute value, in `[0,1]`, seeded at a
@@ -38,16 +87,32 @@ struct AttributePreferenceProfile {
     var colorVibeAffinity: [ColorVibe: Double] = [:]
     var patternAffinity: [GarmentPattern: Double] = [:]
     var formalityAffinity: [Int: Double] = [:]
+    /// Personal Style Match (Stylist Intelligence Engine Phase 1), keyed by
+    /// `WardrobeItem.styleTags` — the first scoring consumer of that field,
+    /// previously LLM-prompt-only.
+    var styleTagAffinity: [String: Double] = [:]
+    /// Fit & Silhouette, keyed by `WardrobeItem.silhouette`.
+    var silhouetteAffinity: [String: Double] = [:]
+    /// Weather Suitability + Practicality (folded into one bucket), keyed by
+    /// `WardrobeItem.fabricWeight`.
+    var fabricWeightAffinity: [FabricWeight: Double] = [:]
 
     /// Bounds how far `affinityBonus` can push a score, so attribute bias
     /// can re-rank candidates but never overwhelm the deterministic
     /// aesthetic prior or the existing item/pair preference terms.
     static let maxBonusMagnitude: Double = 0.3
 
-    static func build(from ratings: [RatedAttributes], priorWeight: Double = PairCompatibilityScoring.defaultPriorWeight) -> AttributePreferenceProfile {
+    static func build(
+        from ratings: [RatedAttributes],
+        outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
+        priorWeight: Double = PairCompatibilityScoring.defaultPriorWeight
+    ) -> AttributePreferenceProfile {
         var colorSums: [ColorVibe: (sum: Double, count: Int)] = [:]
         var patternSums: [GarmentPattern: (sum: Double, count: Int)] = [:]
         var formalitySums: [Int: (sum: Double, count: Int)] = [:]
+        var styleTagSums: [String: (sum: Double, count: Int)] = [:]
+        var silhouetteSums: [String: (sum: Double, count: Int)] = [:]
+        var fabricWeightSums: [FabricWeight: (sum: Double, count: Int)] = [:]
 
         for rating in ratings {
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.value
@@ -58,12 +123,41 @@ struct AttributePreferenceProfile {
 
             formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.value
             formalitySums[rating.formalityBand, default: (0, 0)].count += 1
+
+            for tag in rating.styleTags {
+                styleTagSums[tag, default: (0, 0)].sum += rating.styleIdentity
+                styleTagSums[tag, default: (0, 0)].count += 1
+            }
+        }
+
+        for rating in outfitDimensionRatings {
+            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony
+            colorSums[rating.colorVibe, default: (0, 0)].count += 1
+
+            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch
+            formalitySums[rating.formalityBand, default: (0, 0)].count += 1
+
+            for tag in rating.styleTags {
+                styleTagSums[tag, default: (0, 0)].sum += rating.styleMatch
+                styleTagSums[tag, default: (0, 0)].count += 1
+            }
+
+            if let silhouetteTag = rating.silhouetteTag {
+                silhouetteSums[silhouetteTag, default: (0, 0)].sum += rating.silhouette
+                silhouetteSums[silhouetteTag, default: (0, 0)].count += 1
+            }
+
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.weatherFit
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += 1
         }
 
         var profile = AttributePreferenceProfile()
         profile.colorVibeAffinity = colorSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
         profile.patternAffinity = patternSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
         profile.formalityAffinity = formalitySums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
+        profile.styleTagAffinity = styleTagSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
+        profile.silhouetteAffinity = silhouetteSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
+        profile.fabricWeightAffinity = fabricWeightSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
         return profile
     }
 
@@ -79,7 +173,7 @@ struct AttributePreferenceProfile {
     }
 
     /// Bounded, NaN-safe bias term for one item, centered at 0 (neutral).
-    /// Missing attributes (no ratings yet for that color/pattern/band)
+    /// Missing attributes (no ratings yet for that color/pattern/band/tag)
     /// default to the neutral 0.5 affinity, so an unrated attribute
     /// contributes zero bias rather than penalizing the item.
     func affinityBonus(for item: WardrobeItem) -> Double {
@@ -88,7 +182,13 @@ struct AttributePreferenceProfile {
         let formalityBand = Int(item.formalityScore.rounded())
         let formalityAff = formalityAffinity[formalityBand] ?? 0.5
 
-        let mean = (colorAff + patternAff + formalityAff) / 3.0
+        let matchingTagAffinities = item.styleTags.compactMap { styleTagAffinity[$0] }
+        let styleTagAff = matchingTagAffinities.isEmpty ? 0.5 : matchingTagAffinities.reduce(0, +) / Double(matchingTagAffinities.count)
+
+        let silhouetteAff = item.silhouette.flatMap { silhouetteAffinity[$0] } ?? 0.5
+        let fabricWeightAff = fabricWeightAffinity[item.fabricWeight] ?? 0.5
+
+        let mean = (colorAff + patternAff + formalityAff + styleTagAff + silhouetteAff + fabricWeightAff) / 6.0
         let bonus = (mean - 0.5) * 2.0 * Self.maxBonusMagnitude
         return bonus.clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
     }

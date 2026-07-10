@@ -32,14 +32,50 @@ enum PairCompatibilityScoring {
         var score = 1.0
 
         let formalityDelta = abs(a.formalityScore - b.formalityScore)
-        if formalityDelta > 2.0 {
+        if formalityDelta > FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta {
             score -= 0.4
-        } else if formalityDelta > 1.0 {
+        } else if formalityDelta > FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta {
             score -= 0.15
         }
 
         if a.pattern != .solid, b.pattern != .solid, a.pattern != b.pattern {
             score -= 0.3
+        }
+
+        // Fit & Silhouette Harmony (added 2026-07-10)
+        if let fitA = a.fit?.lowercased(), let fitB = b.fit?.lowercased() {
+            let isLooseA = fitA.contains("oversized") || fitA.contains("relaxed") || fitA.contains("boxy") || fitA.contains("loose")
+            let isLooseB = fitB.contains("oversized") || fitB.contains("relaxed") || fitB.contains("boxy") || fitB.contains("loose") || fitB.contains("wide")
+            let isSlimA = fitA.contains("slim") || fitA.contains("fitted") || fitA.contains("tailored")
+            let isSlimB = fitB.contains("slim") || fitB.contains("fitted") || fitB.contains("tailored")
+
+            if (isLooseA && isSlimB) || (isSlimA && isLooseB) {
+                score += 0.15 // Classically balanced proportions (loose + slim)
+            } else if isLooseA && isLooseB {
+                score += 0.10 // Oversized/relaxed casual statement look
+            } else if isSlimA && isSlimB {
+                score += 0.05 // Fitted silhouette
+            }
+        }
+
+        // Fabric & Material Harmony (added 2026-07-10)
+        if let matA = a.material?.lowercased(), let matB = b.material?.lowercased() {
+            let isLinenA = matA.contains("linen")
+            let isLinenB = matB.contains("linen")
+            let isWoolA = matA.contains("wool")
+            let isWoolB = matB.contains("wool")
+            let isCottonA = matA.contains("cotton")
+            let isCottonB = matB.contains("cotton")
+            let isDenimA = matA.contains("denim")
+            let isDenimB = matB.contains("denim")
+
+            if (isLinenA && isWoolB) || (isWoolA && isLinenB) {
+                score -= 0.20 // Fabric weight clash: heavy wool and lightweight linen
+            } else if (isLinenA && isLinenB) || (isLinenA && isCottonB) || (isCottonA && isLinenB) {
+                score += 0.15 // Harmonious lightweight warm-weather fabrics
+            } else if (isDenimA && isCottonB) || (isCottonA && isDenimB) {
+                score += 0.10 // Classic denim + cotton pairing
+            }
         }
 
         if ColorHarmony.hsl(fromHex: a.colorProfile.primaryHex) != nil,

@@ -28,7 +28,13 @@ struct RateOutfitView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let viewModel {
+                if items.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing to Rate",
+                        systemImage: "checkmark.circle",
+                        description: Text("This outfit has no wardrobe items to rate.")
+                    )
+                } else if let viewModel {
                     RateItemQuestionsView(
                         viewModel: viewModel,
                         submitLabel: isLastItem ? "Finish" : "Next Item",
@@ -38,15 +44,21 @@ struct RateOutfitView: View {
                     ProgressView()
                 }
             }
-            .navigationTitle("Rate Your Outfit (\(index + 1)/\(items.count))")
+            .navigationTitle(items.isEmpty ? "Rate Your Outfit" : "Rate Your Outfit (\(index + 1)/\(items.count))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Skip") { dismiss() }
+                    Button(items.isEmpty ? "Close" : "Skip") { dismiss() }
                 }
             }
         }
         .task(id: index) {
+            // Defensive backstop: `items` should never be empty by the time
+            // this sheet is presented (callers filter ghost elements before
+            // handing off), but if it ever is, the `ContentUnavailableView`
+            // above handles it instead of leaving `viewModel` unset forever
+            // — that silent no-op is exactly what produced the infinite
+            // spinner this view used to show.
             guard index < items.count else { return }
             viewModel = RateItemViewModel(item: items[index], repository: SwiftDataWardrobeRepository(modelContext: modelContext))
         }

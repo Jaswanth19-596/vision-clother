@@ -19,6 +19,17 @@ struct OutfitCardView: View {
     @State private var detailItem: WardrobeItem?
 
     var body: some View {
+        // The parent `TabView(.page)` in `DailyAssistantView` gives each card
+        // a fixed height (page-style tab views have no intrinsic sizing) —
+        // an internal `ScrollView` keeps longer content (e.g. a full
+        // rationale block at large Dynamic Type sizes) reachable instead of
+        // silently clipped by the page's bounds.
+        ScrollView {
+            cardContent
+        }
+    }
+
+    private var cardContent: some View {
         VStack(spacing: 12) {
             if outfit.containsGhostElements {
                 Label("Starter Piece", systemImage: "sparkle")
@@ -44,16 +55,26 @@ struct OutfitCardView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            // `rationale` is only set for outfits from the primary
+            // `structuredRationale` is only set for outfits from the primary
             // recommendation LLM path (PRD §3.7) — outfits from the
             // deterministic fallback engine have none, and simply omit this.
-            if let rationale = outfit.rationale {
-                Text(rationale)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .italic()
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+            if let rationale = outfit.structuredRationale {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Why this works")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        RationaleRow(icon: "calendar", text: rationale.occasion)
+                        RationaleRow(icon: "paintpalette", text: rationale.colorHarmony)
+                        RationaleRow(icon: "figure.stand", text: rationale.bodyProfile)
+                        RationaleRow(icon: "cloud.sun", text: rationale.weather)
+                        RationaleRow(icon: "star", text: rationale.style)
+                    }
+                }
+                .padding()
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
         .padding()
@@ -106,6 +127,25 @@ struct OutfitCardView: View {
                             .foregroundStyle(.white)
                     }
                 }
+        }
+    }
+}
+
+struct RationaleRow: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .padding(.top, 2)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

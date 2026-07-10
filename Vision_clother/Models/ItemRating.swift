@@ -43,13 +43,57 @@ enum FitRating: Int, Codable, CaseIterable, Identifiable {
     var centeredness: Double {
         1.0 - Double(abs(rawValue)) / 2.0
     }
+
+    /// "Liked" scoring formula for `ItemRating`'s Level 1 (Fit/Comfort/
+    /// Confidence/Wear-again) + Level 2 (Versatility/Frequency/Style
+    /// Identity/Quality Perception) question set — the item-level mirror of
+    /// `OutfitFeedback.normalizedRating` (Stylist Intelligence Engine Phase 1
+    /// addendum, item granularity). Sole consumer is `ItemRating.normalizedValue`.
+    static func normalizedRating(
+        fit: FitRating,
+        comfort: Int,
+        confidence: Int,
+        wearAgain: Bool,
+        versatility: Int,
+        frequency: Int,
+        styleIdentity: Int,
+        qualityPerception: Int
+    ) -> Double {
+        let comfortNorm = Double(comfort - 1) / 4.0
+        let confidenceNorm = Double(confidence - 1) / 4.0
+        let wearAgainNorm = wearAgain ? 1.0 : 0.0
+        let versatilityNorm = Double(versatility - 1) / 4.0
+        let frequencyNorm = Double(frequency - 1) / 4.0
+        let styleIdentityNorm = Double(styleIdentity - 1) / 4.0
+        let qualityPerceptionNorm = Double(qualityPerception - 1) / 4.0
+        return (
+            fit.centeredness + comfortNorm + confidenceNorm + wearAgainNorm
+            + versatilityNorm + frequencyNorm + styleIdentityNorm + qualityPerceptionNorm
+        ) / 8.0
+    }
+
+    /// Fallback for `ItemRating` rows recorded before the Level 2 Fashion
+    /// Evaluation questions existed (`versatility`/`frequency`/`styleIdentity`/
+    /// `qualityPerception` are `nil`) — the original Level 1-only
+    /// (Fit/Comfort/Confidence/Wear-again) formula, so legacy rows keep
+    /// contributing a meaningful "liked" signal to `impliesLiked` and
+    /// `Domain/AttributePreferenceProfile` instead of crashing or being
+    /// silently dropped. Sole consumer is `ItemRating.normalizedValue`.
+    static func legacyNormalizedRating(fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) -> Double {
+        let comfortNorm = Double(comfort - 1) / 4.0
+        let confidenceNorm = Double(confidence - 1) / 4.0
+        let wearAgainNorm = wearAgain ? 1.0 : 0.0
+        return (fit.centeredness + comfortNorm + confidenceNorm + wearAgainNorm) / 4.0
+    }
 }
 
-/// One rating event for a single garment — fit, comfort, confidence, and a
-/// wear-again signal, gathered from `Features/Rating/RateItemView.swift`.
-/// Event-sourced like the other feedback tables (Models/FeedbackEvent.swift)
-/// so re-rating a garment over time accumulates history rather than
-/// overwriting it.
+/// One rating event for a single garment — Level 1 (fit, comfort,
+/// confidence, wear-again) plus Level 2 Fashion Evaluation (versatility,
+/// predicted wear frequency, style identity, quality perception — Stylist
+/// Intelligence Engine Phase 1 addendum, item granularity), gathered from
+/// `Features/Rating/RateItemView.swift`. Event-sourced like the other
+/// feedback tables (Models/FeedbackEvent.swift) so re-rating a garment over
+/// time accumulates history rather than overwriting it.
 @Model
 final class ItemRating {
     @Attribute(.unique) var id: UUID
@@ -61,6 +105,21 @@ final class ItemRating {
     /// 1...5, how confident/good the user felt wearing it.
     var confidence: Int
     var wearAgain: Bool
+    /// 1...5, how versatile/restylable the user judges this piece to be.
+    /// Optional so existing persisted rows (recorded before this question
+    /// existed) decode as `nil` under SwiftData's automatic lightweight
+    /// migration — no schema version bump needed. `nil` on legacy rows
+    /// falls back to the pre-Level-2 formula (see `normalizedValue`).
+    var versatility: Int? = nil
+    /// 1...5, predicted future wear frequency. Optional — see `versatility`.
+    var frequency: Int? = nil
+    /// 1...5, "does this feel like you" — feeds
+    /// `Domain/AttributePreferenceProfile.swift`'s `styleTagAffinity`,
+    /// the same map the outfit-level Personal Style Match question feeds.
+    /// Optional — see `versatility`.
+    var styleIdentity: Int? = nil
+    /// 1...5, perceived craftsmanship/quality. Optional — see `versatility`.
+    var qualityPerception: Int? = nil
     var recordedAt: Date
 
     init(
@@ -70,6 +129,10 @@ final class ItemRating {
         comfort: Int,
         confidence: Int,
         wearAgain: Bool,
+        versatility: Int,
+        frequency: Int,
+        styleIdentity: Int,
+        qualityPerception: Int,
         recordedAt: Date = .now
     ) {
         self.id = id
@@ -78,6 +141,10 @@ final class ItemRating {
         self.comfort = comfort
         self.confidence = confidence
         self.wearAgain = wearAgain
+        self.versatility = versatility
+        self.frequency = frequency
+        self.styleIdentity = styleIdentity
+        self.qualityPerception = qualityPerception
         self.recordedAt = recordedAt
     }
 
@@ -85,16 +152,19 @@ final class ItemRating {
         FitRating(rawValue: fitRaw) ?? .justRight
     }
 
-    /// Mean of the four questions normalized to `[0,1]`:
-    /// `comfort`/`confidence` map 1...5 -> 0...1, `wearAgain` maps
-    /// true/false -> 1.0/0.0, and fit uses `centeredness` (already 0...1).
-    /// Used both as the "liked" threshold input (see `impliesLiked`) and as
-    /// the per-rating value fed into `Domain/AttributePreferenceProfile`.
+    /// Mean of all 8 Level 1 + Level 2 questions normalized to `[0,1]`, or —
+    /// for legacy rows recorded before Level 2 existed — the Level 1-only
+    /// fallback (`FitRating.legacyNormalizedRating`). Used both as the
+    /// "liked" threshold input (see `impliesLiked`) and as the per-rating
+    /// value fed into `Domain/AttributePreferenceProfile`.
     var normalizedValue: Double {
-        let comfortNorm = Double(comfort - 1) / 4.0
-        let confidenceNorm = Double(confidence - 1) / 4.0
-        let wearAgainNorm = wearAgain ? 1.0 : 0.0
-        return (fit.centeredness + comfortNorm + confidenceNorm + wearAgainNorm) / 4.0
+        guard let versatility, let frequency, let styleIdentity, let qualityPerception else {
+            return FitRating.legacyNormalizedRating(fit: fit, comfort: comfort, confidence: confidence, wearAgain: wearAgain)
+        }
+        return FitRating.normalizedRating(
+            fit: fit, comfort: comfort, confidence: confidence, wearAgain: wearAgain,
+            versatility: versatility, frequency: frequency, styleIdentity: styleIdentity, qualityPerception: qualityPerception
+        )
     }
 
     /// Threshold that folds this rich rating into the existing binary

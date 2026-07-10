@@ -76,7 +76,10 @@ struct WardrobeRepositoryTests {
         let repository = try makeRepository()
         let itemID = UUID()
 
-        try repository.recordItemRating(itemID: itemID, fit: .slightlyLoose, comfort: 4, confidence: 5, wearAgain: true)
+        try repository.recordItemRating(
+            itemID: itemID, fit: .slightlyLoose, comfort: 4, confidence: 5, wearAgain: true,
+            versatility: 5, frequency: 2, styleIdentity: 4, qualityPerception: 3
+        )
 
         let ratings = try repository.fetchItemRatings(for: itemID)
         #expect(ratings.count == 1)
@@ -84,6 +87,10 @@ struct WardrobeRepositoryTests {
         #expect(ratings.first?.comfort == 4)
         #expect(ratings.first?.confidence == 5)
         #expect(ratings.first?.wearAgain == true)
+        #expect(ratings.first?.versatility == 5)
+        #expect(ratings.first?.frequency == 2)
+        #expect(ratings.first?.styleIdentity == 4)
+        #expect(ratings.first?.qualityPerception == 3)
     }
 
     @Test func fetchFeedbackHistoryFoldsRatingsIntoItemPreferenceAndAttributeProfile() throws {
@@ -93,7 +100,10 @@ struct WardrobeRepositoryTests {
 
         // A strongly positive rating should read as "liked" in itemFeedback
         // and contribute a positive vibrant-color affinity.
-        try repository.recordItemRating(itemID: item.id, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true)
+        try repository.recordItemRating(
+            itemID: item.id, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true,
+            versatility: 5, frequency: 5, styleIdentity: 5, qualityPerception: 5
+        )
 
         let history = try repository.fetchFeedbackHistory()
 
@@ -103,6 +113,33 @@ struct WardrobeRepositoryTests {
 
         #expect(history.attributeProfile.colorVibeAffinity[.vibrant] != nil)
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
+    }
+
+    @Test func fetchFeedbackHistoryFoldsItemLevelStyleIdentityIntoStyleTagAffinity() throws {
+        let repository = try makeRepository()
+        let item = WardrobeItem(
+            slot: .top,
+            formalityScore: 2.0,
+            colorProfile: ColorProfile(primaryHex: "#FFFFFF", secondaryHex: nil, category: .neutral),
+            pattern: .solid,
+            seasonality: Season.allCases,
+            fabricWeight: .light,
+            styleTags: ["minimalist"]
+        )
+        try repository.save(item)
+
+        // A high Style Identity rating ("does this feel like you") should
+        // contribute a positive affinity for the item's style tag — the
+        // same channel the outfit-level Personal Style Match question feeds.
+        try repository.recordItemRating(
+            itemID: item.id, fit: .justRight, comfort: 3, confidence: 3, wearAgain: true,
+            versatility: 3, frequency: 3, styleIdentity: 5, qualityPerception: 3
+        )
+
+        let history = try repository.fetchFeedbackHistory()
+
+        #expect(history.attributeProfile.styleTagAffinity["minimalist"] != nil)
+        #expect((history.attributeProfile.styleTagAffinity["minimalist"] ?? 0) > 0.5)
     }
 
     // MARK: - User Style Profile (PRD §3.8)
@@ -156,11 +193,104 @@ struct WardrobeRepositoryTests {
         let repository = try makeRepository()
         let orphanID = UUID()
 
-        try repository.recordItemRating(itemID: orphanID, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true)
+        try repository.recordItemRating(
+            itemID: orphanID, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true,
+            versatility: 3, frequency: 3, styleIdentity: 3, qualityPerception: 3
+        )
 
         // No crash and no attribute contribution — the item no longer
         // exists to join attributes from.
         let history = try repository.fetchFeedbackHistory()
         #expect(history.itemFeedback[orphanID]?.total == 1)
+    }
+
+    // MARK: - Stylist Intelligence Engine Phase 1: dimension-based outfit rating
+
+    private func makeSubmission(
+        overallSatisfaction: Int = 5,
+        wearAgain: WearAgainAnswer = .yes,
+        confidence: Int = 5,
+        comfort: Int = 5,
+        occasionMatch: Int = 5,
+        styleMatch: Int = 5,
+        colorHarmony: Int = 5,
+        silhouette: Int = 5,
+        weatherSuitability: Int = 5,
+        practicality: Int = 5,
+        favoriteItemID: UUID? = nil,
+        weakestItemID: UUID? = nil
+    ) -> OutfitRatingSubmission {
+        OutfitRatingSubmission(
+            overallSatisfaction: overallSatisfaction, wearAgain: wearAgain, confidence: confidence, comfort: comfort,
+            occasionMatch: occasionMatch, styleMatch: styleMatch, colorHarmony: colorHarmony, silhouette: silhouette,
+            weatherSuitability: weatherSuitability, practicality: practicality,
+            favoriteItemID: favoriteItemID, weakestItemID: weakestItemID
+        )
+    }
+
+    @Test func recordOutfitRatingRoundTripsAndDerivesLikedOverall() throws {
+        let repository = try makeRepository()
+        let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
+        try repository.saveCombination(combination)
+
+        try repository.recordOutfitRating(outfitID: combination.id, submission: makeSubmission())
+
+        let feedback = try repository.fetchOutfitFeedback(for: combination.id)
+        #expect(feedback.count == 1)
+        #expect(feedback.first?.likedOverall == true)
+        #expect(feedback.first?.wearAgain == .yes)
+        #expect(feedback.first?.overallSatisfaction == 5)
+    }
+
+    @Test func favoriteAndWeakestItemFoldIntoItemPreferenceChannel() throws {
+        let repository = try makeRepository()
+        let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
+        try repository.saveCombination(combination)
+        let favoriteID = UUID()
+        let weakestID = UUID()
+
+        try repository.recordOutfitRating(
+            outfitID: combination.id,
+            submission: makeSubmission(favoriteItemID: favoriteID, weakestItemID: weakestID)
+        )
+
+        let history = try repository.fetchFeedbackHistory()
+        #expect(history.itemFeedback[favoriteID]?.total == 1)
+        #expect(history.itemFeedback[favoriteID]?.likes == 1)
+        #expect(history.itemFeedback[weakestID]?.total == 1)
+        #expect(history.itemFeedback[weakestID]?.likes == 0)
+    }
+
+    @Test func detailedOutfitRatingJoinsRealItemsIntoAttributeProfile() throws {
+        let repository = try makeRepository()
+        let top = makeWardrobeItem(colorVibe: .vibrant)
+        try repository.save(top)
+        let combination = SavedCombination(
+            imageAssetName: "outfit.png",
+            topItemID: top.id,
+            bottomItemID: UUID(),
+            topLabel: "top",
+            bottomLabel: "bottom",
+            origin: "pairing"
+        )
+        try repository.saveCombination(combination)
+
+        try repository.recordOutfitRating(
+            outfitID: combination.id,
+            submission: makeSubmission(occasionMatch: 5, colorHarmony: 5)
+        )
+
+        let history = try repository.fetchFeedbackHistory()
+        #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
+    }
+
+    @Test func simpleAutoRecordedOutfitFeedbackDoesNotContributeToAttributeProfile() throws {
+        let repository = try makeRepository()
+        try repository.recordOutfitFeedback(outfitID: UUID(), likedOverall: true)
+
+        // No detailed fields, so `normalizedRating` is `nil` and this event
+        // is excluded from the attribute-profile join — no crash, no bias.
+        let history = try repository.fetchFeedbackHistory()
+        #expect(history.attributeProfile.colorVibeAffinity.isEmpty)
     }
 }

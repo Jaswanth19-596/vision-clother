@@ -26,7 +26,8 @@ protocol OutfitRecommendationService {
         prompt: String,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
-        weather: WeatherContext?
+        weather: WeatherContext?,
+        history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse
 }
 
@@ -67,20 +68,21 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         prompt: String,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
-        weather: WeatherContext?
+        weather: WeatherContext?,
+        history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
         do {
             return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, useStructuredOutput: true
+                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
             )
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding {
             do {
                 return try await performRequest(
-                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, useStructuredOutput: true
+                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
                 )
             } catch {
                 return try await performUnstructuredFallback(
-                    prompt: prompt, catalog: catalog, profile: profile, weather: weather
+                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history
                 )
             }
         } catch OutfitRecommendationError.httpStatus(400) {
@@ -88,7 +90,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             // by the provider — retrying the same structured request would
             // just 400 again, so switch modes instead of retrying.
             return try await performUnstructuredFallback(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather
+                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history
             )
         }
     }
@@ -97,15 +99,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         prompt: String,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
-        weather: WeatherContext?
+        weather: WeatherContext?,
+        history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
         do {
             return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, useStructuredOutput: false
+                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
             )
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding {
             return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, useStructuredOutput: false
+                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
             )
         }
     }
@@ -115,6 +118,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
+        history: FeedbackHistory,
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
         guard let apiKey = APIKeys.openRouter else {
@@ -131,6 +135,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             catalog: catalog,
             profile: profile,
             weather: weather,
+            history: history,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -172,44 +177,22 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
+        history: FeedbackHistory,
         useStructuredOutput: Bool
     ) throws -> Data {
-        var userContent = "Scenario: \(prompt)"
-
-        if let weather {
-            userContent += "\n\nCurrent weather: \(weather.temperatureFahrenheit)°F, \(weather.conditions)."
-        }
-
-        if let profile {
-            userContent += """
-            \n\nUser style profile: undertone=\(profile.undertone.rawValue), \
-            body type=\(profile.bodyType), style keywords=\(profile.styleKeywords.joined(separator: ", ")), \
-            recommended colors=\(profile.recommendedColors.joined(separator: ", ")), \
-            colors to avoid=\(profile.avoidColors.joined(separator: ", ")).
-            """
-        }
-
         let catalogData = try JSONEncoder().encode(catalog)
         let catalogText = String(decoding: catalogData, as: UTF8.self)
-        userContent += "\n\nWardrobe catalog (JSON array, choose only from these ids):\n\(catalogText)"
+        
+        let userContent = StylistBrain.DynamicPromptComposer.composeUserContent(
+            prompt: prompt,
+            weather: weather,
+            catalogDataText: catalogText
+        )
 
-        var systemPrompt = """
-        You are a personal stylist choosing outfits for a user from clothes they already own. \
-        You will be given a JSON catalog of the user's wardrobe items, each with an "id" — you may \
-        only reference items by the exact "id" strings present in that catalog, one id per slot, \
-        never inventing an id or reusing one across slots in the same outfit. Every outfit needs a \
-        top_id, bottom_id, and footwear_id; outerwear_id is optional (null if not needed).
-
-        Apply color theory when choosing: favor complementary, analogous, or monochrome hue \
-        relationships between the top/bottom/outerwear; avoid muddy, high-saturation hue clashes; \
-        prefer at most 2-3 color families per outfit, anchored by at least one neutral \
-        (colorCategory "neutral" or "monochrome") when available. Respect the formality range implied \
-        by the scenario and any provided weather (require outerwear in cold/wet weather when a \
-        suitable one exists in the catalog). If a user style profile is given, prefer its \
-        recommended colors and avoid its colors to avoid, without ignoring the scenario. \
-        Give a short one-sentence "rationale" per outfit explaining the pairing. Return at most 5 \
-        outfits, best first.
-        """
+        var systemPrompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(
+            profile: profile,
+            attributeProfile: history.attributeProfile
+        )
 
         var body: [String: Any] = [
             "model": model,
@@ -249,7 +232,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         return try JSONSerialization.data(withJSONObject: body)
     }
 
-    /// Matches PRD.md §3.7's response schema.
+    /// Matches PRD.md §3.7's response schema, extended with `resolved_constraints`
+    /// (Stylist Intelligence Engine ADR, Decision Hierarchy Tier 1/2 enforcement) —
+    /// the same shape `Services/OpenRouterIntentExtractionService.swift` asks the
+    /// fallback path for, so the recommendation call self-reports the intent it
+    /// resolved without a second LLM round-trip.
     private static let outfitRecommendationJSONSchema: [String: Any] = [
         "type": "object",
         "properties": [
@@ -263,14 +250,45 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                         "bottom_id": ["type": "string"],
                         "footwear_id": ["type": "string"],
                         "outerwear_id": ["type": ["string", "null"]],
-                        "rationale": ["type": "string"],
+                        "rationale": [
+                            "type": "object",
+                            "properties": [
+                                "occasion": ["type": "string"],
+                                "color_harmony": ["type": "string"],
+                                "body_profile": ["type": "string"],
+                                "weather": ["type": "string"],
+                                "style": ["type": "string"],
+                                "confidence": ["type": "integer"]
+                            ],
+                            "required": ["occasion", "color_harmony", "body_profile", "weather", "style", "confidence"],
+                            "additionalProperties": false
+                        ]
                     ],
                     "required": ["top_id", "bottom_id", "footwear_id", "outerwear_id", "rationale"],
                     "additionalProperties": false,
                 ],
             ],
+            "resolved_constraints": [
+                "type": "object",
+                "properties": [
+                    "formality_range": [
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": ["type": "number", "minimum": 1.0, "maximum": 5.0],
+                    ],
+                    "weather_layering_required": ["type": "boolean"],
+                    "color_palette_vibe": [
+                        "type": "array",
+                        "items": ["type": "string", "enum": ColorVibe.allCases.map(\.rawValue)],
+                    ],
+                    "season_suitability": ["type": "string", "enum": Season.allCases.map(\.rawValue)],
+                ],
+                "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability"],
+                "additionalProperties": false,
+            ],
         ],
-        "required": ["outfits"],
+        "required": ["outfits", "resolved_constraints"],
         "additionalProperties": false,
     ]
 }
@@ -298,7 +316,8 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         prompt: String,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
-        weather: WeatherContext?
+        weather: WeatherContext?,
+        history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
         func firstID(for slot: Slot) -> String? {
             catalog.first { $0.slot == slot }?.id
@@ -312,14 +331,34 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
 
         let outerwearID: String? = weather != nil ? firstID(for: .outerwear) : nil
 
-        return OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: topID,
-                bottomID: bottomID,
-                footwearID: footwearID,
-                outerwearID: outerwearID,
-                rationale: "A balanced, neutral-anchored look for the occasion."
-            ),
-        ])
+        // Best-effort resolved constraints from the same inputs a real model
+        // call would reason over — wide-open formality band (the mock has no
+        // real scenario understanding), layering keyed off actual weather.
+        let resolvedConstraints = StyleConstraints(
+            formalityRange: FormalityRange(lowerBound: 1.0, upperBound: 5.0),
+            weatherLayeringRequired: (weather?.temperatureFahrenheit ?? 70) < 50,
+            colorPaletteVibe: [.neutral],
+            seasonSuitability: .springFall
+        )
+
+        return OutfitRecommendationResponse(
+            outfits: [
+                RecommendedOutfitWire(
+                    topID: topID,
+                    bottomID: bottomID,
+                    footwearID: footwearID,
+                    outerwearID: outerwearID,
+                    rationale: StructuredRationaleWire(
+                        occasion: "A balanced, neutral-anchored look for the occasion.",
+                        colorHarmony: "Complimentary undertones and balanced saturation.",
+                        bodyProfile: "Fits your body type profile.",
+                        weather: "Appropriate fabric weight layers.",
+                        style: "Reflects your style keywords.",
+                        confidence: 95
+                    )
+                ),
+            ],
+            resolvedConstraints: resolvedConstraints
+        )
     }
 }

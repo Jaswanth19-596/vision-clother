@@ -191,12 +191,18 @@ final class ManualPairingViewModel {
         guard case .success(let imageURL) = state else { return }
 
         try? repository.recordPairFeedback(itemAID: top.id, itemBID: bottom.id, likedTogether: true)
-        try? repository.recordOutfitFeedback(outfitID: UUID(), likedOverall: true)
         savedOutfitItems = [top, bottom]
 
         if let imageData = try? Data(contentsOf: imageURL) {
             if let assetName = try? ImageStorage.save(imageData) {
+                // Generated up front (rather than left to `SavedCombination`'s
+                // own default) so the outfit-level feedback event below can
+                // reference the same durable id the Combinations tab reads —
+                // previously this recorded a throwaway random UUID that could
+                // never be looked back up against any saved combination.
+                let combinationID = UUID()
                 let combination = SavedCombination(
+                    id: combinationID,
                     imageAssetName: assetName,
                     topItemID: top.id,
                     bottomItemID: bottom.id,
@@ -205,6 +211,7 @@ final class ManualPairingViewModel {
                     origin: "pairing"
                 )
                 try? repository.saveCombination(combination)
+                try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: true)
             }
             try? await photoLibrarySaver.save(imageData: imageData)
         }

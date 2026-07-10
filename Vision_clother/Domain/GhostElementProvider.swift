@@ -20,6 +20,7 @@ enum GhostElementProvider {
         switch slot {
         case .top:
             return WardrobeItem(
+                id: stableID(for: .top),
                 slot: .top,
                 formalityScore: 2.0,
                 colorProfile: ColorProfile(primaryHex: "#FFFFFF", secondaryHex: nil, category: .neutral),
@@ -31,6 +32,7 @@ enum GhostElementProvider {
             )
         case .bottom:
             return WardrobeItem(
+                id: stableID(for: .bottom),
                 slot: .bottom,
                 formalityScore: 2.5,
                 colorProfile: ColorProfile(primaryHex: "#1B1B1B", secondaryHex: nil, category: .neutral),
@@ -42,6 +44,7 @@ enum GhostElementProvider {
             )
         case .footwear:
             return WardrobeItem(
+                id: stableID(for: .footwear),
                 slot: .footwear,
                 formalityScore: 2.0,
                 colorProfile: ColorProfile(primaryHex: "#F5F5F0", secondaryHex: nil, category: .neutral),
@@ -53,6 +56,7 @@ enum GhostElementProvider {
             )
         case .outerwear:
             return WardrobeItem(
+                id: stableID(for: .outerwear),
                 slot: .outerwear,
                 formalityScore: 2.5,
                 colorProfile: ColorProfile(primaryHex: "#5C5C5C", secondaryHex: nil, category: .neutral),
@@ -62,6 +66,21 @@ enum GhostElementProvider {
                 imageAssetName: "ghost_neutral_jacket",
                 isGhostElement: true
             )
+        }
+    }
+
+    /// Ghost elements are synthesized fresh on every `displayItems` access
+    /// (they're never persisted), so they need a fixed id per slot rather
+    /// than the model's default random `UUID()` — otherwise the id captured
+    /// by a tap gesture and the id in the array handed to the detail sheet
+    /// come from two different evaluations and never match, leaving the
+    /// detail view blank. These UUIDs are arbitrary but must stay constant.
+    private static func stableID(for slot: Slot) -> UUID {
+        switch slot {
+        case .top: return UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        case .bottom: return UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        case .footwear: return UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        case .outerwear: return UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
         }
     }
 

@@ -8,26 +8,44 @@
 import SwiftUI
 import SwiftData
 
+/// One sheet modifier for both the try-on result and the follow-up rating
+/// prompt — chaining two separate `.sheet` modifiers on the same view (the
+/// prior design) is a known SwiftUI footgun where presenting the second
+/// sheet from the first's `onDismiss` can render against stale state. A
+/// single `.sheet(item:)` switching over this enum avoids that entirely.
+private enum ActiveSheet: Identifiable {
+    case tryOn
+    case rateOutfit([WardrobeItem])
+
+    var id: String {
+        switch self {
+        case .tryOn: return "tryOn"
+        case .rateOutfit: return "rateOutfit"
+        }
+    }
+}
+
 struct DailyAssistantView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var viewModel: DailyAssistantViewModel?
     @State private var selectedOutfitID: OutfitCombination.ID?
-    @State private var isTryOnSheetPresented = false
-    @State private var isRateOutfitSheetPresented = false
-    @State private var ratingSheetItems: [WardrobeItem] = []
+    @State private var activeSheet: ActiveSheet?
     /// Privacy opt-out (PRD §3.8) — backed by the same key
     /// `RecommendationSettings.useAIRecommendations` reads, so toggling here
     /// takes effect on the next `requestOutfitIdeas()` call without any
     /// extra plumbing between the view and the view model.
     @AppStorage("com.visionclother.useAIRecommendations") private var useAIRecommendations = true
+    @FocusState private var isPromptFocused: Bool
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let viewModel {
-                    content(viewModel: viewModel)
-                } else {
-                    ProgressView()
+            GeometryReader { geometry in
+                Group {
+                    if let viewModel {
+                        content(viewModel: viewModel, availableHeight: geometry.size.height)
+                    } else {
+                        ProgressView()
+                    }
                 }
             }
             .navigationTitle("Daily Assistant")
@@ -47,67 +65,89 @@ struct DailyAssistantView: View {
     }
 
     @ViewBuilder
-    private func content(viewModel: DailyAssistantViewModel) -> some View {
-        VStack(spacing: 16) {
-            promptInput(viewModel: viewModel)
+    private func content(viewModel: DailyAssistantViewModel, availableHeight: CGFloat) -> some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                promptInput(viewModel: viewModel)
 
-            switch viewModel.extractionState {
-            case .idle where viewModel.candidates.isEmpty:
-                Spacer()
-                ContentUnavailableView(
-                    "What are you dressing for today?",
-                    systemImage: "sparkles",
-                    description: Text("Describe the occasion above and tap Get Outfit Ideas.")
-                )
-                Spacer()
+                switch viewModel.extractionState {
+                case .idle where viewModel.candidates.isEmpty:
+                    ContentUnavailableView(
+                        "What are you dressing for today?",
+                        systemImage: "sparkles",
+                        description: Text("Describe the occasion above and tap Get Outfit Ideas.")
+                    )
+                    .frame(minHeight: 400)
 
-            case .loading:
-                Spacer()
-                ProgressView("Thinking through your closet…")
-                Spacer()
+                case .loading:
+                    ProgressView("Thinking through your closet…")
+                        .frame(minHeight: 400)
 
-            case .failed(let message):
-                Spacer()
-                VStack(spacing: 12) {
-                    Label(message, systemImage: "exclamationmark.bubble")
-                        .foregroundStyle(.secondary)
-                    Button("Retry") {
-                        Task { await viewModel.requestOutfitIdeas() }
+                case .failed(let message):
+                    VStack(spacing: 12) {
+                        Label(message, systemImage: "exclamationmark.bubble")
+                            .foregroundStyle(.secondary)
+                        Button("Retry") {
+                            Task { await viewModel.requestOutfitIdeas() }
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-                }
-                Spacer()
+                    .frame(minHeight: 400)
 
-            case .idle:
-                carousel(viewModel: viewModel)
+                case .idle:
+                    // `TabView(.page)` has no intrinsic height once it's inside a
+                    // `ScrollView` (both are scrollable-content containers, so
+                    // neither can size to the other) — without an explicit
+                    // height it collapses to near-zero and clips every card.
+                    // `availableHeight` (the screen's Geometry) minus the
+                    // roughly fixed height of the prompt controls above gives
+                    // it a sensible size; `OutfitCardView` scrolls internally
+                    // as a fallback if a card's content still exceeds it.
+                    carousel(viewModel: viewModel, height: max(availableHeight - 260, 420))
+                }
             }
+            .padding(.top)
         }
-        .padding(.top)
-        .sheet(isPresented: $isTryOnSheetPresented, onDismiss: {
-            // Item Rating & Preference Learning: if the try-on sheet closes
-            // after a successful save, prompt to rate the outfit's real
-            // items. Capturing into local state (and clearing the view
-            // model's copy) means re-opening try-on without a fresh save
-            // won't show the prompt again.
-            guard !viewModel.lastSavedRatableItems.isEmpty else { return }
-            ratingSheetItems = viewModel.lastSavedRatableItems
-            viewModel.clearRatablePrompt()
-            isRateOutfitSheetPresented = true
-        }) {
-            TryOnResultView(
-                state: viewModel.tryOnState,
-                onCancel: {
-                    viewModel.cancelTryOn()
-                    isTryOnSheetPresented = false
-                },
-                onRetry: { viewModel.retryTryOn(baseImageData: placeholderBaseImageData) },
-                onSave: { Task { await viewModel.saveCombination() } },
-                onDone: { isTryOnSheetPresented = false }
-            )
-            .presentationDetents([.medium, .large])
+        .scrollDismissesKeyboard(.interactively)
+        .onTapGesture {
+            isPromptFocused = false
         }
-        .sheet(isPresented: $isRateOutfitSheetPresented) {
-            RateOutfitView(items: ratingSheetItems)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .tryOn:
+                TryOnResultView(
+                    state: viewModel.tryOnState,
+                    onCancel: {
+                        viewModel.cancelTryOn()
+                        activeSheet = nil
+                    },
+                    onRetry: { viewModel.retryTryOn(baseImageData: placeholderBaseImageData) },
+                    onSave: { await viewModel.saveCombination() },
+                    onDone: {
+                        // Item Rating & Preference Learning: if the save
+                        // that just finished produced real (non-ghost)
+                        // items, hand off straight to the rating sheet —
+                        // `onSave` is awaited by `TryOnResultView` before
+                        // "Done" is even enabled, so `lastSavedRatableItems`
+                        // is guaranteed settled here. Switching the same
+                        // `activeSheet` value (rather than chaining a second
+                        // `.sheet` modifier's `onDismiss`) avoids the stale
+                        // -state footgun that caused the item-rating sheet
+                        // to spin forever with nothing loaded.
+                        if !viewModel.lastSavedRatableItems.isEmpty {
+                            let items = viewModel.lastSavedRatableItems
+                            viewModel.clearRatablePrompt()
+                            activeSheet = .rateOutfit(items)
+                        } else {
+                            activeSheet = nil
+                        }
+                    }
+                )
+                .presentationDetents([.medium, .large])
+
+            case .rateOutfit(let items):
+                RateOutfitView(items: items)
+            }
         }
     }
 
@@ -120,8 +160,15 @@ struct DailyAssistantView: View {
             )
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...3)
+            .focused($isPromptFocused)
+            .submitLabel(.search)
+            .onSubmit {
+                isPromptFocused = false
+                Task { await viewModel.requestOutfitIdeas() }
+            }
 
             Button("Get Outfit Ideas") {
+                isPromptFocused = false
                 Task { await viewModel.requestOutfitIdeas() }
             }
             .buttonStyle(.borderedProminent)
@@ -137,7 +184,7 @@ struct DailyAssistantView: View {
         .padding(.horizontal)
     }
 
-    private func carousel(viewModel: DailyAssistantViewModel) -> some View {
+    private func carousel(viewModel: DailyAssistantViewModel, height: CGFloat) -> some View {
         VStack {
             TabView(selection: $selectedOutfitID) {
                 ForEach(viewModel.candidates) { outfit in
@@ -146,12 +193,13 @@ struct DailyAssistantView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .automatic))
+            .frame(height: height)
             .onAppear { selectedOutfitID = viewModel.candidates.first?.id }
 
             if let selected = viewModel.candidates.first(where: { $0.id == selectedOutfitID }) {
                 Button("How does it look on me?") {
                     viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: selected)
-                    isTryOnSheetPresented = true
+                    activeSheet = .tryOn
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.accentColor)

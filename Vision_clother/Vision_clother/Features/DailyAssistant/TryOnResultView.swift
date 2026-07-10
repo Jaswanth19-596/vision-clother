@@ -15,7 +15,7 @@ struct TryOnResultView: View {
     let state: TryOnState
     let onCancel: () -> Void
     let onRetry: () -> Void
-    let onSave: () -> Void
+    let onSave: () async -> Void
     let onDone: () -> Void
 
     /// Flips to a "Saved" confirmation after tapping Save — resets whenever
@@ -23,6 +23,12 @@ struct TryOnResultView: View {
     /// sheet isn't guaranteed, so this view model's own state is the source
     /// of truth for "have we saved *this* image".
     @State private var didSave = false
+    /// True while `onSave()`'s Task is in flight. "Done" is disabled during
+    /// this window so the caller can never read a save's results (e.g. the
+    /// rating prompt's item list) before the save has actually finished —
+    /// closing this race is what fixed the "Rate this item" infinite
+    /// spinner (the save was fire-and-forget before).
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -52,16 +58,25 @@ struct TryOnResultView: View {
                 .frame(maxHeight: 400)
                 HStack {
                     Button {
-                        onSave()
-                        didSave = true
+                        isSaving = true
+                        Task {
+                            await onSave()
+                            didSave = true
+                            isSaving = false
+                        }
                     } label: {
-                        Label(didSave ? "Saved" : "Save", systemImage: didSave ? "checkmark" : "square.and.arrow.down")
+                        if isSaving {
+                            ProgressView()
+                        } else {
+                            Label(didSave ? "Saved" : "Save", systemImage: didSave ? "checkmark" : "square.and.arrow.down")
+                        }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(didSave)
+                    .disabled(didSave || isSaving)
 
                     Button("Done", action: onDone)
                         .buttonStyle(.borderedProminent)
+                        .disabled(isSaving)
                 }
 
             case .failed(let error):
@@ -84,7 +99,7 @@ struct TryOnResultView: View {
         state: .polling(stage: .rendering, elapsedSeconds: 3),
         onCancel: {},
         onRetry: {},
-        onSave: {},
+        onSave: { },
         onDone: {}
     )
 }
