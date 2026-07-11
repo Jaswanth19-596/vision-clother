@@ -2,6 +2,10 @@
 //  AddItemViewModelTests.swift
 //  Vision_clotherTests
 //
+//  Covers the "Enter Details Manually" path only — camera/photo-library
+//  ingestion now runs through `Features/JobQueue/JobQueueStore.swift` (see
+//  JobQueueStoreTests.swift).
+//
 
 import Foundation
 import Testing
@@ -24,11 +28,10 @@ struct AddItemViewModelTests {
         vm.startManualEntry(defaultSlot: .bottom)
 
         #expect(vm.state == .editingMetadata)
-        #expect(vm.slot == .bottom)
-        #expect(vm.formalityScore == 3.0)
-        #expect(vm.pattern == .solid)
-        #expect(vm.primaryHex == "#FFFFFF")
-        #expect(vm.isolatedImageData == nil)
+        #expect(vm.editor.slot == .bottom)
+        #expect(vm.editor.formalityScore == 3.0)
+        #expect(vm.editor.pattern == .solid)
+        #expect(vm.editor.primaryHex == "#FFFFFF")
     }
 
     @Test func saveManuallyEnteredItemPersistsToRepository() async {
@@ -36,16 +39,16 @@ struct AddItemViewModelTests {
         let vm = AddItemViewModel(repository: repo)
 
         vm.startManualEntry(defaultSlot: .footwear)
-        vm.formalityScore = 4.5
-        vm.primaryHex = "#FF0000"
-        vm.pattern = .striped
-        vm.fabricWeight = .heavy
+        vm.editor.formalityScore = 4.5
+        vm.editor.primaryHex = "#FF0000"
+        vm.editor.pattern = .striped
+        vm.editor.fabricWeight = .heavy
 
         await vm.saveItem()
 
         #expect(vm.didSave)
         #expect(repo.savedItems.count == 1)
-        
+
         let saved = repo.savedItems.first
         #expect(saved?.slot == .footwear)
         #expect(saved?.formalityScore == 4.5)
@@ -55,49 +58,14 @@ struct AddItemViewModelTests {
         #expect(saved?.imageAssetName == nil)
     }
 
-    @Test func ingestSetsStateToEditingAndPopulatesTags() async {
-        let repo = MockWardrobeRepository()
-        let mockVision = MockVisionMetadataExtractionService(result: GarmentMetadata(
-            slot: .outerwear,
-            formalityScore: 2.5,
-            colorProfile: GarmentMetadata.ColorProfileWire(primaryHex: "#00FF00", secondaryHex: nil, category: .vibrant, undertone: .warm),
-            pattern: .plaid,
-            seasonality: [.winter],
-            fabricWeight: .medium,
-            description: "Olive field jacket with brass buttons.",
-            styleTags: ["utility", "outdoorsy"]
-        ))
-        let vm = AddItemViewModel(
-            repository: repo,
-            backgroundIsolationService: MockBackgroundIsolationService(),
-            visionMetadataService: mockVision
-        )
-
-        let dummyData = Data([1, 2, 3])
-        await vm.ingest(rawImageData: dummyData)
-
-        #expect(vm.state == .editingMetadata)
-        #expect(vm.slot == .outerwear)
-        #expect(vm.formalityScore == 2.5)
-        #expect(vm.primaryHex == "#00FF00")
-        #expect(vm.colorCategory == .vibrant)
-        #expect(vm.undertone == .warm)
-        #expect(vm.pattern == .plaid)
-        #expect(vm.seasonality == [.winter])
-        #expect(vm.fabricWeight == .medium)
-        #expect(vm.itemDescription == "Olive field jacket with brass buttons.")
-        #expect(vm.styleTags == ["utility", "outdoorsy"])
-        #expect(vm.isolatedImageData == dummyData)
-    }
-
     @Test func savedItemPersistsDescriptionUndertoneAndStyleTags() async {
         let repo = MockWardrobeRepository()
         let vm = AddItemViewModel(repository: repo)
 
         vm.startManualEntry(defaultSlot: .top)
-        vm.itemDescription = "Cream linen popover shirt."
-        vm.undertone = .neutral
-        vm.styleTags = ["resort", "linen"]
+        vm.editor.itemDescription = "Cream linen popover shirt."
+        vm.editor.undertone = .neutral
+        vm.editor.styleTags = ["resort", "linen"]
 
         await vm.saveItem()
 
@@ -121,7 +89,7 @@ struct AddItemViewModelTests {
 }
 
 @MainActor
-private final class MockWardrobeRepository: WardrobeRepository {
+final class MockWardrobeRepository: WardrobeRepository {
     var savedItems: [WardrobeItem] = []
 
     func fetchInventory() throws -> [WardrobeItem] {
@@ -131,6 +99,8 @@ private final class MockWardrobeRepository: WardrobeRepository {
     func save(_ item: WardrobeItem) throws {
         savedItems.append(item)
     }
+
+    func update(_ item: WardrobeItem) throws {}
 
     func delete(_ item: WardrobeItem) throws {
         savedItems.removeAll { $0.id == item.id }
@@ -148,9 +118,12 @@ private final class MockWardrobeRepository: WardrobeRepository {
     func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
 
-    func fetchSavedCombinations() throws -> [SavedCombination] { [] }
-    func saveCombination(_ combination: SavedCombination) throws {}
-    func deleteCombination(_ combination: SavedCombination) throws {}
+    var savedCombinations: [SavedCombination] = []
+    func fetchSavedCombinations() throws -> [SavedCombination] { savedCombinations }
+    func saveCombination(_ combination: SavedCombination) throws { savedCombinations.append(combination) }
+    func deleteCombination(_ combination: SavedCombination) throws {
+        savedCombinations.removeAll { $0.id == combination.id }
+    }
 
     func fetchUserProfile() throws -> UserStyleProfile? { nil }
     func saveUserProfile(_ wire: UserStyleProfileWire) throws {}

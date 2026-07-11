@@ -6,62 +6,34 @@
 //  (Fit, Comfort, Confidence, Wear again?) plus Level 2 Fashion Evaluation
 //  (Versatility, Predicted Wear Frequency, Style Identity, Quality
 //  Perception) — reusing `AddItemView`'s Form/Section idiom.
-//  `RateItemQuestionsView` is the shared question body; `RateItemView`
-//  wraps it as a standalone sheet for the "Rate this item" entry point on
-//  `Closet/ItemDetailView.swift`. The batch entry point after a try-on save
-//  lives in `RateOutfitView.swift`, reusing the same question body.
+//  `RateItemQuestionsView` is the shared question body, used exclusively by
+//  `RateCombinationView`'s per-item step — rating only happens from the
+//  Combinations tab (`CombinationDetailView` → `RateCombinationView`).
 //
 
 import SwiftUI
 import SwiftData
 
-/// Standalone single-item rating sheet — presented from `ItemDetailView`.
-struct RateItemView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
-
-    let item: WardrobeItem
-
-    @State private var viewModel: RateItemViewModel?
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let viewModel {
-                    RateItemQuestionsView(viewModel: viewModel, submitLabel: "Submit Rating", onSaved: { dismiss() })
-                } else {
-                    ProgressView()
-                }
-            }
-            .navigationTitle("Rate \(item.displayLabel)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-        .task {
-            guard viewModel == nil else { return }
-            viewModel = RateItemViewModel(item: item, repository: SwiftDataWardrobeRepository(modelContext: modelContext))
-        }
-    }
-}
-
 /// The Level 1 (Fit/Comfort/Confidence/Wear again) + Level 2 Fashion
 /// Evaluation (Versatility/Predicted Wear Frequency/Style Identity/Quality
-/// Perception) form shared by `RateItemView` (single item), `RateOutfitView`
-/// (sequenced batch after a try-on), and `RateCombinationView`'s per-item
-/// step (whole-combination rating from the Combinations tab) — generic over
-/// `RatingQuestionsViewModel` so all three can reuse the same form without
-/// duplicating it.
+/// Perception) form used by `RateCombinationView`'s per-item step — generic
+/// over `RatingQuestionsViewModel`. Shows `item`'s photo (or color-swatch
+/// fallback) at the top so the user can see exactly what they're rating,
+/// matching `ItemDetailView.garmentPreview`'s pattern.
 struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
+    let item: WardrobeItem
     @Bindable var viewModel: ViewModel
     let submitLabel: String
     let onSaved: () -> Void
 
     var body: some View {
         Form {
+            Section {
+                itemPreview
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
             Section("Fit") {
                 Picker("Fit", selection: $viewModel.fit) {
                     ForEach(FitRating.allCases) { fit in
@@ -156,6 +128,40 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
         case .tooLoose: return "Baggy"
         }
     }
+
+    /// Mirrors `ItemDetailView.garmentPreview(for:)` — photo via
+    /// `ImageStorage` when the item has one, else a `colorProfile`-tinted
+    /// swatch with a ghost/tshirt fallback overlay.
+    @ViewBuilder
+    private var itemPreview: some View {
+        if let imageAssetName = item.imageAssetName,
+           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .frame(height: 220)
+        } else {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+                .frame(height: 200)
+                .overlay {
+                    if item.isGhostElement {
+                        VStack(spacing: 8) {
+                            Image(systemName: "sparkle")
+                                .font(.largeTitle)
+                            Text("Starter Piece")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.white)
+                    } else {
+                        Image(systemName: "tshirt.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+        }
+    }
 }
 
 // MARK: - Question controls
@@ -239,9 +245,29 @@ private struct WearAgainRow: View {
         seasonality: [.summer, .springFall],
         fabricWeight: .light
     )
-    RateItemView(item: item)
+    RateItemQuestionsViewPreviewHost(item: item)
         .modelContainer(
             for: [WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, ItemRating.self],
             inMemory: true
         )
+}
+
+private struct RateItemQuestionsViewPreviewHost: View {
+    @Environment(\.modelContext) private var modelContext
+    let item: WardrobeItem
+    @State private var viewModel: RateItemViewModel?
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                RateItemQuestionsView(item: item, viewModel: viewModel, submitLabel: "Submit Rating", onSaved: {})
+            } else {
+                ProgressView()
+            }
+        }
+        .task {
+            guard viewModel == nil else { return }
+            viewModel = RateItemViewModel(item: item, repository: SwiftDataWardrobeRepository(modelContext: modelContext))
+        }
+    }
 }

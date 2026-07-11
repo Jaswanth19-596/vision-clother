@@ -1,8 +1,18 @@
-You are about to implement a new feature. Before writing any code:
+You are about to implement a new feature.
 
-1. Restate the requirement in your own words
-2. Identify all files that will need to change
-3. Ask me questions until you're 95% sure of the requirements. 
-4. Propose 2 implementation approaches with tradeoffs
+Before writing any code:
+
+1. Read `CLAUDE.md`.
+2. Read the relevant documents in `docs/`.
+3. If `graphify/GRAPH_REPORT.md` exists, read it.
+4. Search the codebase for existing implementations.
+5. Verify assumptions against the source code.
+
+Then:
+
+1. Restate the requirement in your own words.
+2. Identify all files that will need to change.
+3. Ask questions until you are at least 95% confident in the requirements.
+4. Propose two implementation approaches with tradeoffs.
 
 Wait for my approval before proceeding.

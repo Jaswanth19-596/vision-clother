@@ -32,13 +32,8 @@ final class ManualPairingViewModel {
     private(set) var state: State = .idle
     private(set) var hasPortrait: Bool
     /// Flipped once after a successful "Save this outfit?" — the view
-    /// observes this to present the Item Rating & Preference Learning
-    /// prompt (`RateOutfitView`), matching AddItemViewModel.didSave.
+    /// observes this to dismiss the screen, matching AddItemViewModel.didSave.
     private(set) var didSaveOutfit = false
-    /// The top/bottom just saved, for `RateOutfitView` to rate — always real
-    /// (non-ghost) items since `availableTops`/`availableBottoms` already
-    /// exclude Ghost Elements (see init below).
-    private(set) var savedOutfitItems: [WardrobeItem] = []
 
     let availableTops: [WardrobeItem]
     let availableBottoms: [WardrobeItem]
@@ -181,17 +176,20 @@ final class ManualPairingViewModel {
 
     // MARK: - Save / discard
 
-    /// Records the PRD §3.6 feedback signal (unchanged), then durably
-    /// persists the generated image itself — via `ImageStorage` +
-    /// `SavedCombination` (Data/CLAUDE.md's file-persistence boundary) — and
-    /// mirrors it to the Photos library. A Photos-write failure is
-    /// non-fatal: the app-local save already succeeded by that point.
-    func saveOutfit() async {
+    /// Records the PRD §3.6 feedback signal — `liked` now reflects the
+    /// user's actual Like/Dislike choice rather than being hardcoded to
+    /// `true` — then durably persists the generated image itself via
+    /// `ImageStorage` + `SavedCombination` (Data/CLAUDE.md's
+    /// file-persistence boundary) and mirrors it to the Photos library. Both
+    /// Like and Dislike always save, so a disliked pairing still gets a
+    /// durable id for its feedback row to reference and still shows up in
+    /// Combinations history. A Photos-write failure is non-fatal: the
+    /// app-local save already succeeded by that point.
+    func saveOutfit(liked: Bool) async {
         guard let top = selectedTop, let bottom = selectedBottom else { return }
         guard case .success(let imageURL) = state else { return }
 
-        try? repository.recordPairFeedback(itemAID: top.id, itemBID: bottom.id, likedTogether: true)
-        savedOutfitItems = [top, bottom]
+        try? repository.recordPairFeedback(itemAID: top.id, itemBID: bottom.id, likedTogether: liked)
 
         if let imageData = try? Data(contentsOf: imageURL) {
             if let assetName = try? ImageStorage.save(imageData) {
@@ -211,7 +209,7 @@ final class ManualPairingViewModel {
                     origin: "pairing"
                 )
                 try? repository.saveCombination(combination)
-                try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: true)
+                try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)
             }
             try? await photoLibrarySaver.save(imageData: imageData)
         }

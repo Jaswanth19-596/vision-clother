@@ -42,6 +42,24 @@ struct FeedbackHistory {
     /// `affinityBonus` is 0 and scoring is unchanged from before this
     /// feature existed.
     var attributeProfile: AttributePreferenceProfile = AttributePreferenceProfile()
+    /// Time-decayed net-negative-feedback signal for an *exact* outfit item
+    /// combination, keyed by the full set of item ids in that outfit
+    /// (top+bottom+footwear+optional outerwear) rather than any outfit ID —
+    /// a freshly generated `OutfitCombination` has no durable id of its own
+    /// until saved, so whole-outfit dislike history can only be looked up by
+    /// which items it actually contains. Positive values mean net dislike;
+    /// built from `SavedCombination` <-> `OutfitFeedback` joins in
+    /// `Data/WardrobeRepository.swift`. Empty by default, so scoring is
+    /// unchanged when no such history exists.
+    var outfitNegativeSignalByItemSet: [Set<UUID>: Double] = [:]
+    /// Time-decayed net-negative-feedback signal per item, folding
+    /// `ItemFeedback`/`ItemRating`/favorite-weakest-item history — positive
+    /// means net dislike. Distinct from `itemFeedback` above (a flat,
+    /// undecayed like/total tally used by `PairCompatibilityScoring.itemPreference`)
+    /// — this is the "time-weighted" signal `OutfitRecommendationEngine.outfitScore`
+    /// reads for the negative-feedback penalty. Empty by default, so scoring
+    /// is unchanged when no such history exists.
+    var itemNegativeSignal: [UUID: Double] = [:]
 }
 
 enum OutfitRecommendationEngine {
@@ -105,7 +123,7 @@ enum OutfitRecommendationEngine {
     }
 
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))
-    /// + mean(AttributeAffinityBonus(Item)) + FormalityPenalty + WeatherPenalty + ProfileColorsBonus`
+    /// + mean(AttributeAffinityBonus(Item)) + FormalityPenalty + WeatherPenalty + ProfileColorsBonus + NegativeFeedbackPenalty`
     /// across every item in the combination — applying the Decision Rubric (added 2026-07-10).
     static func outfitScore(
         for items: [WardrobeItem],
@@ -136,6 +154,22 @@ enum OutfitRecommendationEngine {
 
         let affinityBonuses: [Double] = items.map { history.attributeProfile.affinityBonus(for: $0) }
         let meanAffinityBonus = affinityBonuses.isEmpty ? 0 : affinityBonuses.reduce(0, +) / Double(affinityBonuses.count)
+
+        // Read Disliked Signals (added 2026-07-11): previously `likedOverall`
+        // and `.normalizedRating` were collected but never read by scoring —
+        // a disliked outfit or item could keep resurfacing indefinitely.
+        // Penalize rather than hard-drop, matching the "bias, not filter"
+        // posture the rest of this file follows.
+        var negativeFeedbackPenalty: Double = 0.0
+        let candidateItemSet = Set(items.map(\.id))
+        if let outfitNegativity = history.outfitNegativeSignalByItemSet[candidateItemSet], outfitNegativity > 0 {
+            negativeFeedbackPenalty -= 0.25
+        }
+        for item in items {
+            if let itemNegativity = history.itemNegativeSignal[item.id], itemNegativity > 0 {
+                negativeFeedbackPenalty -= 0.08
+            }
+        }
 
         // 1. Formality Alignment Penalty (added 2026-07-10)
         var formalityPenalty: Double = 0.0
@@ -191,13 +225,20 @@ enum OutfitRecommendationEngine {
                     let sanitized = color.lowercased().replacingOccurrences(of: "#", with: "")
                     return hex == sanitized || item.displayLabel.lowercased().contains(color.lowercased())
                 }
-                if isAvoided {
+                // Override Static Colors (added 2026-07-11): behavioral
+                // history can outrank the static onboarding-derived avoid
+                // list — if the user has since demonstrated a strong learned
+                // affinity for this item's own color vibe (> 0.6), the static
+                // penalty no longer reflects their actual taste, so it's
+                // zeroed out rather than applied.
+                let learnedAffinityForThisVibe = history.attributeProfile.colorVibeAffinity[item.colorProfile.category] ?? 0.5
+                if isAvoided, learnedAffinityForThisVibe <= 0.6 {
                     profileBonus -= 0.20
                 }
             }
         }
 
-        return (meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus)
+        return (meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
             .clamped(to: 0...1)
     }
 }

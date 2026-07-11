@@ -49,6 +49,7 @@ struct RateCombinationView: View {
                 case .outfit:
                     if let outfitViewModel {
                         RateCombinationQuestionsView(
+                            imageAssetName: combination.imageAssetName,
                             viewModel: outfitViewModel,
                             submitLabel: items.isEmpty ? "Finish" : "Next: Rate Items",
                             onSaved: advanceFromOutfit
@@ -60,6 +61,7 @@ struct RateCombinationView: View {
                 case .item(let index):
                     if index < items.count, let itemViewModel {
                         RateItemQuestionsView(
+                            item: items[index],
                             viewModel: itemViewModel,
                             submitLabel: index == items.count - 1 ? "Finish" : "Next Item",
                             onSaved: { advanceFromItem(index) }
@@ -126,12 +128,19 @@ struct RateCombinationView: View {
 /// `Domain/AttributePreferenceProfile.swift` and
 /// `docs/decisions/stylist-intelligence-engine.md` for the mapping.
 private struct RateCombinationQuestionsView: View {
+    let imageAssetName: String
     @Bindable var viewModel: RateCombinationViewModel
     let submitLabel: String
     let onSaved: () -> Void
 
     var body: some View {
         Form {
+            Section {
+                combinationImage
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
             Section("Overall Satisfaction") {
                 StarRatingRow(rating: $viewModel.overallSatisfaction)
             }
@@ -238,6 +247,23 @@ private struct RateCombinationQuestionsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.state == .saving)
             .listRowBackground(Color.clear)
+        }
+    }
+
+    /// Mirrors `CombinationDetailView.CombinationDetailPage.image`'s pattern
+    /// — the saved flatlay render, so the user sees the whole outfit while
+    /// rating it overall.
+    @ViewBuilder
+    private var combinationImage: some View {
+        if let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+        } else {
+            Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
+                .foregroundStyle(.secondary)
         }
     }
 }

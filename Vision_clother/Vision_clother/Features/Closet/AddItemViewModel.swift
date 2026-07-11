@@ -2,11 +2,11 @@
 //  AddItemViewModel.swift
 //  Vision_clother
 //
-//  Drives the ingestion pipeline (PRD.md §3.1): capture -> on-device
-//  background isolation (Services/BackgroundIsolationService.swift) ->
-//  vision-LLM metadata tagging (Services/VisionMetadataExtractionService.swift)
-//  -> persist as a `WardrobeItem`. V1 scope is one garment per photo
-//  (CLAUDE.md guardrail #4).
+//  Drives the "Enter Details Manually" path only — camera/photo-library
+//  capture now hands off straight to `Features/JobQueue/JobQueueStore.swift`,
+//  which runs background isolation -> vision-LLM tagging -> save without a
+//  review step. This view model exists for manual entry, where there is no
+//  LLM guess to skip reviewing.
 //
 
 import Foundation
@@ -17,8 +17,6 @@ import Observation
 final class AddItemViewModel {
     enum State: Equatable {
         case idle
-        case isolatingBackground
-        case taggingMetadata
         case editingMetadata
         case saving
         case failed(String)
@@ -29,145 +27,25 @@ final class AddItemViewModel {
     /// dismiss itself rather than the view model owning navigation.
     private(set) var didSave = false
 
-    // Editable fields for the review/manual form
-    var slot: Slot = .top
-    var formalityScore: Double = 3.0
-    var primaryHex: String = "#FFFFFF"
-    var secondaryHex: String? = nil
-    var colorCategory: ColorVibe = .neutral
-    var undertone: Undertone? = nil
-    var pattern: GarmentPattern = .solid
-    var seasonality: [Season] = [.summer, .springFall, .winter]
-    var fabricWeight: FabricWeight = .medium
-    /// One concise sentence describing the garment — becomes the catalog
-    /// entry text `Domain/WardrobeCatalogBuilder.swift` sends to the
-    /// recommendation LLM (PRD §3.7). Empty for fully manual entries with no
-    /// vision-tagging pass.
-    var itemDescription: String = ""
-    var styleTags: [String] = []
-
-    // Rich styling attributes (added 2026-07-10)
-    var garmentSubtype: String = ""
-    var fit: String = ""
-    var silhouette: String = ""
-    var material: String = ""
-    var texture: String = ""
-
-    private(set) var isolatedImageData: Data? = nil
+    let editor = GarmentAttributesEditorModel()
 
     private let repository: WardrobeRepository
-    private let backgroundIsolationService: BackgroundIsolationService
-    private let visionMetadataService: VisionMetadataExtractionService
 
-    init(
-        repository: WardrobeRepository,
-        backgroundIsolationService: BackgroundIsolationService = MockBackgroundIsolationService(),
-        visionMetadataService: VisionMetadataExtractionService = MockVisionMetadataExtractionService()
-    ) {
+    init(repository: WardrobeRepository) {
         self.repository = repository
-        self.backgroundIsolationService = backgroundIsolationService
-        self.visionMetadataService = visionMetadataService
-    }
-
-    /// Runs the capture -> isolate -> tag pipeline, transitioning to `.editingMetadata`
-    /// on success or failure so the user can review/edit/enter manual values.
-    func ingest(rawImageData: Data) async {
-        state = .isolatingBackground
-        let imageToTag: Data
-        do {
-            let isolated = try await backgroundIsolationService.isolateForeground(from: rawImageData)
-            self.isolatedImageData = isolated
-            imageToTag = isolated
-        } catch {
-            print("Background isolation failed: \(error). Falling back to raw image for LLM tagging.")
-            self.isolatedImageData = rawImageData
-            imageToTag = rawImageData
-        }
-
-        state = .taggingMetadata
-        do {
-            let metadata = try await visionMetadataService.extractMetadata(imageData: imageToTag)
-
-            self.slot = metadata.slot
-            self.formalityScore = metadata.formalityScore
-            self.primaryHex = metadata.colorProfile.primaryHex
-            self.secondaryHex = metadata.colorProfile.secondaryHex
-            self.colorCategory = metadata.colorProfile.category
-            self.undertone = metadata.colorProfile.undertone
-            self.pattern = metadata.pattern
-            self.seasonality = metadata.seasonality
-            self.fabricWeight = metadata.fabricWeight
-            self.itemDescription = metadata.description
-            self.styleTags = metadata.styleTags
-            self.garmentSubtype = metadata.garmentSubtype ?? ""
-            self.fit = metadata.fit ?? ""
-            self.silhouette = metadata.silhouette ?? ""
-            self.material = metadata.material ?? ""
-            self.texture = metadata.texture ?? ""
-
-            state = .editingMetadata
-        } catch {
-            if let tagError = error as? VisionMetadataExtractionError {
-                state = .failed(tagError.errorDescription ?? "Couldn't tag that item.")
-            } else {
-                state = .failed(error.localizedDescription)
-            }
-        }
     }
 
     /// Pre-populates default fields for full manual entry
     func startManualEntry(defaultSlot: Slot) {
-        self.slot = defaultSlot
-        self.formalityScore = 3.0
-        self.primaryHex = "#FFFFFF"
-        self.secondaryHex = nil
-        self.colorCategory = .neutral
-        self.undertone = nil
-        self.pattern = .solid
-        self.seasonality = [.summer, .springFall, .winter]
-        self.fabricWeight = .medium
-        self.itemDescription = ""
-        self.styleTags = []
-        self.garmentSubtype = ""
-        self.fit = ""
-        self.silhouette = ""
-        self.material = ""
-        self.texture = ""
-        self.isolatedImageData = nil
-
+        editor.reset(defaultSlot: defaultSlot)
         state = .editingMetadata
     }
 
-    /// Persists the reviewed or manually entered item
+    /// Persists the manually entered item
     func saveItem() async {
         state = .saving
         do {
-            var filename: String? = nil
-            if let isolatedImageData {
-                filename = try ImageStorage.save(isolatedImageData)
-            }
-
-            let item = WardrobeItem(
-                slot: slot,
-                formalityScore: formalityScore,
-                colorProfile: ColorProfile(
-                    primaryHex: primaryHex,
-                    secondaryHex: secondaryHex,
-                    category: colorCategory,
-                    undertone: undertone
-                ),
-                pattern: pattern,
-                seasonality: seasonality,
-                fabricWeight: fabricWeight,
-                imageAssetName: filename,
-                itemDescription: itemDescription.isEmpty ? nil : itemDescription,
-                styleTags: styleTags,
-                garmentSubtype: garmentSubtype.isEmpty ? nil : garmentSubtype,
-                fit: fit.isEmpty ? nil : fit,
-                silhouette: silhouette.isEmpty ? nil : silhouette,
-                material: material.isEmpty ? nil : material,
-                texture: texture.isEmpty ? nil : texture
-            )
+            let item = WardrobeItem.make(from: editor.makeMetadata(), imageAssetName: nil)
             try repository.save(item)
 
             state = .idle

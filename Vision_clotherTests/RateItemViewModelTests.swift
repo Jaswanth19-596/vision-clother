@@ -95,6 +95,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
 
     func fetchInventory() throws -> [WardrobeItem] { savedItems }
     func save(_ item: WardrobeItem) throws { savedItems.append(item) }
+    func update(_ item: WardrobeItem) throws {}
     func delete(_ item: WardrobeItem) throws { savedItems.removeAll { $0.id == item.id } }
     func fetchFeedbackHistory() throws -> FeedbackHistory { FeedbackHistory() }
 

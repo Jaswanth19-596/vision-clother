@@ -33,6 +33,10 @@ struct OutfitRatingSubmission {
 protocol WardrobeRepository {
     func fetchInventory() throws -> [WardrobeItem]
     func save(_ item: WardrobeItem) throws
+    /// Persists in-place edits to an already-saved item (edit-after-save,
+    /// `Features/Closet/EditItemView.swift`) — explicit `save()` on the
+    /// context, no `insert`, since the item is already tracked.
+    func update(_ item: WardrobeItem) throws
     func delete(_ item: WardrobeItem) throws
 
     /// Aggregates all persisted feedback into the shape the deterministic
@@ -108,6 +112,10 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.save()
     }
 
+    func update(_ item: WardrobeItem) throws {
+        try modelContext.save()
+    }
+
     func delete(_ item: WardrobeItem) throws {
         // Best-effort — an orphaned file is a disk-space leak, not a
         // correctness issue worth failing the delete over.
@@ -119,6 +127,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     }
 
     func fetchFeedbackHistory() throws -> FeedbackHistory {
+        let now = Date.now
         let pairFeedbacks = try modelContext.fetch(FetchDescriptor<PairFeedback>())
         let itemFeedbacks = try modelContext.fetch(FetchDescriptor<ItemFeedback>())
         let itemRatings = try modelContext.fetch(FetchDescriptor<ItemRating>())
@@ -139,6 +148,13 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             entry.total += 1
             if feedback.likedFit { entry.likes += 1 }
             history.itemFeedback[feedback.itemID] = entry
+
+            // Read Disliked Signals: a time-decayed net-negativity tally,
+            // separate from the flat `itemFeedback` tally above — feeds
+            // `OutfitRecommendationEngine.outfitScore`'s negative-feedback
+            // penalty (previously this history was collected but never read).
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
+            history.itemNegativeSignal[feedback.itemID, default: 0] += weight * (feedback.likedFit ? -1 : 1)
         }
 
         // Item Rating & Preference Learning: fold each rich `ItemRating`
@@ -151,6 +167,9 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             entry.total += 1
             if rating.impliesLiked { entry.likes += 1 }
             history.itemFeedback[rating.itemID] = entry
+
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: rating.recordedAt, now: now)
+            history.itemNegativeSignal[rating.itemID, default: 0] += weight * (0.5 - rating.normalizedValue) * 2
         }
 
         // Stylist Intelligence Engine Phase 1: Favorite/Weakest Item feeds
@@ -159,16 +178,52 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // `PairCompatibilityScoring.itemPreference`'s existing shrinkage
         // with no new scoring math.
         for feedback in outfitFeedbacks {
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
             if let favoriteItemID = feedback.favoriteItemID {
                 var entry = history.itemFeedback[favoriteItemID] ?? (likes: 0, total: 0)
                 entry.total += 1
                 entry.likes += 1
                 history.itemFeedback[favoriteItemID] = entry
+                history.itemNegativeSignal[favoriteItemID, default: 0] += weight * -1
             }
             if let weakestItemID = feedback.weakestItemID {
                 var entry = history.itemFeedback[weakestItemID] ?? (likes: 0, total: 0)
                 entry.total += 1
                 history.itemFeedback[weakestItemID] = entry
+                history.itemNegativeSignal[weakestItemID, default: 0] += weight * 1
+            }
+        }
+
+        // Read Disliked Signals (outfit level): a freshly-generated
+        // `OutfitCombination` has no durable id of its own until saved, so
+        // whole-outfit dislike history can only be looked up by which items
+        // it actually contains — join every `OutfitFeedback` back to the
+        // `SavedCombination` it rated and key the resulting time-decayed
+        // net-negativity by that outfit's full item-id set.
+        if !outfitFeedbacks.isEmpty {
+            let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
+            let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
+
+            for feedback in outfitFeedbacks {
+                guard let combination = combinationsByID[feedback.outfitID] else { continue }
+                let itemSet = Set(
+                    [combination.topItemID, combination.bottomItemID, combination.footwearItemID, combination.outerwearItemID]
+                        .compactMap { $0 }
+                )
+                guard !itemSet.isEmpty else { continue }
+
+                let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
+                // Prefer the richer `normalizedRating` (continuous [0,1])
+                // when the detailed "Rate this outfit" flow recorded one;
+                // fall back to the binary `likedOverall` from the simple
+                // auto-recorded save-time event. Positive = net dislike.
+                let signedSignal: Double
+                if let normalizedRating = feedback.normalizedRating {
+                    signedSignal = (0.5 - normalizedRating) * 2
+                } else {
+                    signedSignal = feedback.likedOverall ? -1 : 1
+                }
+                history.outfitNegativeSignalByItemSet[itemSet, default: 0] += weight * signedSignal
             }
         }
 
@@ -193,7 +248,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     pattern: item.pattern,
                     formalityBand: Int(item.formalityScore.rounded()),
                     styleIdentity: rating.styleIdentity.map { Double($0 - 1) / 4.0 } ?? 0.5,
-                    styleTags: item.styleTags
+                    styleTags: item.styleTags,
+                    recordedAt: rating.recordedAt
                 )
             }
 
@@ -229,12 +285,15 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                         styleTags: item.styleTags,
                         silhouetteTag: item.silhouette,
                         formalityBand: Int(item.formalityScore.rounded()),
-                        fabricWeight: item.fabricWeight
+                        fabricWeight: item.fabricWeight,
+                        recordedAt: feedback.recordedAt
                     )
                 }
             }
 
-            history.attributeProfile = AttributePreferenceProfile.build(from: ratedAttributes, outfitDimensionRatings: outfitDimensionRatings)
+            history.attributeProfile = AttributePreferenceProfile.build(
+                from: ratedAttributes, outfitDimensionRatings: outfitDimensionRatings, inventory: inventory, now: now
+            )
         }
 
         return history

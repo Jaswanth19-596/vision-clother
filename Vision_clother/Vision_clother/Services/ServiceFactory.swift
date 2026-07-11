@@ -62,4 +62,10 @@ enum ServiceFactory {
     static func makePhotoLibrarySaver() -> PhotoLibrarySaver {
         PHPhotoLibraryImageSaver()
     }
+
+    /// On-device `UNUserNotificationCenter`, same posture as
+    /// `makePhotoLibrarySaver` — no API key gate, runs everywhere.
+    static func makeNotificationService() -> JobNotificationService {
+        UNUserNotificationJobService()
+    }
 }

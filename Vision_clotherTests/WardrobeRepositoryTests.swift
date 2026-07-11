@@ -284,6 +284,54 @@ struct WardrobeRepositoryTests {
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
     }
 
+    @Test func dislikedSavedCombinationPopulatesOutfitNegativeSignalByExactItemSet() throws {
+        // Read Disliked Signals (2026-07-11): a freshly generated
+        // OutfitCombination has no durable id of its own, so whole-outfit
+        // dislike history must be matched by which items it contains.
+        let repository = try makeRepository()
+        let topID = UUID()
+        let bottomID = UUID()
+        let combination = SavedCombination(
+            imageAssetName: "outfit.png",
+            topItemID: topID,
+            bottomItemID: bottomID,
+            topLabel: "top",
+            bottomLabel: "bottom",
+            origin: "pairing"
+        )
+        try repository.saveCombination(combination)
+        try repository.recordOutfitFeedback(outfitID: combination.id, likedOverall: false)
+
+        let history = try repository.fetchFeedbackHistory()
+
+        let itemSet = Set([topID, bottomID])
+        #expect((history.outfitNegativeSignalByItemSet[itemSet] ?? 0) > 0)
+        // A different item set must not pick up any signal.
+        #expect(history.outfitNegativeSignalByItemSet[Set([UUID(), UUID()])] == nil)
+    }
+
+    @Test func likedSavedCombinationDoesNotPopulateOutfitNegativeSignal() throws {
+        let repository = try makeRepository()
+        let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
+        try repository.saveCombination(combination)
+        try repository.recordOutfitFeedback(outfitID: combination.id, likedOverall: true)
+
+        let history = try repository.fetchFeedbackHistory()
+
+        let itemSet = Set([combination.topItemID, combination.bottomItemID])
+        #expect((history.outfitNegativeSignalByItemSet[itemSet] ?? 0) <= 0)
+    }
+
+    @Test func dislikedItemFeedbackPopulatesItemNegativeSignal() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.recordItemFeedback(itemID: itemID, likedFit: false)
+
+        let history = try repository.fetchFeedbackHistory()
+
+        #expect((history.itemNegativeSignal[itemID] ?? 0) > 0)
+    }
+
     @Test func simpleAutoRecordedOutfitFeedbackDoesNotContributeToAttributeProfile() throws {
         let repository = try makeRepository()
         try repository.recordOutfitFeedback(outfitID: UUID(), likedOverall: true)

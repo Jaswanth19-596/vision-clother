@@ -21,7 +21,6 @@ struct ManualPairingView: View {
     @State private var viewModel: ManualPairingViewModel?
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var isCameraPresented = false
-    @State private var isRateOutfitSheetPresented = false
 
     var body: some View {
         NavigationStack {
@@ -50,13 +49,9 @@ struct ManualPairingView: View {
             )
         }
         .onChange(of: viewModel?.didSaveOutfit) { _, didSave in
-            // Item Rating & Preference Learning: prompt to rate the just-saved
-            // top/bottom before dismissing, rather than dismissing immediately —
-            // the rating sheet's own dismissal (Finish/Skip) closes this screen.
-            if didSave == true { isRateOutfitSheetPresented = true }
-        }
-        .sheet(isPresented: $isRateOutfitSheetPresented, onDismiss: { dismiss() }) {
-            RateOutfitView(items: viewModel?.savedOutfitItems ?? [])
+            // Rating now happens exclusively from the Combinations tab — a
+            // successful save just closes this screen.
+            if didSave == true { dismiss() }
         }
         .fullScreenCover(isPresented: $isCameraPresented) {
             PortraitCameraCaptureView { data in
@@ -188,12 +183,21 @@ struct ManualPairingView: View {
                 }
                 .frame(maxHeight: 400)
 
-                Text("Save this outfit?").font(.headline)
+                Text("Did you like this outfit?").font(.headline)
                 HStack {
-                    Button("No") { viewModel.discardPreview() }
-                        .buttonStyle(.bordered)
-                    Button("Yes") { Task { await viewModel.saveOutfit() } }
-                        .buttonStyle(.borderedProminent)
+                    Button {
+                        Task { await viewModel.saveOutfit(liked: false) }
+                    } label: {
+                        Label("Dislike", systemImage: "hand.thumbsdown")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        Task { await viewModel.saveOutfit(liked: true) }
+                    } label: {
+                        Label("Like", systemImage: "hand.thumbsup")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             }
 

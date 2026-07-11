@@ -8,6 +8,7 @@
 //  affinityBonus used to bias (not filter) recommendations.
 //
 
+import Foundation
 import Testing
 @testable import Vision_clother
 
@@ -191,6 +192,59 @@ struct AttributePreferenceProfileTests {
         let item = makeItem()
 
         #expect(profile.affinityBonus(for: item) == 0)
+    }
+
+    // MARK: - Math Engine Overhaul: exponential time-decay
+
+    @Test func staleRatingsContributeLessThanRecentOnesOfTheSameStrength() {
+        let now = Date.now
+        let recentOnly = [RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now)]
+        // 120 days ago — two 60-day half-lives, so this rating's weight
+        // should have decayed to roughly a quarter of the recent one's.
+        let staleOnly = [RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now.addingTimeInterval(-120 * 86400))]
+
+        let recentProfile = AttributePreferenceProfile.build(from: recentOnly, now: now)
+        let staleProfile = AttributePreferenceProfile.build(from: staleOnly, now: now)
+
+        let recentAffinity = recentProfile.colorVibeAffinity[.vibrant] ?? 0.5
+        let staleAffinity = staleProfile.colorVibeAffinity[.vibrant] ?? 0.5
+
+        // Both are still likes (affinity > neutral), but the stale one pulls
+        // less far from 0.5 than the recent one — decay reduces its
+        // effective weight against the same flat prior.
+        #expect(staleAffinity > 0.5)
+        #expect(staleAffinity < recentAffinity)
+    }
+
+    @Test func decayWeightIsApproximatelyHalfAtTheSixtyDayHalfLife() {
+        let now = Date.now
+        let sixtyDaysAgo = now.addingTimeInterval(-60 * 86400)
+        let weight = AttributePreferenceProfile.decayWeight(recordedAt: sixtyDaysAgo, now: now)
+        #expect(abs(weight - 0.5) < 0.01)
+    }
+
+    // MARK: - Math Engine Overhaul: dynamic Bayesian shrinkage prior
+
+    @Test func aLargerClosetBaselineRequiresMoreFeedbackToMoveTheSameAmount() {
+        // A handful of likes should move a rarely-owned attribute's affinity
+        // further from neutral than the same handful of likes moves an
+        // attribute the closet already has many items of — the prior scales
+        // with how entrenched that attribute already is.
+        let ratings = (0..<3).map { _ in
+            RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2)
+        }
+
+        let smallCloset = [makeItem(colorVibe: .vibrant)]
+        let largeCloset = (0..<50).map { _ in makeItem(colorVibe: .vibrant) }
+
+        let smallClosetProfile = AttributePreferenceProfile.build(from: ratings, inventory: smallCloset)
+        let largeClosetProfile = AttributePreferenceProfile.build(from: ratings, inventory: largeCloset)
+
+        let smallAffinity = smallClosetProfile.colorVibeAffinity[.vibrant] ?? 0.5
+        let largeAffinity = largeClosetProfile.colorVibeAffinity[.vibrant] ?? 0.5
+
+        #expect(smallAffinity > largeAffinity)
+        #expect(largeAffinity > 0.5) // still a net-positive signal, just more shrunk
     }
 
     @Test func ghostElementsAreScoredThroughTheIdenticalPath() {

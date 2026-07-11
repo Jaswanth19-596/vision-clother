@@ -38,18 +38,28 @@ struct RatedAttributes {
     /// `WardrobeItem.styleTags` for the rated item — paired with
     /// `styleIdentity` above.
     let styleTags: [String]
+    /// `ItemRating.recordedAt` — feeds `build(from:)`'s exponential
+    /// time-decay weighting. Defaulted to `.now` so existing call sites
+    /// (tests, and any future direct construction) that don't care about
+    /// recency keep contributing at full weight, unchanged from before decay
+    /// existed.
+    let recordedAt: Date
 
     /// Explicit init (rather than relying on the synthesized memberwise
-    /// init's default-value support) — with two trailing defaulted
-    /// parameters, SourceKit/xcodebuild inference for this struct's implicit
-    /// memberwise init proved unreliable at call sites.
-    init(value: Double, colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleIdentity: Double = 0.5, styleTags: [String] = []) {
+    /// init's default-value support) — with trailing defaulted parameters,
+    /// SourceKit/xcodebuild inference for this struct's implicit memberwise
+    /// init proved unreliable at call sites.
+    init(
+        value: Double, colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int,
+        styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now
+    ) {
         self.value = value
         self.colorVibe = colorVibe
         self.pattern = pattern
         self.formalityBand = formalityBand
         self.styleIdentity = styleIdentity
         self.styleTags = styleTags
+        self.recordedAt = recordedAt
     }
 }
 
@@ -79,6 +89,27 @@ struct OutfitDimensionRatedAttributes {
     let silhouetteTag: String?
     let formalityBand: Int
     let fabricWeight: FabricWeight
+    /// `OutfitFeedback.recordedAt` — feeds `build(from:)`'s exponential
+    /// time-decay weighting, same as `RatedAttributes.recordedAt`.
+    let recordedAt: Date
+
+    init(
+        colorHarmony: Double, occasionMatch: Double, styleMatch: Double, silhouette: Double, weatherFit: Double,
+        colorVibe: ColorVibe, styleTags: [String], silhouetteTag: String?, formalityBand: Int,
+        fabricWeight: FabricWeight, recordedAt: Date = .now
+    ) {
+        self.colorHarmony = colorHarmony
+        self.occasionMatch = occasionMatch
+        self.styleMatch = styleMatch
+        self.silhouette = silhouette
+        self.weatherFit = weatherFit
+        self.colorVibe = colorVibe
+        self.styleTags = styleTags
+        self.silhouetteTag = silhouetteTag
+        self.formalityBand = formalityBand
+        self.fabricWeight = fabricWeight
+        self.recordedAt = recordedAt
+    }
 }
 
 /// Bayesian-shrunk affinity per attribute value, in `[0,1]`, seeded at a
@@ -102,71 +133,140 @@ struct AttributePreferenceProfile {
     /// aesthetic prior or the existing item/pair preference terms.
     static let maxBonusMagnitude: Double = 0.3
 
+    /// Exponential time-decay rate for taste signals, corresponding to a
+    /// 60-day half-life (`ln(2) / 60 ≈ 0.01155`) — a rating from 60 days ago
+    /// contributes half the weight of one recorded today, so recent taste
+    /// shifts (e.g. a seasonal wardrobe change) outweigh stale history
+    /// without discarding it outright.
+    static let decayLambda: Double = 0.01155
+
+    /// `e^(-λ·t)` where `t` is the age of the signal in days. Clamped to
+    /// non-negative elapsed time so a `recordedAt` at or after `now` (e.g.
+    /// same-instant test construction) never produces a weight above 1.0.
+    static func decayWeight(recordedAt: Date, now: Date = .now) -> Double {
+        let elapsedDays = max(0, now.timeIntervalSince(recordedAt) / 86400)
+        return exp(-decayLambda * elapsedDays)
+    }
+
+    /// Dynamic Bayesian shrinkage prior — how strongly `shrunkAffinity` pulls
+    /// a sparsely-rated bucket back toward neutral 0.5 scales with how
+    /// common that attribute value already is in the closet: a user with 40
+    /// casual items needs more contrary feedback to move the "Casual"
+    /// affinity than a user with 2 formal items needs to move "Formal,"
+    /// since the former reflects a much more entrenched, well-sampled
+    /// pattern of behavior. Floors at the original flat constant (3.0) so a
+    /// rarely-owned attribute never becomes *more* volatile than before this
+    /// existed.
+    private static func dynamicPriorWeight(baselineCount: Int) -> Double {
+        max(PairCompatibilityScoring.defaultPriorWeight, Double(baselineCount) * 0.1)
+    }
+
     static func build(
         from ratings: [RatedAttributes],
         outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
-        priorWeight: Double = PairCompatibilityScoring.defaultPriorWeight
+        inventory: [WardrobeItem] = [],
+        now: Date = .now
     ) -> AttributePreferenceProfile {
-        var colorSums: [ColorVibe: (sum: Double, count: Int)] = [:]
-        var patternSums: [GarmentPattern: (sum: Double, count: Int)] = [:]
-        var formalitySums: [Int: (sum: Double, count: Int)] = [:]
-        var styleTagSums: [String: (sum: Double, count: Int)] = [:]
-        var silhouetteSums: [String: (sum: Double, count: Int)] = [:]
-        var fabricWeightSums: [FabricWeight: (sum: Double, count: Int)] = [:]
+        var colorSums: [ColorVibe: (sum: Double, count: Double)] = [:]
+        var patternSums: [GarmentPattern: (sum: Double, count: Double)] = [:]
+        var formalitySums: [Int: (sum: Double, count: Double)] = [:]
+        var styleTagSums: [String: (sum: Double, count: Double)] = [:]
+        var silhouetteSums: [String: (sum: Double, count: Double)] = [:]
+        var fabricWeightSums: [FabricWeight: (sum: Double, count: Double)] = [:]
 
         for rating in ratings {
-            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.value
-            colorSums[rating.colorVibe, default: (0, 0)].count += 1
+            let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
 
-            patternSums[rating.pattern, default: (0, 0)].sum += rating.value
-            patternSums[rating.pattern, default: (0, 0)].count += 1
+            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.value * weight
+            colorSums[rating.colorVibe, default: (0, 0)].count += weight
 
-            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.value
-            formalitySums[rating.formalityBand, default: (0, 0)].count += 1
+            patternSums[rating.pattern, default: (0, 0)].sum += rating.value * weight
+            patternSums[rating.pattern, default: (0, 0)].count += weight
+
+            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.value * weight
+            formalitySums[rating.formalityBand, default: (0, 0)].count += weight
 
             for tag in rating.styleTags {
-                styleTagSums[tag, default: (0, 0)].sum += rating.styleIdentity
-                styleTagSums[tag, default: (0, 0)].count += 1
+                styleTagSums[tag, default: (0, 0)].sum += rating.styleIdentity * weight
+                styleTagSums[tag, default: (0, 0)].count += weight
             }
         }
 
         for rating in outfitDimensionRatings {
-            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony
-            colorSums[rating.colorVibe, default: (0, 0)].count += 1
+            let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
 
-            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch
-            formalitySums[rating.formalityBand, default: (0, 0)].count += 1
+            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony * weight
+            colorSums[rating.colorVibe, default: (0, 0)].count += weight
+
+            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch * weight
+            formalitySums[rating.formalityBand, default: (0, 0)].count += weight
 
             for tag in rating.styleTags {
-                styleTagSums[tag, default: (0, 0)].sum += rating.styleMatch
-                styleTagSums[tag, default: (0, 0)].count += 1
+                styleTagSums[tag, default: (0, 0)].sum += rating.styleMatch * weight
+                styleTagSums[tag, default: (0, 0)].count += weight
             }
 
             if let silhouetteTag = rating.silhouetteTag {
-                silhouetteSums[silhouetteTag, default: (0, 0)].sum += rating.silhouette
-                silhouetteSums[silhouetteTag, default: (0, 0)].count += 1
+                silhouetteSums[silhouetteTag, default: (0, 0)].sum += rating.silhouette * weight
+                silhouetteSums[silhouetteTag, default: (0, 0)].count += weight
             }
 
-            fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.weatherFit
-            fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += 1
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.weatherFit * weight
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
+        }
+
+        // Baseline counts — how many closet items currently share each
+        // attribute value — feed the dynamic prior above. An item can
+        // contribute to multiple style-tag buckets at once (it may carry
+        // several tags); every other axis is one-value-per-item.
+        var colorBaseline: [ColorVibe: Int] = [:]
+        var patternBaseline: [GarmentPattern: Int] = [:]
+        var formalityBaseline: [Int: Int] = [:]
+        var styleTagBaseline: [String: Int] = [:]
+        var silhouetteBaseline: [String: Int] = [:]
+        var fabricWeightBaseline: [FabricWeight: Int] = [:]
+        for item in inventory {
+            colorBaseline[item.colorProfile.category, default: 0] += 1
+            patternBaseline[item.pattern, default: 0] += 1
+            formalityBaseline[Int(item.formalityScore.rounded()), default: 0] += 1
+            for tag in item.styleTags {
+                styleTagBaseline[tag, default: 0] += 1
+            }
+            if let silhouette = item.silhouette {
+                silhouetteBaseline[silhouette, default: 0] += 1
+            }
+            fabricWeightBaseline[item.fabricWeight, default: 0] += 1
+        }
+
+        func affinityMap<Key: Hashable>(
+            sums: [Key: (sum: Double, count: Double)],
+            baseline: [Key: Int]
+        ) -> [Key: Double] {
+            sums.reduce(into: [Key: Double]()) { result, entry in
+                let (key, aggregate) = entry
+                let priorWeight = dynamicPriorWeight(baselineCount: baseline[key] ?? 0)
+                result[key] = shrunkAffinity(sum: aggregate.sum, count: aggregate.count, priorWeight: priorWeight)
+            }
         }
 
         var profile = AttributePreferenceProfile()
-        profile.colorVibeAffinity = colorSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
-        profile.patternAffinity = patternSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
-        profile.formalityAffinity = formalitySums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
-        profile.styleTagAffinity = styleTagSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
-        profile.silhouetteAffinity = silhouetteSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
-        profile.fabricWeightAffinity = fabricWeightSums.mapValues { shrunkAffinity(sum: $0.sum, count: $0.count, priorWeight: priorWeight) }
+        profile.colorVibeAffinity = affinityMap(sums: colorSums, baseline: colorBaseline)
+        profile.patternAffinity = affinityMap(sums: patternSums, baseline: patternBaseline)
+        profile.formalityAffinity = affinityMap(sums: formalitySums, baseline: formalityBaseline)
+        profile.styleTagAffinity = affinityMap(sums: styleTagSums, baseline: styleTagBaseline)
+        profile.silhouetteAffinity = affinityMap(sums: silhouetteSums, baseline: silhouetteBaseline)
+        profile.fabricWeightAffinity = affinityMap(sums: fabricWeightSums, baseline: fabricWeightBaseline)
         return profile
     }
 
     /// `(w0 * 0.5 + sum) / (w0 + count)`, clamped to `[0,1]`. NaN-safe: the
     /// denominator is `priorWeight + count`, and `priorWeight` is always
     /// positive by default, so this only divides by zero if a caller passes
-    /// `priorWeight: 0` with `count: 0` — guarded explicitly anyway.
-    private static func shrunkAffinity(sum: Double, count: Int, priorWeight: Double) -> Double {
-        let denominator = priorWeight + Double(count)
+    /// `priorWeight: 0` with `count: 0` — guarded explicitly anyway. `count`
+    /// is a decay-weighted sum (not a raw tally) now that `build(from:)`
+    /// applies exponential time-decay, but the shrinkage shape is identical.
+    private static func shrunkAffinity(sum: Double, count: Double, priorWeight: Double) -> Double {
+        let denominator = priorWeight + count
         guard denominator > 0 else { return 0.5 }
         let numerator = priorWeight * 0.5 + sum
         return (numerator / denominator).clamped(to: 0...1)

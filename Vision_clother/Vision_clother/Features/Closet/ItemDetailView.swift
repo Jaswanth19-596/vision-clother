@@ -20,7 +20,7 @@ struct ItemDetailView: View {
     @State var selectedItemID: UUID
 
     @State private var isDeleteAlertPresented = false
-    @State private var isRateSheetPresented = false
+    @State private var isEditSheetPresented = false
 
     var body: some View {
         NavigationStack {
@@ -30,9 +30,6 @@ struct ItemDetailView: View {
                         VStack(spacing: 24) {
                             garmentPreview(for: item)
                             metadataSection(for: item)
-                            if !item.isGhostElement {
-                                rateButton
-                            }
                         }
                         .padding()
                     }
@@ -61,11 +58,16 @@ struct ItemDetailView: View {
                             isDeleteAlertPresented = true
                         }
                     }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Edit") {
+                            isEditSheetPresented = true
+                        }
+                    }
                 }
             }
-            .sheet(isPresented: $isRateSheetPresented) {
+            .sheet(isPresented: $isEditSheetPresented) {
                 if let currentItem {
-                    RateItemView(item: currentItem)
+                    EditItemView(item: currentItem)
                 }
             }
             .alert("Delete this item?", isPresented: $isDeleteAlertPresented) {
@@ -124,18 +126,6 @@ struct ItemDetailView: View {
                     }
                 }
         }
-    }
-
-    // MARK: - Rating
-
-    private var rateButton: some View {
-        Button {
-            isRateSheetPresented = true
-        } label: {
-            Label("Rate this item", systemImage: "star.bubble")
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
     }
 
     // MARK: - Metadata

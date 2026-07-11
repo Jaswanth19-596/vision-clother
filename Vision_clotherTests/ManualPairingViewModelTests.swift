@@ -179,7 +179,7 @@ struct ManualPairingViewModelTests {
         viewModel.selectTop(top)
         viewModel.selectBottom(bottom)
 
-        await viewModel.saveOutfit()
+        await viewModel.saveOutfit(liked: true)
 
         #expect(viewModel.didSaveOutfit == false)
         #expect(repository.recordedPairFeedback.isEmpty)
@@ -220,7 +220,7 @@ struct ManualPairingViewModelTests {
             return
         }
 
-        await viewModel.saveOutfit()
+        await viewModel.saveOutfit(liked: true)
         defer { repository.savedCombinations.forEach { ImageStorage.delete($0.imageAssetName) } }
 
         #expect(viewModel.didSaveOutfit == true)
@@ -236,6 +236,50 @@ struct ManualPairingViewModelTests {
         #expect(repository.savedCombinations.first?.topItemID == top.id)
         #expect(repository.savedCombinations.first?.bottomItemID == bottom.id)
         #expect(photoLibrarySaver.saveCallCount == 1)
+    }
+
+    @Test func dislikeStillSavesTheOutfitButRecordsNegativeFeedback() async throws {
+        // Feedback-learning pass: Dislike must not silently discard the
+        // pairing — both Like and Dislike always save, so the disliked pair
+        // still gets a durable id its feedback row can reference (see
+        // Domain/OutfitRecommendationEngine.swift's outfit-level penalty,
+        // which needs exactly this history to work).
+        defer { UserPortraitStorage.delete() }
+        let repository = InMemoryWardrobeRepository()
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        repository.savedItems = [top, bottom]
+
+        let tryOnService = ControllableTryOnRenderService()
+        let viewModel = ManualPairingViewModel(
+            repository: repository,
+            validationService: MockPersonPhotoValidationService(),
+            tryOnService: tryOnService
+        )
+        viewModel.savePortrait(Data([0x01]))
+        viewModel.selectTop(top)
+        viewModel.selectBottom(bottom)
+
+        viewModel.generatePreview()
+        try await waitUntil {
+            switch viewModel.state {
+            case .success, .failed: return true
+            default: return false
+            }
+        }
+        guard case .success = viewModel.state else {
+            Issue.record("Expected .success, got \(viewModel.state)")
+            return
+        }
+
+        await viewModel.saveOutfit(liked: false)
+        defer { repository.savedCombinations.forEach { ImageStorage.delete($0.imageAssetName) } }
+
+        #expect(viewModel.didSaveOutfit == true)
+        #expect(repository.savedCombinations.count == 1)
+        #expect(repository.recordedPairFeedback.first?.likedTogether == false)
+        #expect(repository.recordedOutfitFeedback.first?.likedOverall == false)
+        #expect(repository.recordedOutfitFeedback.first?.outfitID == repository.savedCombinations.first?.id)
     }
 
     @Test func discardPreviewResetsWithoutPersisting() throws {
@@ -291,6 +335,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
 
     func fetchInventory() throws -> [WardrobeItem] { savedItems }
     func save(_ item: WardrobeItem) throws { savedItems.append(item) }
+    func update(_ item: WardrobeItem) throws {}
     func delete(_ item: WardrobeItem) throws { savedItems.removeAll { $0.id == item.id } }
     func fetchFeedbackHistory() throws -> FeedbackHistory { FeedbackHistory() }
 

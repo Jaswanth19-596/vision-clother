@@ -11,11 +11,20 @@ import SwiftUI
 import SwiftData
 
 struct AnalyticsView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var items: [WardrobeItem]
     @Query private var pairFeedbacks: [PairFeedback]
     @Query private var outfitFeedbacks: [OutfitFeedback]
     @Query private var itemRatings: [ItemRating]
     @Query private var styleProfiles: [UserStyleProfile]
+
+    /// Unify Business Logic (2026-07-11): reads the exact same
+    /// `AttributePreferenceProfile` `Domain/OutfitRecommendationEngine.swift`
+    /// scores against — decay-weighted, dynamic-prior-shrunk — via
+    /// `WardrobeRepository.fetchFeedbackHistory()`, rather than rebuilding an
+    /// isolated (and increasingly stale) copy of the same math locally.
+    /// Refreshed in `.onAppear` since it's a one-shot fetch, not a `@Query`.
+    @State private var feedbackHistory = FeedbackHistory()
 
     /// Single-row profile (PRD §3.8) — `Data/WardrobeRepository.swift`'s
     /// `saveUserProfile` guarantees at most one row exists.
@@ -25,42 +34,30 @@ struct AnalyticsView: View {
         Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     }
 
-    /// Item Rating & Preference Learning: the same attribute-affinity model
-    /// `Domain/OutfitRecommendationEngine.swift` uses to bias recommendations
-    /// (`Domain/AttributePreferenceProfile.swift`), surfaced here as a
-    /// read-only "Your Taste" summary.
-    private var attributeProfile: AttributePreferenceProfile {
-        let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { rating in
-            guard let item = itemsByID[rating.itemID] else { return nil }
-            return RatedAttributes(
-                value: rating.normalizedValue,
-                colorVibe: item.colorProfile.category,
-                pattern: item.pattern,
-                formalityBand: Int(item.formalityScore.rounded())
-            )
-        }
-        return AttributePreferenceProfile.build(from: ratedAttributes)
+    private func refreshFeedbackHistory() {
+        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
     }
 
     /// Top-affinity color vibes, patterns, and formality bands — only
     /// attributes with at least one rating are shown (a bare 0.5 default
     /// means "no data yet", not "neutral taste").
     private var topColorVibes: [(label: String, affinity: Double)] {
-        attributeProfile.colorVibeAffinity
+        feedbackHistory.attributeProfile.colorVibeAffinity
             .sorted { $0.value > $1.value }
             .prefix(3)
             .map { ($0.key.rawValue.replacingOccurrences(of: "_", with: " ").capitalized, $0.value) }
     }
 
     private var topPatterns: [(label: String, affinity: Double)] {
-        attributeProfile.patternAffinity
+        feedbackHistory.attributeProfile.patternAffinity
             .sorted { $0.value > $1.value }
             .prefix(3)
             .map { ($0.key.rawValue.capitalized, $0.value) }
     }
 
     private var topFormalityBands: [(label: String, affinity: Double)] {
-        attributeProfile.formalityAffinity
+        feedbackHistory.attributeProfile.formalityAffinity
             .sorted { $0.value > $1.value }
             .prefix(3)
             .map { (formalityBandLabel($0.key), $0.value) }
@@ -183,6 +180,14 @@ struct AnalyticsView: View {
                 }
             }
             .navigationTitle("Style Analytics")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    JobQueueBadgeButton()
+                }
+            }
+        }
+        .onAppear {
+            refreshFeedbackHistory()
         }
     }
 

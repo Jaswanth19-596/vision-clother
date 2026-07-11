@@ -15,13 +15,17 @@ struct TryOnResultView: View {
     let state: TryOnState
     let onCancel: () -> Void
     let onRetry: () -> Void
-    let onSave: () async -> Void
+    /// `true` for Like, `false` for Dislike — both always save the outfit
+    /// (Stylist Intelligence Engine feedback-learning pass), so there's a
+    /// durable id for the feedback row to reference regardless of which
+    /// button was tapped.
+    let onSave: (Bool) async -> Void
     let onDone: () -> Void
 
-    /// Flips to a "Saved" confirmation after tapping Save — resets whenever
-    /// a fresh render replaces `state`, since `.id(imageURL)` on the parent
-    /// sheet isn't guaranteed, so this view model's own state is the source
-    /// of truth for "have we saved *this* image".
+    /// Flips to a "Saved" confirmation after tapping Like/Dislike — resets
+    /// whenever a fresh render replaces `state`, since `.id(imageURL)` on
+    /// the parent sheet isn't guaranteed, so this view model's own state is
+    /// the source of truth for "have we saved *this* image".
     @State private var didSave = false
     /// True while `onSave()`'s Task is in flight. "Done" is disabled during
     /// this window so the caller can never read a save's results (e.g. the
@@ -56,26 +60,53 @@ struct TryOnResultView: View {
                     }
                 }
                 .frame(maxHeight: 400)
-                HStack {
-                    Button {
-                        isSaving = true
-                        Task {
-                            await onSave()
-                            didSave = true
-                            isSaving = false
-                        }
-                    } label: {
-                        if isSaving {
-                            ProgressView()
-                        } else {
-                            Label(didSave ? "Saved" : "Save", systemImage: didSave ? "checkmark" : "square.and.arrow.down")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(didSave || isSaving)
 
-                    Button("Done", action: onDone)
+                if didSave {
+                    HStack {
+                        Label("Saved", systemImage: "checkmark")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Done", action: onDone)
+                            .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    Text("Did you like this outfit?").font(.headline)
+                    HStack {
+                        Button {
+                            isSaving = true
+                            Task {
+                                await onSave(false)
+                                didSave = true
+                                isSaving = false
+                            }
+                        } label: {
+                            if isSaving {
+                                ProgressView()
+                            } else {
+                                Label("Dislike", systemImage: "hand.thumbsdown")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSaving)
+
+                        Button {
+                            isSaving = true
+                            Task {
+                                await onSave(true)
+                                didSave = true
+                                isSaving = false
+                            }
+                        } label: {
+                            if isSaving {
+                                ProgressView()
+                            } else {
+                                Label("Like", systemImage: "hand.thumbsup")
+                            }
+                        }
                         .buttonStyle(.borderedProminent)
+                        .disabled(isSaving)
+                    }
+                    Button("Done", action: onDone)
                         .disabled(isSaving)
                 }
 
@@ -99,7 +130,7 @@ struct TryOnResultView: View {
         state: .polling(stage: .rendering, elapsedSeconds: 3),
         onCancel: {},
         onRetry: {},
-        onSave: { },
+        onSave: { _ in },
         onDone: {}
     )
 }

@@ -8,28 +8,16 @@
 import SwiftUI
 import SwiftData
 
-/// One sheet modifier for both the try-on result and the follow-up rating
-/// prompt — chaining two separate `.sheet` modifiers on the same view (the
-/// prior design) is a known SwiftUI footgun where presenting the second
-/// sheet from the first's `onDismiss` can render against stale state. A
-/// single `.sheet(item:)` switching over this enum avoids that entirely.
-private enum ActiveSheet: Identifiable {
-    case tryOn
-    case rateOutfit([WardrobeItem])
-
-    var id: String {
-        switch self {
-        case .tryOn: return "tryOn"
-        case .rateOutfit: return "rateOutfit"
-        }
-    }
-}
-
 struct DailyAssistantView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(JobQueueStore.self) private var jobQueueStore
     @State private var viewModel: DailyAssistantViewModel?
     @State private var selectedOutfitID: OutfitCombination.ID?
-    @State private var activeSheet: ActiveSheet?
+    /// Lightweight local confirmation for "How does it look on me?" — the
+    /// render itself now runs as a background job
+    /// (`Features/JobQueue/JobQueueStore.swift`) with its result surfaced in
+    /// the Activity panel, not a sheet opened from here.
+    @State private var justQueuedTryOn = false
     /// Privacy opt-out (PRD §3.8) — backed by the same key
     /// `RecommendationSettings.useAIRecommendations` reads, so toggling here
     /// takes effect on the next `requestOutfitIdeas()` call without any
@@ -49,14 +37,18 @@ struct DailyAssistantView: View {
                 }
             }
             .navigationTitle("Daily Assistant")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    JobQueueBadgeButton()
+                }
+            }
         }
         .task {
             guard viewModel == nil else { return }
             viewModel = DailyAssistantViewModel(
                 repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                jobQueueStore: jobQueueStore,
                 intentService: ServiceFactory.makeIntentExtractionService(),
-                tryOnService: ServiceFactory.makeTryOnRenderService(),
-                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
                 recommendationService: ServiceFactory.makeOutfitRecommendationService(),
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
@@ -112,43 +104,6 @@ struct DailyAssistantView: View {
         .onTapGesture {
             isPromptFocused = false
         }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .tryOn:
-                TryOnResultView(
-                    state: viewModel.tryOnState,
-                    onCancel: {
-                        viewModel.cancelTryOn()
-                        activeSheet = nil
-                    },
-                    onRetry: { viewModel.retryTryOn(baseImageData: placeholderBaseImageData) },
-                    onSave: { await viewModel.saveCombination() },
-                    onDone: {
-                        // Item Rating & Preference Learning: if the save
-                        // that just finished produced real (non-ghost)
-                        // items, hand off straight to the rating sheet —
-                        // `onSave` is awaited by `TryOnResultView` before
-                        // "Done" is even enabled, so `lastSavedRatableItems`
-                        // is guaranteed settled here. Switching the same
-                        // `activeSheet` value (rather than chaining a second
-                        // `.sheet` modifier's `onDismiss`) avoids the stale
-                        // -state footgun that caused the item-rating sheet
-                        // to spin forever with nothing loaded.
-                        if !viewModel.lastSavedRatableItems.isEmpty {
-                            let items = viewModel.lastSavedRatableItems
-                            viewModel.clearRatablePrompt()
-                            activeSheet = .rateOutfit(items)
-                        } else {
-                            activeSheet = nil
-                        }
-                    }
-                )
-                .presentationDetents([.medium, .large])
-
-            case .rateOutfit(let items):
-                RateOutfitView(items: items)
-            }
-        }
     }
 
     private func promptInput(viewModel: DailyAssistantViewModel) -> some View {
@@ -197,12 +152,23 @@ struct DailyAssistantView: View {
             .onAppear { selectedOutfitID = viewModel.candidates.first?.id }
 
             if let selected = viewModel.candidates.first(where: { $0.id == selectedOutfitID }) {
-                Button("How does it look on me?") {
+                Button {
                     viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: selected)
-                    activeSheet = .tryOn
+                    justQueuedTryOn = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        justQueuedTryOn = false
+                    }
+                } label: {
+                    if justQueuedTryOn {
+                        Label("Added to queue", systemImage: "checkmark")
+                    } else {
+                        Text("How does it look on me?")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.accentColor)
+                .disabled(justQueuedTryOn)
                 .padding(.bottom)
             }
         }
@@ -219,9 +185,18 @@ struct DailyAssistantView: View {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
     DailyAssistantView()
-        .modelContainer(
-            for: [WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self],
-            inMemory: true
-        )
+        .modelContainer(container)
+        .environment(JobQueueStore(
+            repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
+            backgroundIsolationService: MockBackgroundIsolationService(),
+            visionMetadataService: MockVisionMetadataExtractionService(),
+            tryOnService: MockTryOnRenderService(),
+            photoLibrarySaver: MockPhotoLibrarySaver(),
+            notificationService: MockJobNotificationService()
+        ))
 }

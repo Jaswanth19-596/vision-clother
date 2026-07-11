@@ -26,6 +26,11 @@ struct CombinationsView: View {
                 }
             }
             .navigationTitle("Combinations")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    JobQueueBadgeButton()
+                }
+            }
             .navigationDestination(item: $selectedIndex) { index in
                 if let viewModel {
                     CombinationDetailView(viewModel: viewModel, startIndex: index)

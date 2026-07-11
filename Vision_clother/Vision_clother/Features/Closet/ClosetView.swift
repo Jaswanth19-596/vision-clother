@@ -66,6 +66,9 @@ struct ClosetView: View {
                         Label("Try On", systemImage: "person.crop.rectangle")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    JobQueueBadgeButton()
+                }
             }
             .sheet(isPresented: $isAddItemPresented) {
                 AddItemView(defaultSlot: selectedSlotForAdd)
