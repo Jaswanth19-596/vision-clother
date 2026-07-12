@@ -4,7 +4,7 @@
 //
 //  Covers the response_format-unsupported fallback path shared by
 //  OpenRouterIntentExtractionService and VisionMetadataExtractionService —
-//  `minimax/minimax-m3`'s structured-output support isn't guaranteed
+//  `google/gemini-3.1-flash-lite`'s structured-output support isn't guaranteed
 //  (CLAUDE.md §5.1), so both services fall back to parsing a plain-text
 //  reply that may be wrapped in a markdown fence or annotated with prose.
 //

@@ -23,14 +23,7 @@ import Testing
 struct DailyAssistantViewModelTests {
 
     private func makeRationale(_ text: String) -> StructuredRationaleWire {
-        StructuredRationaleWire(
-            occasion: text,
-            colorHarmony: "",
-            bodyProfile: "",
-            weather: "",
-            style: "",
-            confidence: 90
-        )
+        StructuredRationaleWire(summary: text, confidence: 90)
     }
 
     // MARK: - Primary recommendation path + deterministic fallback (PRD §2.1a)
@@ -66,7 +59,7 @@ struct DailyAssistantViewModelTests {
         await viewModel.requestOutfitIdeas()
 
         #expect(viewModel.candidates.count == 1)
-        #expect(viewModel.candidates.first?.structuredRationale?.occasion == "A clean, neutral pairing.")
+        #expect(viewModel.candidates.first?.structuredRationale?.summary == "A clean, neutral pairing.")
         #expect(viewModel.extractionState == .idle)
         #expect(intentService.callCount == 0) // fallback pipeline never engaged
     }

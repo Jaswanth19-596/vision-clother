@@ -14,8 +14,8 @@
 //
 //  Same structured-output-with-fallback shape as the other OpenRouter
 //  services in this file's directory (see
-//  Services/VisionMetadataExtractionService.swift's header for why
-//  `minimax/minimax-m3` needs it). `temperature: 0` minimizes
+//  Services/VisionMetadataExtractionService.swift's header for why the
+//  configured model needs it). `temperature: 0` minimizes
 //  run-to-run non-determinism on top of the validator's hard guarantees.
 //
 
@@ -59,7 +59,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     private let model: String
     private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
 
-    init(session: URLSession = .shared, model: String = "minimax/minimax-m3") {
+    init(session: URLSession = .shared, model: String = ModelConfig.textToText) {
         self.session = session
         self.model = model
     }
@@ -72,44 +72,22 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
         do {
-            return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
-            )
-        } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding {
-            do {
-                return try await performRequest(
+            return try await PerfLog.time("recommendation.structuredAttempt") {
+                try await performRequest(
                     prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
                 )
-            } catch {
-                return try await performUnstructuredFallback(
-                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history
+            }
+        } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
+            // Structured output either came back malformed/empty or was
+            // rejected outright (most likely `response_format: json_schema`
+            // itself isn't supported) — one fallback attempt with the schema
+            // embedded in the prompt instead of retrying the same mode twice,
+            // which only doubles latency for a failure mode retrying won't fix.
+            return try await PerfLog.time("recommendation.unstructuredFallbackAttempt") {
+                try await performRequest(
+                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
                 )
             }
-        } catch OutfitRecommendationError.httpStatus(400) {
-            // Most likely `response_format: json_schema` itself was rejected
-            // by the provider — retrying the same structured request would
-            // just 400 again, so switch modes instead of retrying.
-            return try await performUnstructuredFallback(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history
-            )
-        }
-    }
-
-    private func performUnstructuredFallback(
-        prompt: String,
-        catalog: [CatalogEntry],
-        profile: UserStyleProfile?,
-        weather: WeatherContext?,
-        history: FeedbackHistory
-    ) async throws -> OutfitRecommendationResponse {
-        do {
-            return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
-            )
-        } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding {
-            return try await performRequest(
-                prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
-            )
         }
     }
 
@@ -197,6 +175,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         var body: [String: Any] = [
             "model": model,
             "temperature": 0,
+            // Structured-JSON path with a hard 15s client-side timeout
+            // (DailyAssistantViewModel's requestTimeoutNanoseconds) — the
+            // configured model may support extended "thinking" reasoning,
+            // which this call doesn't need and can't afford latency-wise.
+            "reasoning": ["enabled": false],
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userContent],
@@ -229,7 +212,23 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             ]
         }
 
+        Self.logPromptForDebugging(body: body)
+
         return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Dumps the exact request body sent to the LLM to the Xcode console —
+    /// `print()` rather than `PerfLog`'s `os.Logger` because unified logging
+    /// truncates/redacts long string interpolations by default, and the
+    /// catalog + system prompt routinely exceed that limit.
+    private static func logPromptForDebugging(body: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        print("=== [LLM PROMPT] Get Outfit Ideas request ===")
+        print(json)
+        print("=== [LLM PROMPT] end ===")
     }
 
     /// Matches PRD.md §3.7's response schema, extended with `resolved_constraints`
@@ -254,14 +253,10 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                         "rationale": [
                             "type": "object",
                             "properties": [
-                                "occasion": ["type": "string"],
-                                "color_harmony": ["type": "string"],
-                                "body_profile": ["type": "string"],
-                                "weather": ["type": "string"],
-                                "style": ["type": "string"],
+                                "summary": ["type": "string"],
                                 "confidence": ["type": "integer"]
                             ],
-                            "required": ["occasion", "color_harmony", "body_profile", "weather", "style", "confidence"],
+                            "required": ["summary", "confidence"],
                             "additionalProperties": false
                         ]
                     ],
@@ -350,11 +345,7 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
                     footwearID: footwearID,
                     outerwearID: outerwearID,
                     rationale: StructuredRationaleWire(
-                        occasion: "A balanced, neutral-anchored look for the occasion.",
-                        colorHarmony: "Complimentary undertones and balanced saturation.",
-                        bodyProfile: "Fits your body type profile.",
-                        weather: "Appropriate fabric weight layers.",
-                        style: "Reflects your style keywords.",
+                        summary: "A balanced, neutral-anchored look for the occasion.",
                         confidence: 95
                     )
                 ),

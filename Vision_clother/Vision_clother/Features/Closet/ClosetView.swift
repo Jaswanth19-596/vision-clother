@@ -12,11 +12,13 @@ import SwiftData
 import UIKit
 
 struct ClosetView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var storedItems: [WardrobeItem]
     @State private var isAddItemPresented = false
     @State private var isManualPairingPresented = false
     @State private var selectedSlotForAdd: Slot? = nil
     @State private var detailSelection: DetailSelection? = nil
+    @State private var feedbackHistory = FeedbackHistory()
 
     private var displayItems: [WardrobeItem] {
         let items = GhostElementProvider.ensureGhostElements(in: storedItems)
@@ -73,13 +75,25 @@ struct ClosetView: View {
             .sheet(isPresented: $isAddItemPresented) {
                 AddItemView(defaultSlot: selectedSlotForAdd)
             }
-            .sheet(isPresented: $isManualPairingPresented) {
+            .sheet(isPresented: $isManualPairingPresented, onDismiss: loadFeedbackHistory) {
                 ManualPairingView()
             }
             .sheet(item: $detailSelection) { selection in
                 ItemDetailView(items: selection.items, selectedItemID: selection.id)
             }
+            .onAppear(perform: loadFeedbackHistory)
         }
+    }
+
+    /// Mirrors `AnalyticsView`'s existing pattern — no dedicated view model
+    /// exists for this view, so the repository is constructed locally. Fired
+    /// on appear (covers the Combinations-tab rating flow, since SwiftUI's
+    /// plain `TabView` re-fires `onAppear` as tab selection changes) and on
+    /// Manual Pairing's sheet dismissal (a sibling presentation `ClosetView`
+    /// owns directly, which doesn't trigger a tab-selection change).
+    private func loadFeedbackHistory() {
+        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
     }
 
     private func slotSection(_ slot: Slot) -> some View {
@@ -100,10 +114,13 @@ struct ClosetView: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 12)], spacing: 12) {
                 ForEach(items, id: \.id) { item in
-                    ClosetItemCell(item: item)
-                        .onTapGesture {
-                            detailSelection = DetailSelection(id: item.id, items: displayItems)
-                        }
+                    ClosetItemCell(
+                        item: item,
+                        ratingScore: ItemRatingScoring.score(for: item.id, history: feedbackHistory)
+                    )
+                    .onTapGesture {
+                        detailSelection = DetailSelection(id: item.id, items: displayItems)
+                    }
                 }
             }
         }
@@ -134,12 +151,23 @@ private struct DetailSelection: Identifiable {
 
 private struct ClosetItemCell: View {
     let item: WardrobeItem
+    let ratingScore: Int?
 
     var body: some View {
         VStack(spacing: 4) {
             swatch
                 .frame(width: 84, height: 84)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(alignment: .topTrailing) {
+                    if let ratingScore {
+                        Text("\(ratingScore)%")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.thinMaterial, in: Capsule())
+                            .padding(4)
+                    }
+                }
 
             if item.isGhostElement {
                 Text("Starter")

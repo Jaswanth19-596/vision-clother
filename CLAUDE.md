@@ -35,6 +35,8 @@ Read the relevant doc **before** modifying a layer:
 * Run `xcodebuild clean build` after every implementation task.
 * Use Swift Testing framework (`import Testing`, `@Test`, `#expect`), not XCTest.
 
-## Build Tool
-Always verify builds with XcodeBuildMCP after any Swift change.
-Never mark a task done until `xcodebuild` returns 0 errors.
+## 6. Update Timeline
+* Every time you implement a new feature or fix a bug, make sure to update the timeline.
+* The timeline allows the user to see the history of changes and the status of each feature.
+* It also helps you understand the context of the codebase and plan the next feature.
+

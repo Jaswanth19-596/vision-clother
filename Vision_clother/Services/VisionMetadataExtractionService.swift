@@ -19,7 +19,7 @@
 //  pattern, not a code path.
 //
 //  Same structured-output-with-fallback shape as the intent-extraction
-//  service (see that file's header for why `minimax/minimax-m3` needs it).
+//  service (see that file's header for why the configured model needs it).
 //
 
 import Foundation
@@ -56,7 +56,7 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
     private let model: String
     private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
 
-    init(session: URLSession = .shared, model: String = "minimax/minimax-m3") {
+    init(session: URLSession = .shared, model: String = ModelConfig.imageToText) {
         self.session = session
         self.model = model
     }
@@ -181,6 +181,9 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
 
         var body: [String: Any] = [
             "model": model,
+            // See OutfitRecommendationService.swift's `encodeRequestBody`
+            // for why this call disables reasoning.
+            "reasoning": ["enabled": false],
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userContent],

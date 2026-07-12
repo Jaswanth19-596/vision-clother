@@ -13,7 +13,6 @@ import SwiftData
 struct AnalyticsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var items: [WardrobeItem]
-    @Query private var pairFeedbacks: [PairFeedback]
     @Query private var outfitFeedbacks: [OutfitFeedback]
     @Query private var itemRatings: [ItemRating]
     @Query private var styleProfiles: [UserStyleProfile]
@@ -71,22 +70,28 @@ struct AnalyticsView: View {
         }
     }
 
-    /// Highest-ranking individual item pairs (PRD §4, Tab 3) — grouped from
-    /// the raw pair-level feedback log (PRD §3.6) by liked-ratio descending.
-    private var topPairs: [(itemA: WardrobeItem, itemB: WardrobeItem, likeRatio: Double, count: Int)] {
-        var grouped: [PairKey: (likes: Int, total: Int)] = [:]
-        for feedback in pairFeedbacks {
-            let key = PairKey(feedback.itemAID, feedback.itemBID)
-            var entry = grouped[key] ?? (likes: 0, total: 0)
-            entry.total += 1
-            if feedback.likedTogether { entry.likes += 1 }
-            grouped[key] = entry
-        }
-        return grouped.compactMap { key, value in
+    /// Highest-ranking individual item pairs (PRD §4, Tab 3). Unify Business
+    /// Logic (extends the 2026-07-11 pattern used for "Your Taste"): reads
+    /// `feedbackHistory.pairFeedback` — the same decay-weighted counts
+    /// `Domain/OutfitRecommendationEngine.swift` scores against — and runs
+    /// them through the identical `PairCompatibilityScoring.pairCompatibilityScore`
+    /// Bayesian shrinkage, rather than a locally-derived raw like/total ratio
+    /// that a single data point could push straight to 100%.
+    private var topPairs: [(itemA: WardrobeItem, itemB: WardrobeItem, score: Double, count: Int, recentlyDisliked: Bool)] {
+        feedbackHistory.pairFeedback.compactMap { key, value in
             guard let itemA = itemsByID[key.a], let itemB = itemsByID[key.b] else { return nil }
-            return (itemA, itemB, Double(value.likes) / Double(value.total), value.total)
+            let prior = PairCompatibilityScoring.aestheticPrior(itemA, itemB)
+            let score = PairCompatibilityScoring.pairCompatibilityScore(
+                aestheticPrior: prior, feedbackSum: value.likes, evaluationCount: value.total
+            )
+            // Surface outfit-level dislike signal (previously invisible here):
+            // flag a pair if a saved outfit containing both items was net-disliked.
+            let recentlyDisliked = feedbackHistory.outfitNegativeSignalByItemSet.contains { itemSet, negativity in
+                negativity > 0 && itemSet.contains(itemA.id) && itemSet.contains(itemB.id)
+            }
+            return (itemA, itemB, score, Int(value.total.rounded()), recentlyDisliked)
         }
-        .sorted { $0.likeRatio > $1.likeRatio }
+        .sorted { $0.score > $1.score }
     }
 
     /// Total closet formality balance (PRD §4, Tab 3).
@@ -151,9 +156,16 @@ struct AnalyticsView: View {
                     } else {
                         ForEach(topPairs.prefix(5), id: \.itemA.id) { pair in
                             HStack {
-                                Text("\(pair.itemA.pattern.rawValue.capitalized) + \(pair.itemB.pattern.rawValue.capitalized)")
+                                VStack(alignment: .leading) {
+                                    Text("\(pair.itemA.pattern.rawValue.capitalized) + \(pair.itemB.pattern.rawValue.capitalized)")
+                                    if pair.recentlyDisliked {
+                                        Text("Recently disliked in an outfit")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
                                 Spacer()
-                                Text("\(Int(pair.likeRatio * 100))% (\(pair.count))")
+                                Text("\(Int(pair.score * 100))% (\(pair.count))")
                                     .foregroundStyle(.secondary)
                             }
                         }

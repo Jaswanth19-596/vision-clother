@@ -112,11 +112,7 @@ enum OutfitRecommendationValidator {
                     guard Set(usedIDs).count == usedIDs.count else { return .failure(.duplicateID) }
 
                     let structured = StructuredRationale(
-                        occasion: wire.rationale.occasion,
-                        colorHarmony: wire.rationale.colorHarmony,
-                        bodyProfile: wire.rationale.bodyProfile,
-                        weather: wire.rationale.weather,
-                        style: wire.rationale.style,
+                        summary: wire.rationale.summary,
                         confidence: wire.rationale.confidence
                     )
 

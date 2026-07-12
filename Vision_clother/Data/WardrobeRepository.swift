@@ -136,24 +136,28 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         var history = FeedbackHistory()
 
         for feedback in pairFeedbacks {
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
             let key = PairKey(feedback.itemAID, feedback.itemBID)
             var entry = history.pairFeedback[key] ?? (likes: 0, total: 0)
-            entry.total += 1
-            if feedback.likedTogether { entry.likes += 1 }
+            entry.total += weight
+            if feedback.likedTogether { entry.likes += weight }
             history.pairFeedback[key] = entry
         }
 
         for feedback in itemFeedbacks {
+            // Time-decayed, shared between the `itemFeedback` preference
+            // tally below and the `itemNegativeSignal` penalty channel.
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
+
             var entry = history.itemFeedback[feedback.itemID] ?? (likes: 0, total: 0)
-            entry.total += 1
-            if feedback.likedFit { entry.likes += 1 }
+            entry.total += weight
+            if feedback.likedFit { entry.likes += weight }
             history.itemFeedback[feedback.itemID] = entry
 
             // Read Disliked Signals: a time-decayed net-negativity tally,
-            // separate from the flat `itemFeedback` tally above — feeds
+            // separate from the `itemFeedback` tally above — feeds
             // `OutfitRecommendationEngine.outfitScore`'s negative-feedback
             // penalty (previously this history was collected but never read).
-            let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
             history.itemNegativeSignal[feedback.itemID, default: 0] += weight * (feedback.likedFit ? -1 : 1)
         }
 
@@ -163,12 +167,13 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // rating's own >=0.6 "liked" threshold — so item preference improves
         // immediately with no change to `PairCompatibilityScoring.itemPreference`.
         for rating in itemRatings {
+            let weight = AttributePreferenceProfile.decayWeight(recordedAt: rating.recordedAt, now: now)
+
             var entry = history.itemFeedback[rating.itemID] ?? (likes: 0, total: 0)
-            entry.total += 1
-            if rating.impliesLiked { entry.likes += 1 }
+            entry.total += weight
+            if rating.impliesLiked { entry.likes += weight }
             history.itemFeedback[rating.itemID] = entry
 
-            let weight = AttributePreferenceProfile.decayWeight(recordedAt: rating.recordedAt, now: now)
             history.itemNegativeSignal[rating.itemID, default: 0] += weight * (0.5 - rating.normalizedValue) * 2
         }
 
@@ -181,14 +186,14 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
             if let favoriteItemID = feedback.favoriteItemID {
                 var entry = history.itemFeedback[favoriteItemID] ?? (likes: 0, total: 0)
-                entry.total += 1
-                entry.likes += 1
+                entry.total += weight
+                entry.likes += weight
                 history.itemFeedback[favoriteItemID] = entry
                 history.itemNegativeSignal[favoriteItemID, default: 0] += weight * -1
             }
             if let weakestItemID = feedback.weakestItemID {
                 var entry = history.itemFeedback[weakestItemID] ?? (likes: 0, total: 0)
-                entry.total += 1
+                entry.total += weight
                 history.itemFeedback[weakestItemID] = entry
                 history.itemNegativeSignal[weakestItemID, default: 0] += weight * 1
             }

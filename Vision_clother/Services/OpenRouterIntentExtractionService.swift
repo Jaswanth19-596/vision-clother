@@ -13,8 +13,9 @@
 //  wardrobe catalog. Kept as its own narrow call because the fallback engine
 //  (`Domain/OutfitRecommendationEngine.swift`) still needs `StyleConstraints`.
 //
-//  `minimax/minimax-m3`'s structured-output support isn't confirmed the way
-//  OpenAI's is (CLAUDE.md §5.1), so a `response_format: json_schema` request
+//  The configured model's (Config/ModelConfig.swift's `textToText`)
+//  structured-output support isn't confirmed the way OpenAI's is (CLAUDE.md
+//  §5.1), so a `response_format: json_schema` request
 //  that gets rejected (HTTP 400) or silently ignored (content doesn't decode)
 //  falls back to a plain-prompt request that embeds the schema as
 //  instructions and parses the reply leniently (strips markdown fences,
@@ -66,17 +67,21 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
     private let model: String
     private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
 
-    init(session: URLSession = .shared, model: String = "minimax/minimax-m3") {
+    init(session: URLSession = .shared, model: String = ModelConfig.textToText) {
         self.session = session
         self.model = model
     }
 
     func extractConstraints(prompt: String, weather: WeatherContext?) async throws -> StyleConstraints {
         do {
-            return try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: true)
+            return try await PerfLog.time("intentExtraction.structuredAttempt1") {
+                try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: true)
+            }
         } catch IntentExtractionError.emptyChoices, IntentExtractionError.decoding {
             do {
-                return try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: true)
+                return try await PerfLog.time("intentExtraction.structuredAttempt2") {
+                    try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: true)
+                }
             } catch {
                 return try await performUnstructuredFallback(prompt: prompt, weather: weather)
             }
@@ -93,9 +98,13 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
     /// retry still applies here, same as the structured path.
     private func performUnstructuredFallback(prompt: String, weather: WeatherContext?) async throws -> StyleConstraints {
         do {
-            return try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: false)
+            return try await PerfLog.time("intentExtraction.unstructuredAttempt1") {
+                try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: false)
+            }
         } catch IntentExtractionError.emptyChoices, IntentExtractionError.decoding {
-            return try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: false)
+            return try await PerfLog.time("intentExtraction.unstructuredAttempt2") {
+                try await performRequest(prompt: prompt, weather: weather, useStructuredOutput: false)
+            }
         }
     }
 
@@ -170,6 +179,9 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
 
         var body: [String: Any] = [
             "model": model,
+            // See OutfitRecommendationService.swift's `encodeRequestBody`
+            // for why this call disables reasoning.
+            "reasoning": ["enabled": false],
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userContent],

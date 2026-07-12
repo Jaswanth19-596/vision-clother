@@ -65,13 +65,7 @@ struct OutfitCardView: View {
                         .fontWeight(.semibold)
                         .foregroundStyle(.primary)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        RationaleRow(icon: "calendar", text: rationale.occasion)
-                        RationaleRow(icon: "paintpalette", text: rationale.colorHarmony)
-                        RationaleRow(icon: "figure.stand", text: rationale.bodyProfile)
-                        RationaleRow(icon: "cloud.sun", text: rationale.weather)
-                        RationaleRow(icon: "star", text: rationale.style)
-                    }
+                    RationaleRow(icon: "sparkles", text: rationale.summary)
                 }
                 .padding()
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

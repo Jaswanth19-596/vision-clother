@@ -62,7 +62,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
     private let session: URLSession
     private let model: String
 
-    init(session: URLSession = .shared, model: String = "bytedance-seed/seedream-4.5") {
+    init(session: URLSession = .shared, model: String = ModelConfig.imageToImage) {
         self.session = session
         self.model = model
     }

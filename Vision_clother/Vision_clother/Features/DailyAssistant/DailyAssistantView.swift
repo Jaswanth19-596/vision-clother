@@ -118,6 +118,8 @@ struct DailyAssistantView: View {
             .focused($isPromptFocused)
             .submitLabel(.search)
             .onSubmit {
+                guard viewModel.extractionState != .loading,
+                      !viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty else { return }
                 isPromptFocused = false
                 Task { await viewModel.requestOutfitIdeas() }
             }

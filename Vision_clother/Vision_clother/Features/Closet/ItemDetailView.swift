@@ -21,6 +21,7 @@ struct ItemDetailView: View {
 
     @State private var isDeleteAlertPresented = false
     @State private var isEditSheetPresented = false
+    @State private var feedbackHistory = FeedbackHistory()
 
     var body: some View {
         NavigationStack {
@@ -47,6 +48,7 @@ struct ItemDetailView: View {
                 if currentItem == nil, let firstID = items.first?.id {
                     selectedItemID = firstID
                 }
+                loadFeedbackHistory()
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -132,6 +134,8 @@ struct ItemDetailView: View {
 
     private func metadataSection(for item: WardrobeItem) -> some View {
         VStack(spacing: 0) {
+            metadataRow("Rating", value: ratingText(for: item))
+            Divider()
             metadataRow("Category", value: item.slot.rawValue.capitalized)
             Divider()
             if let subtype = item.garmentSubtype, !subtype.isEmpty {
@@ -206,6 +210,21 @@ struct ItemDetailView: View {
     }
 
     // MARK: - Helpers
+
+    /// Mirrors `ClosetView`/`AnalyticsView`'s existing pattern — no
+    /// dedicated view model exists for this view, so the repository is
+    /// constructed locally.
+    private func loadFeedbackHistory() {
+        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+    }
+
+    private func ratingText(for item: WardrobeItem) -> String {
+        guard let score = ItemRatingScoring.score(for: item.id, history: feedbackHistory) else {
+            return "Not yet rated"
+        }
+        return "\(score)%"
+    }
 
     private func formalityLabel(for item: WardrobeItem) -> String {
         let score = item.formalityScore

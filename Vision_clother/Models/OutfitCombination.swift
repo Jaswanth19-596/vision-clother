@@ -19,9 +19,9 @@ struct OutfitCombination: Identifiable {
     /// Mean of the constituent pairwise compatibility posteriors, combined
     /// with per-item preference. See `Domain/PairCompatibilityScoring.swift`.
     var score: Double
-    /// Detailed structured explanation from the recommendation LLM (PRD §3.7)
-    /// for why this combination was picked. `nil` for outfits produced by the
-    /// fully deterministic fallback engine.
+    /// One-line explanation from the recommendation LLM (PRD §3.7) for why
+    /// this combination was picked. `nil` for outfits produced by the fully
+    /// deterministic fallback engine.
     var structuredRationale: StructuredRationale? = nil
 
     var items: [WardrobeItem] {
@@ -37,10 +37,6 @@ struct OutfitCombination: Identifiable {
 }
 
 struct StructuredRationale: Codable, Equatable {
-    var occasion: String
-    var colorHarmony: String
-    var bodyProfile: String
-    var weather: String
-    var style: String
+    var summary: String
     var confidence: Int
 }

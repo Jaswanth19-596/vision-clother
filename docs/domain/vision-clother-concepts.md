@@ -83,3 +83,14 @@ Persisted as three independent SwiftData models (`Models/FeedbackEvent.swift`), 
 - **`OutfitFeedback`** — did the overall look work? (binary, per `OutfitCombination.id`)
 - **`ItemFeedback`** — per-garment fit/comfort assessment
 - **`PairFeedback`** — did *this specific* top+bottom (etc.) combination work together? This is the `ΣFeedback` input to the pair-compatibility formula above. Stored order-independently (the smaller UUID string always goes in `itemAID`) so a lookup for `(A, B)` matches history recorded as `(B, A)`.
+
+### Item Rating Score (Closet UI)
+
+`Domain/ItemRatingScoring.swift`'s `score(for:history:) -> Int?` is the 0-100 rating shown per item in `ClosetView`'s grid badge and `ItemDetailView`'s metadata row (added post-V1). It aggregates feedback from every source that references the item — not a new formula, just new plumbing on top of what already existed:
+
+- Starts from `FeedbackHistory.itemFeedback[itemID]` (decay-weighted likes/total, already folding in `ItemRating`, `ItemFeedback`, and `OutfitFeedback.favoriteItemID`/`weakestItemID` — see `Data/WardrobeRepository.swift`'s `fetchFeedbackHistory()`).
+- Adds `FeedbackHistory.pairFeedback` entries where the item is either side of the `PairKey` (Manual Pairing's "liked together" signal, previously only used for pair-compatibility scoring, not folded into any single item's tally).
+- Feeds the summed likes/total straight into `PairCompatibilityScoring.itemPreference` (the same Bayesian-shrinkage function `OutfitRecommendationEngine.outfitScore` already uses internally) and scales the `[0,1]` result ×100.
+- Returns `nil` — not `50` — when the item has no feedback from any source, since `itemPreference`'s neutral-prior default is a scoring-engine convenience, not a real rating. Both UI call sites render a "Not yet rated" placeholder for `nil` rather than a literal 50%.
+
+This score is computed fresh on each view appearance (no persisted/cached field on `WardrobeItem`, no SwiftData migration) — consistent with how `AnalyticsView` already treats `FeedbackHistory` as transient, recomputed state.

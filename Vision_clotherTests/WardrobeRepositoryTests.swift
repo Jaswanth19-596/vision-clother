@@ -108,8 +108,8 @@ struct WardrobeRepositoryTests {
         let history = try repository.fetchFeedbackHistory()
 
         let itemEntry = history.itemFeedback[item.id]
-        #expect(itemEntry?.total == 1)
-        #expect(itemEntry?.likes == 1)
+        #expect(abs((itemEntry?.total ?? 0) - 1) < 0.01)
+        #expect(abs((itemEntry?.likes ?? 0) - 1) < 0.01)
 
         #expect(history.attributeProfile.colorVibeAffinity[.vibrant] != nil)
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
@@ -201,7 +201,7 @@ struct WardrobeRepositoryTests {
         // No crash and no attribute contribution — the item no longer
         // exists to join attributes from.
         let history = try repository.fetchFeedbackHistory()
-        #expect(history.itemFeedback[orphanID]?.total == 1)
+        #expect(abs((history.itemFeedback[orphanID]?.total ?? 0) - 1) < 0.01)
     }
 
     // MARK: - Stylist Intelligence Engine Phase 1: dimension-based outfit rating
@@ -255,10 +255,10 @@ struct WardrobeRepositoryTests {
         )
 
         let history = try repository.fetchFeedbackHistory()
-        #expect(history.itemFeedback[favoriteID]?.total == 1)
-        #expect(history.itemFeedback[favoriteID]?.likes == 1)
-        #expect(history.itemFeedback[weakestID]?.total == 1)
-        #expect(history.itemFeedback[weakestID]?.likes == 0)
+        #expect(abs((history.itemFeedback[favoriteID]?.total ?? 0) - 1) < 0.01)
+        #expect(abs((history.itemFeedback[favoriteID]?.likes ?? 0) - 1) < 0.01)
+        #expect(abs((history.itemFeedback[weakestID]?.total ?? 0) - 1) < 0.01)
+        #expect(abs((history.itemFeedback[weakestID]?.likes ?? 0) - 0) < 0.01)
     }
 
     @Test func detailedOutfitRatingJoinsRealItemsIntoAttributeProfile() throws {

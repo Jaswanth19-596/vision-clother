@@ -24,11 +24,7 @@ struct OutfitRecommendationResponseDecodingTests {
               "footwear_id": "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC",
               "outerwear_id": null,
               "rationale": {
-                  "occasion": "A balanced, neutral-anchored look.",
-                  "color_harmony": "Great colors.",
-                  "body_profile": "Good fit.",
-                  "weather": "Nice for today.",
-                  "style": "Minimalist.",
+                  "summary": "A balanced, neutral-anchored look.",
                   "confidence": 95
               }
             }
@@ -43,7 +39,7 @@ struct OutfitRecommendationResponseDecodingTests {
         #expect(decoded.outfits.first?.bottomID == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")
         #expect(decoded.outfits.first?.footwearID == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")
         #expect(decoded.outfits.first?.outerwearID == nil)
-        #expect(decoded.outfits.first?.rationale.occasion == "A balanced, neutral-anchored look.")
+        #expect(decoded.outfits.first?.rationale.summary == "A balanced, neutral-anchored look.")
         #expect(decoded.outfits.first?.rationale.confidence == 95)
         // Backward compatible: a response without `resolved_constraints`
         // (e.g. an older fixture, or a model that omits it) still decodes.
@@ -85,11 +81,7 @@ struct OutfitRecommendationResponseDecodingTests {
             {
               "top_id": "1", "bottom_id": "2", "footwear_id": "3",
               "outerwear_id": "4", "rationale": {
-                  "occasion": "Layered.",
-                  "color_harmony": "",
-                  "body_profile": "",
-                  "weather": "",
-                  "style": "",
+                  "summary": "Layered.",
                   "confidence": 90
               }
             }

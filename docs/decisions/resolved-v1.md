@@ -2,7 +2,7 @@
 
 Historical architectural decisions locked for V1. Read this when you need the *why* behind a current constraint.
 
-## LLM Driver: OpenRouter + minimax/minimax-m3
+## LLM Driver: OpenRouter + google/gemini-3.1-flash-lite
 - OpenRouter provides a single OpenAI-compatible endpoint for model-hopping without code changes.
 - minimax-m3 selected for cost-effective structured JSON output via `response_format: json_schema`.
 - The LLM is used as the primary outfit recommender (see "LLM-as-Recommender Reversal" below), plus intent/constraint extraction as the fallback path, plus single-garment vision tagging at ingestion and one-time user-profile derivation from the onboarding portrait.

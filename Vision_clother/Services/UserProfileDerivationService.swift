@@ -16,7 +16,7 @@
 //
 //  Same structured-output-with-fallback shape as
 //  Services/VisionMetadataExtractionService.swift (see that file's header
-//  for why `minimax/minimax-m3` needs it) — a distinct call because it tags
+//  for why the configured model needs it) — a distinct call because it tags
 //  a person, not a garment, and produces `UserStyleProfileWire`, not
 //  `GarmentMetadata`.
 //
@@ -55,33 +55,25 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
     private let model: String
     private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
 
-    init(session: URLSession = .shared, model: String = "minimax/minimax-m3") {
+    init(session: URLSession = .shared, model: String = ModelConfig.imageToText) {
         self.session = session
         self.model = model
     }
 
     func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire {
         do {
-            return try await performRequest(portraitData: portraitData, useStructuredOutput: true)
-        } catch UserProfileDerivationError.emptyChoices, UserProfileDerivationError.decoding {
-            do {
-                return try await performRequest(portraitData: portraitData, useStructuredOutput: true)
-            } catch {
-                return try await performUnstructuredFallback(portraitData: portraitData)
+            return try await PerfLog.time("profile.structuredAttempt") {
+                try await performRequest(portraitData: portraitData, useStructuredOutput: true)
             }
-        } catch UserProfileDerivationError.httpStatus(400) {
-            // Most likely `response_format: json_schema` itself was rejected
-            // by the provider — retrying the same structured request would
-            // just 400 again, so switch modes instead of retrying.
-            return try await performUnstructuredFallback(portraitData: portraitData)
-        }
-    }
-
-    private func performUnstructuredFallback(portraitData: Data) async throws -> UserStyleProfileWire {
-        do {
-            return try await performRequest(portraitData: portraitData, useStructuredOutput: false)
-        } catch UserProfileDerivationError.emptyChoices, UserProfileDerivationError.decoding {
-            return try await performRequest(portraitData: portraitData, useStructuredOutput: false)
+        } catch UserProfileDerivationError.emptyChoices, UserProfileDerivationError.decoding, UserProfileDerivationError.httpStatus(400) {
+            // Structured output either came back malformed/empty or was
+            // rejected outright (most likely `response_format: json_schema`
+            // itself isn't supported) — one fallback attempt with the schema
+            // embedded in the prompt instead of retrying the same mode twice,
+            // which only doubles latency for a failure mode retrying won't fix.
+            return try await PerfLog.time("profile.unstructuredFallbackAttempt") {
+                try await performRequest(portraitData: portraitData, useStructuredOutput: false)
+            }
         }
     }
 
@@ -156,6 +148,9 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
 
         var body: [String: Any] = [
             "model": model,
+            // See OutfitRecommendationService.swift's `encodeRequestBody`
+            // for why this call disables reasoning.
+            "reasoning": ["enabled": false],
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userContent],

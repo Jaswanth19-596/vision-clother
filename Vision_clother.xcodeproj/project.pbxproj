@@ -424,6 +424,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Vision Clother uses your location to check the current weather for outfit recommendations.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -458,6 +459,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Vision Clother uses your location to check the current weather for outfit recommendations.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -49,19 +49,6 @@ struct RecommendedOutfitWire: Codable, Equatable {
 }
 
 struct StructuredRationaleWire: Codable, Equatable {
-    var occasion: String
-    var colorHarmony: String
-    var bodyProfile: String
-    var weather: String
-    var style: String
+    var summary: String
     var confidence: Int
-
-    enum CodingKeys: String, CodingKey {
-        case occasion
-        case colorHarmony = "color_harmony"
-        case bodyProfile = "body_profile"
-        case weather
-        case style
-        case confidence
-    }
 }

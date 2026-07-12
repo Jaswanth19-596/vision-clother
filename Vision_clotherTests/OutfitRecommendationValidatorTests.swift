@@ -30,14 +30,7 @@ struct OutfitRecommendationValidatorTests {
     }
 
     private func makeRationale(_ text: String) -> StructuredRationaleWire {
-        StructuredRationaleWire(
-            occasion: text,
-            colorHarmony: "",
-            bodyProfile: "",
-            weather: "",
-            style: "",
-            confidence: 90
-        )
+        StructuredRationaleWire(summary: text, confidence: 90)
     }
 
     @Test func validPicksResolveToScoredOutfits() {
@@ -60,7 +53,7 @@ struct OutfitRecommendationValidatorTests {
 
         #expect(validated.count == 1)
         #expect(validated.first?.top.id == top.id)
-        #expect(validated.first?.structuredRationale?.occasion == "A clean neutral look.")
+        #expect(validated.first?.structuredRationale?.summary == "A clean neutral look.")
         #expect(!(validated.first?.score.isNaN ?? true))
     }
 

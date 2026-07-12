@@ -108,10 +108,10 @@ enum PairCompatibilityScoring {
     static func pairCompatibilityScore(
         aestheticPrior: Double,
         feedbackSum: Double,
-        evaluationCount: Int,
+        evaluationCount: Double,
         priorWeight: Double = defaultPriorWeight
     ) -> Double {
-        let denominator = priorWeight + Double(evaluationCount)
+        let denominator = priorWeight + evaluationCount
         guard denominator > 0 else { return aestheticPrior.clamped(to: 0...1) }
         let numerator = priorWeight * aestheticPrior + feedbackSum
         return (numerator / denominator).clamped(to: 0...1)
@@ -122,14 +122,14 @@ enum PairCompatibilityScoring {
     /// no deterministic aesthetic signal for "do I like owning this,"
     /// so with zero feedback it contributes a neutral midpoint rather than 0.
     static func itemPreference(
-        likeCount: Int,
-        dislikeCount: Int,
+        likeCount: Double,
+        dislikeCount: Double,
         priorWeight: Double = defaultPriorWeight
     ) -> Double {
         let evaluationCount = likeCount + dislikeCount
-        let denominator = priorWeight + Double(evaluationCount)
+        let denominator = priorWeight + evaluationCount
         guard denominator > 0 else { return 0.5 }
-        let numerator = priorWeight * 0.5 + Double(likeCount)
+        let numerator = priorWeight * 0.5 + likeCount
         return (numerator / denominator).clamped(to: 0...1)
     }
 

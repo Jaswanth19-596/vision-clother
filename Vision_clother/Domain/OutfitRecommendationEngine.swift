@@ -32,10 +32,10 @@ struct PairKey: Hashable {
 /// Pre-aggregated feedback counts, computed once from SwiftData by the
 /// caller. Keeps the scoring/engine layer free of persistence concerns.
 struct FeedbackHistory {
-    /// pair key -> (times liked together, total times evaluated)
-    var pairFeedback: [PairKey: (likes: Int, total: Int)] = [:]
-    /// item id -> (times liked, total times evaluated)
-    var itemFeedback: [UUID: (likes: Int, total: Int)] = [:]
+    /// pair key -> (decay-weighted sum of liked-together events, decay-weighted sum of all evaluations)
+    var pairFeedback: [PairKey: (likes: Double, total: Double)] = [:]
+    /// item id -> (decay-weighted sum of liked events, decay-weighted sum of all evaluations)
+    var itemFeedback: [UUID: (likes: Double, total: Double)] = [:]
     /// Learned color/pattern/formality taste, built from `ItemRating` history
     /// (see `Domain/AttributePreferenceProfile.swift`). Defaults to an empty
     /// profile — every affinity then reads as neutral 0.5, so
@@ -54,11 +54,11 @@ struct FeedbackHistory {
     var outfitNegativeSignalByItemSet: [Set<UUID>: Double] = [:]
     /// Time-decayed net-negative-feedback signal per item, folding
     /// `ItemFeedback`/`ItemRating`/favorite-weakest-item history — positive
-    /// means net dislike. Distinct from `itemFeedback` above (a flat,
-    /// undecayed like/total tally used by `PairCompatibilityScoring.itemPreference`)
-    /// — this is the "time-weighted" signal `OutfitRecommendationEngine.outfitScore`
-    /// reads for the negative-feedback penalty. Empty by default, so scoring
-    /// is unchanged when no such history exists.
+    /// means net dislike. Distinct from `itemFeedback` above (a decay-weighted
+    /// like/total sum used by `PairCompatibilityScoring.itemPreference`) — this
+    /// is a separate signal `OutfitRecommendationEngine.outfitScore` reads for
+    /// the negative-feedback penalty. Empty by default, so scoring is
+    /// unchanged when no such history exists.
     var itemNegativeSignal: [UUID: Double] = [:]
 }
 
@@ -138,7 +138,7 @@ enum OutfitRecommendationEngine {
             let prior = PairCompatibilityScoring.aestheticPrior(a, b)
             return PairCompatibilityScoring.pairCompatibilityScore(
                 aestheticPrior: prior,
-                feedbackSum: Double(feedback?.likes ?? 0),
+                feedbackSum: feedback?.likes ?? 0,
                 evaluationCount: feedback?.total ?? 0
             )
         }

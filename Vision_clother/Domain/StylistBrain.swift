@@ -203,7 +203,7 @@ enum StylistBrain {
             3. Catalog lookup: Choose candidate pieces.
             4. Preferences check: Apply personal color and taste profile.
             5. Cohesion check: Do colors, fits, and materials coordinate harmoniously?
-            6. Explain recommendation: Construct the structured rationale showing why this outfit is correct.
+            6. Explain recommendation: Write the rationale as ONE short sentence (100 characters or fewer) stating why this outfit is correct. Do not write multiple sentences or a paragraph.
 
             OUTPUT CONTRACT: In addition to `outfits`, always populate the top-level `resolved_constraints` field with what you resolved in step 1 — this is what the on-device validator uses to confirm every pick actually honors the dress code, so it must reflect your real reasoning, not a placeholder.
             """

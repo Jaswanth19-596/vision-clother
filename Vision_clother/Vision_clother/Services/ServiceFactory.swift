@@ -37,12 +37,11 @@ enum ServiceFactory {
         APIKeys.openRouter != nil ? OpenRouterOutfitRecommendationService() : MockOutfitRecommendationService()
     }
 
-    /// Defaults to the mock — `WeatherKitWeatherProvider` needs the
-    /// WeatherKit entitlement added to the app target first (follow-up, see
-    /// Services/WeatherProvider.swift's header), so this keeps the app fully
-    /// interactive in Simulator without it.
+    /// `OpenMeteoWeatherProvider` needs no API key/entitlement — CoreLocation
+    /// + Open-Meteo's free REST API — so it's always the real one here, no
+    /// key gate like the OpenRouter-backed services above.
     static func makeWeatherProvider() -> CurrentWeatherProviding {
-        MockCurrentWeatherProvider()
+        OpenMeteoWeatherProvider()
     }
 
     /// On-device (CLAUDE.md guardrail #4) — no API key gate, real
