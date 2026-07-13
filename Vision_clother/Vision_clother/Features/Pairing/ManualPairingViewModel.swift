@@ -44,13 +44,7 @@ final class ManualPairingViewModel {
     private let validationService: PersonPhotoValidationService
     private let tryOnService: TryOnRenderService
     private let photoLibrarySaver: PhotoLibrarySaver
-    private let profileDerivationService: UserProfileDerivationService
     private var generationTask: Task<Void, Never>?
-    /// Fire-and-forget profile (re-)derivation kicked off by `savePortrait` —
-    /// not surfaced in `state`, since a failure here shouldn't block the
-    /// try-on flow the user is actually here for (PRD §3.8: derivation
-    /// failure is non-fatal, recommendations just proceed with no profile).
-    private var profileDerivationTask: Task<Void, Never>?
     /// Identifies the in-flight generation. `Task.cancel()` is cooperative —
     /// a stale callback can still land after a newer selection has already
     /// started a fresh generation. Checking this in `apply(_:generationID:)`
@@ -62,14 +56,12 @@ final class ManualPairingViewModel {
         repository: WardrobeRepository,
         validationService: PersonPhotoValidationService = MockPersonPhotoValidationService(),
         tryOnService: TryOnRenderService = MockTryOnRenderService(),
-        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver(),
-        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService()
+        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver()
     ) {
         self.repository = repository
         self.validationService = validationService
         self.tryOnService = tryOnService
         self.photoLibrarySaver = photoLibrarySaver
-        self.profileDerivationService = profileDerivationService
         self.hasPortrait = UserPortraitStorage.exists
 
         let inventory = (try? repository.fetchInventory()) ?? []
@@ -79,21 +71,6 @@ final class ManualPairingViewModel {
 
     var canGeneratePreview: Bool {
         hasPortrait && selectedTop != nil && selectedBottom != nil
-    }
-
-    func savePortrait(_ data: Data) {
-        try? UserPortraitStorage.save(data)
-        hasPortrait = true
-
-        // User Style Profile (PRD §3.8): (re-)derive from the fresh portrait
-        // and persist. Best-effort — a failed derivation just means
-        // recommendations proceed with no profile (`fetchUserProfile()`
-        // stays nil/stale), never a blocker for the try-on flow itself.
-        profileDerivationTask?.cancel()
-        profileDerivationTask = Task { [repository, profileDerivationService] in
-            guard let wire = try? await profileDerivationService.deriveProfile(portraitData: data) else { return }
-            try? repository.saveUserProfile(wire)
-        }
     }
 
     /// Selecting a different item mid-generation cancels whatever's in

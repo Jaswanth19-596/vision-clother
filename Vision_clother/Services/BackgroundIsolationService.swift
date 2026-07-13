@@ -48,9 +48,18 @@ final class VisionBackgroundIsolationService: BackgroundIsolationService {
     private let context = CIContext()
 
     func isolateForeground(from imageData: Data) async throws -> Data {
-        guard let inputImage = CIImage(data: imageData) else {
+        guard let sourceImage = CIImage(data: imageData) else {
             throw BackgroundIsolationError.invalidImage
         }
+
+        // `CIImage(data:)` never rotates pixels for EXIF orientation — it only
+        // exposes the tag via `.properties`. Bake it in now so the mask request,
+        // and the PNG we persist (which has no orientation tag of its own),
+        // are both in upright, display-correct pixel space.
+        let orientation = (sourceImage.properties[kCGImagePropertyOrientation as String] as? UInt32)
+            .flatMap(CGImagePropertyOrientation.init)
+            ?? .up
+        let inputImage = sourceImage.oriented(orientation)
 
         let handler = VNImageRequestHandler(ciImage: inputImage, options: [:])
         let request = VNGenerateForegroundInstanceMaskRequest()

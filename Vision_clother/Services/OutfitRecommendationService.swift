@@ -241,7 +241,14 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         "properties": [
             "outfits": [
                 "type": "array",
-                "minItems": 3,
+                // 1, not 3 — the system prompt (StylistBrain.DynamicPromptComposer)
+                // explicitly permits returning fewer than 3 when the catalog can't
+                // support that many valid, non-duplicate combinations; a stricter
+                // floor here would force the model to pad with poor matches to
+                // satisfy the schema, contradicting that instruction. Shortfalls
+                // below the UX minimum are topped up deterministically by
+                // DailyAssistantViewModel, not by coercing the LLM.
+                "minItems": 1,
                 "maxItems": 5,
                 "items": [
                     "type": "object",

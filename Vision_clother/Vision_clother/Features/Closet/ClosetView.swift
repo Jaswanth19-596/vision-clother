@@ -151,7 +151,7 @@ private struct DetailSelection: Identifiable {
 
 private struct ClosetItemCell: View {
     let item: WardrobeItem
-    let ratingScore: Int?
+    let ratingScore: Int
 
     var body: some View {
         VStack(spacing: 4) {
@@ -159,14 +159,12 @@ private struct ClosetItemCell: View {
                 .frame(width: 84, height: 84)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(alignment: .topTrailing) {
-                    if let ratingScore {
-                        Text("\(ratingScore)%")
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(.thinMaterial, in: Capsule())
-                            .padding(4)
-                    }
+                    Text("\(ratingScore)%")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(4)
                 }
 
             if item.isGhostElement {

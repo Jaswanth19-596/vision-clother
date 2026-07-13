@@ -220,10 +220,7 @@ struct ItemDetailView: View {
     }
 
     private func ratingText(for item: WardrobeItem) -> String {
-        guard let score = ItemRatingScoring.score(for: item.id, history: feedbackHistory) else {
-            return "Not yet rated"
-        }
-        return "\(score)%"
+        "\(ItemRatingScoring.score(for: item.id, history: feedbackHistory))%"
     }
 
     private func formalityLabel(for item: WardrobeItem) -> String {

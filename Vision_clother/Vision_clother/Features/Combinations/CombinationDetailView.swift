@@ -16,12 +16,12 @@ struct CombinationDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: UUID?
-    @State private var isRateSheetPresented = false
+    @State private var rateSheetCombination: SavedCombination?
 
     var body: some View {
         TabView(selection: $selectedID) {
             ForEach(viewModel.combinations, id: \.id) { combination in
-                CombinationDetailPage(combination: combination, onRate: { isRateSheetPresented = true })
+                CombinationDetailPage(combination: combination, onRate: { rateSheetCombination = combination })
                     .tag(Optional(combination.id))
             }
         }
@@ -40,15 +40,9 @@ struct CombinationDetailView: View {
             guard selectedID == nil, viewModel.combinations.indices.contains(startIndex) else { return }
             selectedID = viewModel.combinations[startIndex].id
         }
-        .sheet(isPresented: $isRateSheetPresented) {
-            if let selectedCombination {
-                RateCombinationView(combination: selectedCombination, items: viewModel.resolveItems(for: selectedCombination))
-            }
+        .sheet(item: $rateSheetCombination) { combination in
+            RateCombinationView(combination: combination, items: viewModel.resolveItems(for: combination))
         }
-    }
-
-    private var selectedCombination: SavedCombination? {
-        viewModel.combinations.first { $0.id == selectedID }
     }
 
     private func deleteCurrent() {

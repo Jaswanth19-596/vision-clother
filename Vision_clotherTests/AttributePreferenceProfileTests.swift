@@ -263,4 +263,43 @@ struct AttributePreferenceProfileTests {
         #expect(!profile.affinityBonus(for: ghost).isNaN)
         #expect(!profile.affinityBonus(for: realItem).isNaN)
     }
+
+    // MARK: - Per-slot color affinity (Style Analytics "Color Affinity Breakdown")
+
+    @Test func emptyInputYieldsEmptyColorAffinityBySlot() {
+        let profile = AttributePreferenceProfile.build(from: [])
+        #expect(profile.colorVibeAffinityBySlot.isEmpty)
+    }
+
+    @Test func colorAffinityIsIsolatedPerSlot() throws {
+        let topRatings = (0..<5).map { _ in
+            RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .top)
+        }
+        let bottomRatings = (0..<5).map { _ in
+            RatedAttributes(value: 0.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .bottom)
+        }
+        let profile = AttributePreferenceProfile.build(from: topRatings + bottomRatings)
+
+        let topVibrant = try #require(profile.colorVibeAffinityBySlot[.top]?[.vibrant])
+        let bottomVibrant = try #require(profile.colorVibeAffinityBySlot[.bottom]?[.vibrant])
+
+        // Same color, loved in tops and disliked in bottoms — the two
+        // slots must not bleed into each other's affinity.
+        #expect(topVibrant > 0.5)
+        #expect(bottomVibrant < 0.5)
+        #expect(!topVibrant.isNaN)
+        #expect(!bottomVibrant.isNaN)
+    }
+
+    @Test func ratingsWithoutASlotDoNotContributeToColorAffinityBySlot() {
+        let ratings = (0..<5).map { _ in
+            RatedAttributes(value: 1.0, colorVibe: .earthTones, pattern: .solid, formalityBand: 2)
+        }
+        let profile = AttributePreferenceProfile.build(from: ratings)
+
+        // No `slot` passed — still feeds the flat colorVibeAffinity...
+        #expect(profile.colorVibeAffinity[.earthTones] ?? 0.5 > 0.5)
+        // ...but must not appear under any slot.
+        #expect(profile.colorVibeAffinityBySlot.values.allSatisfy { $0[.earthTones] == nil })
+    }
 }

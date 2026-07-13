@@ -254,7 +254,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     formalityBand: Int(item.formalityScore.rounded()),
                     styleIdentity: rating.styleIdentity.map { Double($0 - 1) / 4.0 } ?? 0.5,
                     styleTags: item.styleTags,
-                    recordedAt: rating.recordedAt
+                    recordedAt: rating.recordedAt,
+                    slot: item.slot
                 )
             }
 
@@ -291,7 +292,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                         silhouetteTag: item.silhouette,
                         formalityBand: Int(item.formalityScore.rounded()),
                         fabricWeight: item.fabricWeight,
-                        recordedAt: feedback.recordedAt
+                        recordedAt: feedback.recordedAt,
+                        slot: item.slot
                     )
                 }
             }

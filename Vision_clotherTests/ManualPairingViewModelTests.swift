@@ -68,6 +68,7 @@ struct ManualPairingViewModelTests {
 
     @Test func photoValidationFailureSurfacesWithoutGenerating() async throws {
         defer { UserPortraitStorage.delete() }
+        try? UserPortraitStorage.save(Data([0x01]))
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -79,7 +80,6 @@ struct ManualPairingViewModelTests {
             validationService: MockPersonPhotoValidationService(errorToThrow: .notFullBody),
             tryOnService: tryOnService
         )
-        viewModel.savePortrait(Data([0x01]))
         viewModel.selectTop(top)
         viewModel.selectBottom(bottom)
 
@@ -96,6 +96,7 @@ struct ManualPairingViewModelTests {
 
     @Test func successfulGenerationReachesSuccessState() async throws {
         defer { UserPortraitStorage.delete() }
+        try? UserPortraitStorage.save(Data([0x01]))
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -107,7 +108,6 @@ struct ManualPairingViewModelTests {
             validationService: MockPersonPhotoValidationService(),
             tryOnService: tryOnService
         )
-        viewModel.savePortrait(Data([0x01]))
         viewModel.selectTop(top)
         viewModel.selectBottom(bottom)
 
@@ -136,6 +136,7 @@ struct ManualPairingViewModelTests {
 
     @Test func reselectingMidGenerationIgnoresTheStaleResult() async throws {
         defer { UserPortraitStorage.delete() }
+        try? UserPortraitStorage.save(Data([0x01]))
         let repository = InMemoryWardrobeRepository()
         let top1 = makeItem(slot: .top)
         let top2 = makeItem(slot: .top)
@@ -149,7 +150,6 @@ struct ManualPairingViewModelTests {
             validationService: MockPersonPhotoValidationService(),
             tryOnService: tryOnService
         )
-        viewModel.savePortrait(Data([0x01]))
         viewModel.selectTop(top1)
         viewModel.selectBottom(bottom)
 
@@ -188,6 +188,7 @@ struct ManualPairingViewModelTests {
 
     @Test func saveOutfitFromSuccessPersistsFeedbackAndTheGeneratedImage() async throws {
         defer { UserPortraitStorage.delete() }
+        try? UserPortraitStorage.save(Data([0x01]))
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -201,7 +202,6 @@ struct ManualPairingViewModelTests {
             tryOnService: tryOnService,
             photoLibrarySaver: photoLibrarySaver
         )
-        viewModel.savePortrait(Data([0x01]))
         viewModel.selectTop(top)
         viewModel.selectBottom(bottom)
 
@@ -245,6 +245,7 @@ struct ManualPairingViewModelTests {
         // Domain/OutfitRecommendationEngine.swift's outfit-level penalty,
         // which needs exactly this history to work).
         defer { UserPortraitStorage.delete() }
+        try? UserPortraitStorage.save(Data([0x01]))
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -256,7 +257,6 @@ struct ManualPairingViewModelTests {
             validationService: MockPersonPhotoValidationService(),
             tryOnService: tryOnService
         )
-        viewModel.savePortrait(Data([0x01]))
         viewModel.selectTop(top)
         viewModel.selectBottom(bottom)
 

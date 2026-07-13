@@ -20,11 +20,11 @@ enum ItemRatingScoring {
     /// pair (Manual Pairing's "liked together" signal, which is keyed by
     /// item pairs rather than single items).
     ///
-    /// Returns `nil` when the item has no feedback from any source —
-    /// `itemPreference`'s neutral 0.5 default is a scoring-engine
-    /// convenience, not a real rating, so callers should render a
-    /// "Not yet rated" placeholder rather than treating `nil` as 0.
-    static func score(for itemID: UUID, history: FeedbackHistory) -> Int? {
+    /// An item with no feedback from any source naturally resolves to
+    /// `itemPreference`'s neutral 0.5 prior (50) — a freshly uploaded item
+    /// is exactly as recommendable as any other until real feedback shifts
+    /// it, both for the Closet UI badge and the LLM catalog's `user_rating`.
+    static func score(for itemID: UUID, history: FeedbackHistory) -> Int {
         var likes = 0.0
         var total = 0.0
 
@@ -36,8 +36,6 @@ enum ItemRatingScoring {
             likes += counts.likes
             total += counts.total
         }
-
-        guard total > 0 else { return nil }
 
         let preference = PairCompatibilityScoring.itemPreference(
             likeCount: likes,

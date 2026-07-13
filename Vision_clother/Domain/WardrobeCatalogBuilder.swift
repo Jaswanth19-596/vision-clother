@@ -40,6 +40,16 @@ struct CatalogEntry: Codable, Equatable {
     var material: String?
     var texture: String?
 
+    /// 0-100 aggregate of past user feedback on this exact item (same score
+    /// `Domain/ItemRatingScoring.swift` computes for the Closet UI's rating
+    /// badge — a freshly uploaded item with no feedback yet naturally reads
+    /// as a neutral 50, not a special "unrated" value). `nil` only when no
+    /// `FeedbackHistory` was supplied to `build` at all. Lets the LLM avoid
+    /// re-recommending a specific item the user has rated poorly, which the
+    /// validator/deterministic engine could previously only correct for
+    /// *after* the LLM had already picked it.
+    var userRating: Int?
+
     enum CodingKeys: String, CodingKey {
         case id
         case slot
@@ -57,6 +67,7 @@ struct CatalogEntry: Codable, Equatable {
         case silhouette
         case material
         case texture
+        case userRating = "user_rating"
     }
 }
 
@@ -81,7 +92,8 @@ enum WardrobeCatalogBuilder {
         from inventory: [WardrobeItem],
         constraints: StyleConstraints? = nil,
         maxItems: Int = defaultMaxItems,
-        descriptionCharLimit: Int = defaultDescriptionCharLimit
+        descriptionCharLimit: Int = defaultDescriptionCharLimit,
+        history: FeedbackHistory? = nil
     ) -> (entries: [CatalogEntry], index: [String: WardrobeItem]) {
         var candidates = inventory.filter { !$0.isGhostElement }
 
@@ -123,7 +135,8 @@ enum WardrobeCatalogBuilder {
                 fit: item.fit,
                 silhouette: item.silhouette,
                 material: item.material,
-                texture: item.texture
+                texture: item.texture,
+                userRating: history.map { ItemRatingScoring.score(for: item.id, history: $0) }
             )
         }
 

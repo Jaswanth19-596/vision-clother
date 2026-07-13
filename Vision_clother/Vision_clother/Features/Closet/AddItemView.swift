@@ -11,9 +11,19 @@
 //  there's no LLM guess to review there.
 //
 
+import CryptoKit
+import os
 import PhotosUI
 import SwiftData
 import SwiftUI
+
+/// Short content fingerprint for correlating an image's bytes across
+/// ingestion-pipeline log lines — not a security hash, just enough to tell
+/// "same bytes" from "different bytes" when reading logs after the fact.
+private func imageFingerprint(_ data: Data) -> String {
+    let digest = SHA256.hash(data: data)
+    return digest.map { String(format: "%02x", $0) }.joined().prefix(12).description
+}
 
 struct AddItemView: View {
     @Environment(\.modelContext) private var modelContext
@@ -57,6 +67,7 @@ struct AddItemView: View {
             CameraCaptureView { data in
                 isCameraPresented = false
                 guard let data else { return }
+                PerfLog.logger.notice("[ingest] camera capture=\(imageFingerprint(data), privacy: .public) bytes=\(data.count, privacy: .public)")
                 jobQueueStore.enqueueUpload(rawImageData: data, defaultSlot: defaultSlot)
                 dismiss()
             }
@@ -136,6 +147,7 @@ struct AddItemView: View {
             Task {
                 for pickerItem in newItems {
                     guard let data = try? await pickerItem.loadTransferable(type: Data.self) else { continue }
+                    PerfLog.logger.notice("[ingest] picker itemIdentifier=\(pickerItem.itemIdentifier ?? "nil", privacy: .public) raw=\(imageFingerprint(data), privacy: .public) bytes=\(data.count, privacy: .public)")
                     jobQueueStore.enqueueUpload(rawImageData: data, defaultSlot: defaultSlot)
                 }
                 photoPickerItems = []

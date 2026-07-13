@@ -55,9 +55,9 @@ enum StylistBrain {
         var description: String {
             switch self {
             case .hardConstraints: return "1. Hard Constraints: Only pick items from the catalog. One item per slot. Never repeat items."
-            case .dressCode:       return "2. Dress Code: Align formality exactly with the scenario range. Items whose formality differs by more than \(FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta.formatted()) points read as a hard mismatch; by more than \(FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta.formatted()) as a soft one — avoid both."
-            case .weatherContext:  return "3. Weather context: Layer with outerwear if cold/wet. Match fabric weights to weather."
-            case .userStyleProfile:return "4. Personal Preferences: Honor user style profile colors, body type, and avoid colors."
+            case .dressCode:       return "2. Dress Code: Align formality exactly with the scenario range. Items whose formality differs by more than \(FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta.formatted()) points read as a hard mismatch; by more than \(FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta.formatted()) as a soft one — avoid both. Social etiquette and situational appropriateness (e.g. a funeral, interview, or gala) always outrank weather comfort and personal taste below — never drop formality to chase either."
+            case .weatherContext:  return "3. Weather context: Adjust within the dress code's boundaries, never below it — layer with outerwear if cold/wet, and if the dress code is formal but weather is hot, prefer long sleeves in lightweight fabrics (e.g. linen, light cotton) over dropping to short sleeves or casual pieces."
+            case .userStyleProfile:return "4. Personal Preferences: Honor user style profile colors, body type, and avoid colors — but when a scenario's dress code (tier 2) conflicts with a historical taste preference, the dress code wins; the preference only applies among choices the dress code already permits. Also honor each catalog item's own \"user_rating\" (0-100; 50 is the neutral default for an item with no feedback yet, not a penalty): it reflects how positively the user has actually rated THAT SPECIFIC item in the past, distinct from the aggregate taste preferences below — prefer a higher-rated or neutral (50) item over a low-rated one whenever a comparable alternative exists in the same slot, and never let a low-rated item's other qualities (color, fit, aesthetics) override this unless the catalog leaves no viable alternative for that slot."
             case .colorHarmony:    return "5. Color Theory: Apply complementary, analogous, or monochrome color pairings."
             case .fitAndSilhouette:return "6. Proportions: Pair fits and silhouettes harmoniously (e.g., oversized with slim)."
             case .aestheticTrend:  return "7. Aesthetics: Match user style keywords and general aesthetic vibe. This tier may only break ties — it can never justify violating a higher tier."
@@ -173,7 +173,7 @@ enum StylistBrain {
                 if !favoritesList.isEmpty {
                     prompt += """
 
-                    USER HISTORICAL TASTE PREFERENCES (Derived from feedback, prioritize these):
+                    USER HISTORICAL TASTE PREFERENCES (Derived from feedback — Tier 4, subordinate to Dress Code/Tier 2: apply these only among choices the scenario's dress code already permits, never to justify under-dressing):
                     \(favoritesList.map { " - \($0)" }.joined(separator: "\n"))
 
                     """
@@ -181,7 +181,7 @@ enum StylistBrain {
                 if !avoidList.isEmpty {
                     prompt += """
 
-                    USER HISTORICAL TASTE — TENDS TO DISLIKE (Derived from feedback, avoid these unless the catalog leaves no better option):
+                    USER HISTORICAL TASTE — TENDS TO DISLIKE (Derived from feedback — Tier 4: avoid these where the dress code leaves a choice, but a scenario's formality/etiquette requirement (Tier 2) always overrides this if the two conflict, e.g. a disliked "monochrome" vibe is still correct for a funeral):
                     \(avoidList.map { " - \($0)" }.joined(separator: "\n"))
 
                     """
@@ -196,6 +196,7 @@ enum StylistBrain {
             - A top must be a top slot, bottom must be bottom slot, footwear must be footwear slot, outerwear must be outerwear slot.
             - Ensure fit & silhouette balance: E.g., pair boxy/oversized tops with straight/slim bottoms, or sleek/fitted tops with relaxed/flared bottoms.
             - Check material harmony: Pair complementary materials (e.g. Cotton and Denim, or Linen and Cotton). Avoid pairing heavy wool with lightweight linen.
+            - For a formal suit jacket/blazer worn as outerwear, top_id must still be a compatible layer worn underneath it (e.g. a dress shirt), not left implied or empty.
             
             REASONING WORKFLOW (Reason internally on each candidate outfit):
             1. Intent & Formality: Evaluate scenario requirements and resolve them to a concrete formality range, weather-layering need, color palette vibe, and season.

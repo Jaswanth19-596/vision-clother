@@ -37,7 +37,6 @@
 				Domain/CLAUDE.md,
 				Models/CLAUDE.md,
 				Services/CLAUDE.md,
-				Vision_clother/Features/Analytics/CLAUDE.md,
 				Vision_clother/Features/CLAUDE.md,
 				Vision_clother/Features/Closet/CLAUDE.md,
 				Vision_clother/Features/DailyAssistant/CLAUDE.md,

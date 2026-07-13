@@ -19,9 +19,19 @@
 //  interleave, so no new actor/ModelActor infrastructure is needed.
 //
 
+import CryptoKit
 import Foundation
 import Observation
+import os
 import UIKit
+
+/// Short content fingerprint for correlating an image's bytes across
+/// ingestion-pipeline log lines — not a security hash, just enough to tell
+/// "same bytes" from "different bytes" when reading logs after the fact.
+private func imageFingerprint(_ data: Data) -> String {
+    let digest = SHA256.hash(data: data)
+    return digest.map { String(format: "%02x", $0) }.joined().prefix(12).description
+}
 
 @Observable
 @MainActor
@@ -88,6 +98,7 @@ final class JobQueueStore {
     /// manual entry.
     private func performUpload(jobID: UUID, payload: UploadPayload) async {
         setStatus(jobID, .processing("Isolating garment…"))
+        PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) raw=\(imageFingerprint(payload.rawImageData), privacy: .public) bytes=\(payload.rawImageData.count, privacy: .public)")
 
         let imageToTag: Data
         do {
@@ -99,6 +110,7 @@ final class JobQueueStore {
             finishJob(jobID, status: .failed("Cancelled"))
             return
         }
+        PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) sentToLLM=\(imageFingerprint(imageToTag), privacy: .public) bytes=\(imageToTag.count, privacy: .public)")
 
         setStatus(jobID, .processing("Tagging item…"))
 
@@ -115,6 +127,7 @@ final class JobQueueStore {
             finishJob(jobID, status: .failed("Cancelled"))
             return
         }
+        PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) taggedDescription=\(metadata.description, privacy: .public)")
 
         setStatus(jobID, .processing("Saving…"))
 
@@ -123,6 +136,7 @@ final class JobQueueStore {
             let item = WardrobeItem.make(from: metadata, imageAssetName: filename)
             try repository.save(item)
             finishJob(jobID, status: .succeeded, resultItemID: item.id)
+            PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) savedItem=\(item.id, privacy: .public) filename=\(filename, privacy: .public)")
             notificationService.notifyUploadSucceeded(itemLabel: item.displayLabel)
         } catch {
             let message = "Couldn't save that item. Try again."
@@ -265,22 +279,38 @@ final class JobQueueStore {
     /// backgrounded early — true guaranteed completion would need
     /// `BGProcessingTask`, out of scope here.
     private func runWithBackgroundContinuation(_ operation: @escaping () async -> Void) -> Task<Void, Never> {
-        Task {
-            let box = BackgroundTaskBox()
-            box.identifier = UIApplication.shared.beginBackgroundTask(withName: "VisionClotherJob") {
-                UIApplication.shared.endBackgroundTask(box.identifier)
-            }
+        let box = BackgroundTaskBox()
+        let task = Task {
             await operation()
-            if box.identifier != .invalid {
-                UIApplication.shared.endBackgroundTask(box.identifier)
-            }
+            box.endIfNeeded()
         }
+        box.identifier = UIApplication.shared.beginBackgroundTask(withName: "VisionClotherJob") {
+            // Expiration fired before `operation()` finished (e.g. a stuck
+            // network call) — cancel it so it doesn't run unbounded, and end
+            // the assertion exactly once.
+            task.cancel()
+            box.endIfNeeded()
+        }
+        return task
     }
 }
 
 /// Reference-type holder so the expiration handler and the post-`await`
 /// cleanup both read/write the same `identifier` without the "mutated after
 /// capture by Sendable closure" diagnostic a plain captured `var` triggers.
+/// `endIfNeeded()` is idempotent so the two call sites (expiration handler,
+/// post-`await` cleanup) racing never double-`endBackgroundTask` the same
+/// identifier.
 private final class BackgroundTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
     var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    func endIfNeeded() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !ended, identifier != .invalid else { return }
+        ended = true
+        UIApplication.shared.endBackgroundTask(identifier)
+    }
 }

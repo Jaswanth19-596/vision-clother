@@ -77,6 +77,29 @@ struct WardrobeCatalogBuilderTests {
         #expect(index.count == entries.count)
     }
 
+    @Test func userRatingIsNilWithoutFeedbackHistory() {
+        let item = makeItem(slot: .top)
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [item])
+        #expect(entries.first?.userRating == nil)
+    }
+
+    @Test func userRatingIsNeutralFiftyWhenItemHasNoFeedback() {
+        let item = makeItem(slot: .top)
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [item], history: FeedbackHistory())
+        #expect(entries.first?.userRating == 50)
+    }
+
+    @Test func userRatingReflectsPoorFeedbackForThatItem() throws {
+        let item = makeItem(slot: .top)
+        var history = FeedbackHistory()
+        history.itemFeedback[item.id] = (likes: 0, total: 10)
+
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [item], history: history)
+
+        let rating = try #require(entries.first?.userRating)
+        #expect(rating < 50)
+    }
+
     @Test func slotBalancedSamplingKeepsEveryRequiredSlotRepresented() {
         // A closet dominated by tops shouldn't crowd out bottoms/footwear
         // entirely once the cap kicks in.

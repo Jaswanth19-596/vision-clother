@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import UIKit
 
 protocol TryOnRenderService {
     /// Drives `onUpdate` through the full lifecycle.
@@ -79,6 +80,22 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
 
         onUpdate(.submitting(stage: .rendering))
 
+        // Camera captures (full-resolution portrait JPEGs, and uncompressed
+        // RGBA8 PNGs out of background isolation) can be tens of MB — large
+        // enough that the base64 upload never finishes inside the request
+        // timeout, so the request never actually reaches OpenRouter. Shrink
+        // everything to a network-appropriate size right before encoding;
+        // the originals on disk are untouched.
+        let networkBaseImageData = Self.networkReadyImageData(baseImageData, preservingTransparency: false)
+        let networkGarmentData: [Data] = items.compactMap { item in
+            guard !item.isGhostElement,
+                  let assetName = item.imageAssetName,
+                  let garmentData = ImageStorage.loadData(for: assetName) else {
+                return nil
+            }
+            return Self.networkReadyImageData(garmentData, preservingTransparency: true)
+        }
+
         do {
             try Task.checkCancellation()
 
@@ -87,7 +104,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
 
             if isChatModel {
                 request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
-                
+
                 var contentParts: [[String: Any]] = []
 
                 // 1. Instructions Prompt
@@ -105,22 +122,18 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 contentParts.append([
                     "type": "image_url",
                     "image_url": [
-                        "url": "data:image/png;base64,\(baseImageData.base64EncodedString())"
+                        "url": "data:image/png;base64,\(networkBaseImageData.base64EncodedString())"
                     ]
                 ])
 
                 // 3. Ingested Garment Images (Real non-ghost items)
-                for item in items {
-                    if !item.isGhostElement,
-                       let assetName = item.imageAssetName,
-                       let garmentData = ImageStorage.loadData(for: assetName) {
-                        contentParts.append([
-                            "type": "image_url",
-                            "image_url": [
-                                "url": "data:image/png;base64,\(garmentData.base64EncodedString())"
-                            ]
-                        ])
-                    }
+                for garmentData in networkGarmentData {
+                    contentParts.append([
+                        "type": "image_url",
+                        "image_url": [
+                            "url": "data:image/png;base64,\(garmentData.base64EncodedString())"
+                        ]
+                    ])
                 }
 
                 let messages: [[String: Any]] = [
@@ -149,22 +162,18 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 inputReferences.append([
                     "type": "image_url",
                     "image_url": [
-                        "url": "data:image/png;base64,\(baseImageData.base64EncodedString())"
+                        "url": "data:image/png;base64,\(networkBaseImageData.base64EncodedString())"
                     ]
                 ])
 
                 // 2. Ingested Garment Images (Real non-ghost items)
-                for item in items {
-                    if !item.isGhostElement,
-                       let assetName = item.imageAssetName,
-                       let garmentData = ImageStorage.loadData(for: assetName) {
-                        inputReferences.append([
-                            "type": "image_url",
-                            "image_url": [
-                                "url": "data:image/png;base64,\(garmentData.base64EncodedString())"
-                            ]
-                        ])
-                    }
+                for garmentData in networkGarmentData {
+                    inputReferences.append([
+                        "type": "image_url",
+                        "image_url": [
+                            "url": "data:image/png;base64,\(garmentData.base64EncodedString())"
+                        ]
+                    ])
                 }
 
                 let promptText = """
@@ -187,6 +196,10 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             }
 
             request.httpMethod = "POST"
+            // Default 60s is too tight for a multi-image base64 upload plus
+            // generation time — bump it so slow uploads surface as a real
+            // result instead of a spurious -1001 timeout.
+            request.timeoutInterval = 120
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("https://github.com/Antigravity", forHTTPHeaderField: "HTTP-Referer")
@@ -229,7 +242,44 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
         } catch let error as TryOnError {
             onUpdate(.failed(error))
         } catch {
+            // Surface the real transport error (timed out vs. offline vs.
+            // DNS/host failure, etc.) instead of always reporting the same
+            // generic message — a large-upload timeout and a truly offline
+            // device look identical to the user otherwise.
+            print("⚠️ Try-on request failed before a response was received: \(error)")
             onUpdate(.failed(.network))
+        }
+    }
+
+    /// Downscales/re-encodes image bytes before they're base64-encoded into
+    /// an OpenRouter request body. Camera captures — full-resolution portrait
+    /// JPEGs, and uncompressed RGBA8 PNGs out of background isolation — can
+    /// be tens of MB, large enough that the upload never finishes inside the
+    /// request timeout, so the request never reaches OpenRouter at all.
+    /// Images already at or under `maxDimension` are returned unchanged.
+    private static func networkReadyImageData(
+        _ data: Data,
+        preservingTransparency: Bool,
+        maxDimension: CGFloat = 1280
+    ) -> Data {
+        guard let image = UIImage(data: data) else { return data }
+        let size = image.size
+        guard max(size.width, size.height) > maxDimension else { return data }
+
+        let scale = maxDimension / max(size.width, size.height)
+        let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = !preservingTransparency
+        format.scale = 1
+        let resized = UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        if preservingTransparency {
+            return resized.pngData() ?? data
+        } else {
+            return resized.jpegData(compressionQuality: 0.85) ?? data
         }
     }
 

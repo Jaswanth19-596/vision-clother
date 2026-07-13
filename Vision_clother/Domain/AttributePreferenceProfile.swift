@@ -44,6 +44,11 @@ struct RatedAttributes {
     /// recency keep contributing at full weight, unchanged from before decay
     /// existed.
     let recordedAt: Date
+    /// `WardrobeItem.slot` for the rated item — feeds `colorVibeAffinityBySlot`.
+    /// Defaulted to `nil` so existing call sites (tests, and any code that
+    /// only cares about the flat `colorVibeAffinity`) keep compiling; a `nil`
+    /// slot simply doesn't contribute to the per-slot breakdown.
+    let slot: Slot?
 
     /// Explicit init (rather than relying on the synthesized memberwise
     /// init's default-value support) — with trailing defaulted parameters,
@@ -51,7 +56,7 @@ struct RatedAttributes {
     /// init proved unreliable at call sites.
     init(
         value: Double, colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int,
-        styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now
+        styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now, slot: Slot? = nil
     ) {
         self.value = value
         self.colorVibe = colorVibe
@@ -60,6 +65,7 @@ struct RatedAttributes {
         self.styleIdentity = styleIdentity
         self.styleTags = styleTags
         self.recordedAt = recordedAt
+        self.slot = slot
     }
 }
 
@@ -92,11 +98,14 @@ struct OutfitDimensionRatedAttributes {
     /// `OutfitFeedback.recordedAt` — feeds `build(from:)`'s exponential
     /// time-decay weighting, same as `RatedAttributes.recordedAt`.
     let recordedAt: Date
+    /// `WardrobeItem.slot` for the rated item — feeds `colorVibeAffinityBySlot`,
+    /// same as `RatedAttributes.slot`.
+    let slot: Slot?
 
     init(
         colorHarmony: Double, occasionMatch: Double, styleMatch: Double, silhouette: Double, weatherFit: Double,
         colorVibe: ColorVibe, styleTags: [String], silhouetteTag: String?, formalityBand: Int,
-        fabricWeight: FabricWeight, recordedAt: Date = .now
+        fabricWeight: FabricWeight, recordedAt: Date = .now, slot: Slot? = nil
     ) {
         self.colorHarmony = colorHarmony
         self.occasionMatch = occasionMatch
@@ -109,6 +118,7 @@ struct OutfitDimensionRatedAttributes {
         self.formalityBand = formalityBand
         self.fabricWeight = fabricWeight
         self.recordedAt = recordedAt
+        self.slot = slot
     }
 }
 
@@ -116,6 +126,14 @@ struct OutfitDimensionRatedAttributes {
 /// neutral 0.5 — same shrinkage shape as `PairCompatibilityScoring.itemPreference`.
 struct AttributePreferenceProfile {
     var colorVibeAffinity: [ColorVibe: Double] = [:]
+    /// Same shrunk affinity as `colorVibeAffinity`, but broken out per
+    /// `Slot` (e.g. "which colors do I like in tops" vs. "in shoes") — used
+    /// by the Style Analytics "Color Affinity Breakdown" chart. Only
+    /// populated from ratings/outfit-dimension feedback whose `slot` is
+    /// known; `RatedAttributes`/`OutfitDimensionRatedAttributes` entries
+    /// with `slot == nil` still contribute to the flat `colorVibeAffinity`
+    /// above, just not here.
+    var colorVibeAffinityBySlot: [Slot: [ColorVibe: Double]] = [:]
     var patternAffinity: [GarmentPattern: Double] = [:]
     var formalityAffinity: [Int: Double] = [:]
     /// Personal Style Match (Stylist Intelligence Engine Phase 1), keyed by
@@ -161,6 +179,23 @@ struct AttributePreferenceProfile {
         max(PairCompatibilityScoring.defaultPriorWeight, Double(baselineCount) * 0.1)
     }
 
+    /// Folds one decay-weighted `(colorVibe, value)` observation into
+    /// `sums`, nested under `slot` — a no-op when `slot` is `nil` (rating
+    /// has no known slot, so it only contributes to the flat `colorSums`
+    /// the caller tracks separately).
+    private static func accumulateSlotColor(
+        _ slot: Slot?, colorVibe: ColorVibe, value: Double, weight: Double,
+        into sums: inout [Slot: [ColorVibe: (sum: Double, count: Double)]]
+    ) {
+        guard let slot else { return }
+        var slotMap = sums[slot] ?? [:]
+        var entry = slotMap[colorVibe] ?? (0, 0)
+        entry.sum += value * weight
+        entry.count += weight
+        slotMap[colorVibe] = entry
+        sums[slot] = slotMap
+    }
+
     static func build(
         from ratings: [RatedAttributes],
         outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
@@ -168,6 +203,7 @@ struct AttributePreferenceProfile {
         now: Date = .now
     ) -> AttributePreferenceProfile {
         var colorSums: [ColorVibe: (sum: Double, count: Double)] = [:]
+        var colorSumsBySlot: [Slot: [ColorVibe: (sum: Double, count: Double)]] = [:]
         var patternSums: [GarmentPattern: (sum: Double, count: Double)] = [:]
         var formalitySums: [Int: (sum: Double, count: Double)] = [:]
         var styleTagSums: [String: (sum: Double, count: Double)] = [:]
@@ -179,6 +215,7 @@ struct AttributePreferenceProfile {
 
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.value * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
+            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.value, weight: weight, into: &colorSumsBySlot)
 
             patternSums[rating.pattern, default: (0, 0)].sum += rating.value * weight
             patternSums[rating.pattern, default: (0, 0)].count += weight
@@ -197,6 +234,7 @@ struct AttributePreferenceProfile {
 
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
+            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.colorHarmony, weight: weight, into: &colorSumsBySlot)
 
             formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch * weight
             formalitySums[rating.formalityBand, default: (0, 0)].count += weight
@@ -220,6 +258,7 @@ struct AttributePreferenceProfile {
         // contribute to multiple style-tag buckets at once (it may carry
         // several tags); every other axis is one-value-per-item.
         var colorBaseline: [ColorVibe: Int] = [:]
+        var colorBaselineBySlot: [Slot: [ColorVibe: Int]] = [:]
         var patternBaseline: [GarmentPattern: Int] = [:]
         var formalityBaseline: [Int: Int] = [:]
         var styleTagBaseline: [String: Int] = [:]
@@ -227,6 +266,9 @@ struct AttributePreferenceProfile {
         var fabricWeightBaseline: [FabricWeight: Int] = [:]
         for item in inventory {
             colorBaseline[item.colorProfile.category, default: 0] += 1
+            var slotBaselineMap = colorBaselineBySlot[item.slot] ?? [:]
+            slotBaselineMap[item.colorProfile.category, default: 0] += 1
+            colorBaselineBySlot[item.slot] = slotBaselineMap
             patternBaseline[item.pattern, default: 0] += 1
             formalityBaseline[Int(item.formalityScore.rounded()), default: 0] += 1
             for tag in item.styleTags {
@@ -249,8 +291,14 @@ struct AttributePreferenceProfile {
             }
         }
 
+        var colorVibeAffinityBySlot: [Slot: [ColorVibe: Double]] = [:]
+        for (slot, sums) in colorSumsBySlot {
+            colorVibeAffinityBySlot[slot] = affinityMap(sums: sums, baseline: colorBaselineBySlot[slot] ?? [:])
+        }
+
         var profile = AttributePreferenceProfile()
         profile.colorVibeAffinity = affinityMap(sums: colorSums, baseline: colorBaseline)
+        profile.colorVibeAffinityBySlot = colorVibeAffinityBySlot
         profile.patternAffinity = affinityMap(sums: patternSums, baseline: patternBaseline)
         profile.formalityAffinity = affinityMap(sums: formalitySums, baseline: formalityBaseline)
         profile.styleTagAffinity = affinityMap(sums: styleTagSums, baseline: styleTagBaseline)

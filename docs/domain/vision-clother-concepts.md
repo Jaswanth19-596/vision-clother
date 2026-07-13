@@ -86,11 +86,21 @@ Persisted as three independent SwiftData models (`Models/FeedbackEvent.swift`), 
 
 ### Item Rating Score (Closet UI)
 
-`Domain/ItemRatingScoring.swift`'s `score(for:history:) -> Int?` is the 0-100 rating shown per item in `ClosetView`'s grid badge and `ItemDetailView`'s metadata row (added post-V1). It aggregates feedback from every source that references the item — not a new formula, just new plumbing on top of what already existed:
+`Domain/ItemRatingScoring.swift`'s `score(for:history:) -> Int` is the 0-100 rating shown per item in `ClosetView`'s grid badge and `ItemDetailView`'s metadata row (added post-V1). It aggregates feedback from every source that references the item — not a new formula, just new plumbing on top of what already existed:
 
 - Starts from `FeedbackHistory.itemFeedback[itemID]` (decay-weighted likes/total, already folding in `ItemRating`, `ItemFeedback`, and `OutfitFeedback.favoriteItemID`/`weakestItemID` — see `Data/WardrobeRepository.swift`'s `fetchFeedbackHistory()`).
 - Adds `FeedbackHistory.pairFeedback` entries where the item is either side of the `PairKey` (Manual Pairing's "liked together" signal, previously only used for pair-compatibility scoring, not folded into any single item's tally).
 - Feeds the summed likes/total straight into `PairCompatibilityScoring.itemPreference` (the same Bayesian-shrinkage function `OutfitRecommendationEngine.outfitScore` already uses internally) and scales the `[0,1]` result ×100.
-- Returns `nil` — not `50` — when the item has no feedback from any source, since `itemPreference`'s neutral-prior default is a scoring-engine convenience, not a real rating. Both UI call sites render a "Not yet rated" placeholder for `nil` rather than a literal 50%.
+- Returns `50` — not `nil` — when the item has no feedback from any source: `itemPreference`'s neutral-prior default *is* the intended rating for a freshly uploaded item (revised 2026-07-12 — an earlier version rendered a "Not yet rated" placeholder for `nil` instead, which also meant `Domain/WardrobeCatalogBuilder.swift`'s LLM-facing `user_rating` field sent `null` for these items, and the LLM recommender was observed avoiding them entirely rather than treating them as neutral).
 
-This score is computed fresh on each view appearance (no persisted/cached field on `WardrobeItem`, no SwiftData migration) — consistent with how `AnalyticsView` already treats `FeedbackHistory` as transient, recomputed state.
+This score is computed fresh on each view appearance (no persisted/cached field on `WardrobeItem`, no SwiftData migration) — consistent with how `ProfileView` already treats `FeedbackHistory` as transient, recomputed state.
+
+### Taste Synthesis (Profile tab, 2026-07-13)
+
+`Domain/TasteSynthesis.swift` turns the numeric affinity maps `AttributePreferenceProfile` already computes into a short, ranked list of `TasteSignal` values for the Profile tab's "Your Taste, In Words" section — e.g. "You gravitate toward earth tones for tops," "Smart-casual is your sweet spot." This is a **presentation-layer redesign, not a new preference model**: no ML, no training, no new scoring formula. `TasteSynthesis.rank(from:limit:)` is pure ranking/filtering —
+
+- Only surfaces an attribute at or above a confidence threshold (`0.58`) as a positive signal, or at/below a lower threshold (`0.40`) as one "tends to avoid" signal — mirrors the symmetric like/dislike surfacing `StylistBrain`'s prompt composer already does for the recommendation LLM.
+- Draws from `colorVibeAffinityBySlot`, `formalityAffinity`, `patternAffinity`, `styleTagAffinity`, `silhouetteAffinity`, and `fabricWeightAffinity` — the last three were already computed for recommendation scoring but never surfaced in any UI before this.
+- Ranks candidates by distance from the neutral `0.5` prior, so the most confident signals surface first; an empty or sparse profile yields `[]`, never a fabricated statement.
+
+English copy per signal lives in `Features/Profile/ProfileView.swift`, not in Domain — `TasteSignal` carries only structured data (slot/vibe/band/affinity), per `Domain/CLAUDE.md`'s no-UI-imports rule.

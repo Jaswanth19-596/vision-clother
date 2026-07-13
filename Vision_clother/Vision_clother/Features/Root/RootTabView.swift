@@ -23,8 +23,8 @@ struct RootTabView: View {
             ClosetView()
                 .tabItem { Label("My Closet", systemImage: "tshirt") }
 
-            AnalyticsView()
-                .tabItem { Label("Analytics", systemImage: "chart.bar") }
+            ProfileView()
+                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
 
             CombinationsView()
                 .tabItem { Label("Combinations", systemImage: "square.grid.2x2") }
@@ -41,7 +41,7 @@ struct RootTabView: View {
 
 #Preview {
     let container = try! ModelContainer(
-        for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
+        for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self, UserStyleProfile.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     RootTabView()

@@ -7,15 +7,16 @@
 //  function, with no SwiftData container involved.
 //
 
+import Foundation
 import Testing
 @testable import Vision_clother
 
 struct ItemRatingScoringTests {
 
-    @Test func returnsNilWhenItemHasNoFeedbackAnywhere() {
+    @Test func returnsNeutralFiftyWhenItemHasNoFeedbackAnywhere() {
         let itemID = UUID()
         let history = FeedbackHistory()
-        #expect(ItemRatingScoring.score(for: itemID, history: history) == nil)
+        #expect(ItemRatingScoring.score(for: itemID, history: history) == 50)
     }
 
     @Test func matchesItemPreferenceScaledByHundredFromItemFeedbackAlone() {
@@ -26,8 +27,7 @@ struct ItemRatingScoringTests {
         let expected = PairCompatibilityScoring.itemPreference(likeCount: 8, dislikeCount: 2)
         let score = ItemRatingScoring.score(for: itemID, history: history)
 
-        #expect(score != nil)
-        #expect(abs(Double(score!) - expected * 100) < 1.0)
+        #expect(abs(Double(score) - expected * 100) < 1.0)
     }
 
     @Test func foldsInPairFeedbackWhereItemIsEitherSideOfThePair() {
@@ -41,8 +41,7 @@ struct ItemRatingScoringTests {
         let expected = PairCompatibilityScoring.itemPreference(likeCount: 3, dislikeCount: 2)
         let score = ItemRatingScoring.score(for: itemID, history: history)
 
-        #expect(score != nil)
-        #expect(abs(Double(score!) - expected * 100) < 1.0)
+        #expect(abs(Double(score) - expected * 100) < 1.0)
     }
 
     @Test func ignoresPairFeedbackThatDoesNotReferenceTheItem() {
@@ -52,7 +51,7 @@ struct ItemRatingScoringTests {
         var history = FeedbackHistory()
         history.pairFeedback[PairKey(unrelatedA, unrelatedB)] = (likes: 5, total: 5)
 
-        #expect(ItemRatingScoring.score(for: itemID, history: history) == nil)
+        #expect(ItemRatingScoring.score(for: itemID, history: history) == 50)
     }
 
     @Test func sumsItemFeedbackAndPairFeedbackWithoutOverwriting() {
@@ -65,8 +64,7 @@ struct ItemRatingScoringTests {
         let expected = PairCompatibilityScoring.itemPreference(likeCount: 2, dislikeCount: 2)
         let score = ItemRatingScoring.score(for: itemID, history: history)
 
-        #expect(score != nil)
-        #expect(abs(Double(score!) - expected * 100) < 1.0)
+        #expect(abs(Double(score) - expected * 100) < 1.0)
     }
 
     @Test func stronglyLikedItemTrendsNearHundredAndStaysBounded() {
@@ -75,9 +73,8 @@ struct ItemRatingScoringTests {
         history.itemFeedback[itemID] = (likes: 20, total: 20)
 
         let score = ItemRatingScoring.score(for: itemID, history: history)
-        #expect(score != nil)
-        #expect(score! <= 100)
-        #expect(score! >= 90)
+        #expect(score <= 100)
+        #expect(score >= 90)
     }
 
     @Test func stronglyDislikedItemTrendsNearZeroAndStaysBounded() {
@@ -86,8 +83,7 @@ struct ItemRatingScoringTests {
         history.itemFeedback[itemID] = (likes: 0, total: 20)
 
         let score = ItemRatingScoring.score(for: itemID, history: history)
-        #expect(score != nil)
-        #expect(score! >= 0)
-        #expect(score! <= 10)
+        #expect(score >= 0)
+        #expect(score <= 10)
     }
 }

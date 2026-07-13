@@ -152,7 +152,7 @@ final class DailyAssistantViewModel {
             let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
 
             if RecommendationSettings.useAIRecommendations {
-                let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory) }
+                let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
                 if !catalog.isEmpty {
                     do {
                         let response = try await PerfLog.time("recommendation.call") {
