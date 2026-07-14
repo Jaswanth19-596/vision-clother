@@ -144,38 +144,10 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
     ) throws -> Data {
         let dataURI = "data:image/png;base64,\(imageData.base64EncodedString())"
 
-        var systemPrompt = """
-        You tag a single garment photo with structural metadata for a wardrobe app. \
-        The photo shows exactly one clothing item with its background already removed. \
-        You do not know what else the user owns and must never reference other garments \
-        — only output the metadata fields defined by the schema, based solely on this photo. \
-        For "description", write one concise sentence (140 characters or fewer) describing \
-        the garment — this text is later shown to a separate recommendation model that never \
-        sees the photo, so make it specific (cut, material, notable detail) rather than generic. \
-        For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
-        "streetwear", "tailored"). For "color_profile.undertone", classify the primary color's \
-        undertone as "warm", "cool", or "neutral". \
-        For "slot", classify which of these four categories the garment belongs to — use the \
-        garment's own cut and construction, not the color or pattern, to decide: \
-        "top" = worn on the upper body as a primary layer (t-shirts, shirts, blouses, sweaters, \
-        polos, tank tops); \
-        "bottom" = worn on the lower body (trousers, pants, jeans, shorts, skirts, chinos, \
-        leggings); \
-        "footwear" = worn on the feet (sneakers, boots, sandals, heels, loafers, dress shoes); \
-        "outerwear" = worn OVER a top as an extra layer, typically with its own front closure \
-        (jackets, coats, blazers, cardigans, parkas). \
-        Choose exactly one slot; only choose "outerwear" when the item is clearly meant to be \
-        layered over other clothing rather than worn as the primary upper-body garment. \
-        Identify the following additional attributes: \
-        "garment_subtype": the specific item subtype (e.g. "Oxford Shirt", "Linen Camp Collar Shirt", "Chinos", "Jeans", "Sneakers", "Loafers", "Blazer", "Cardigan"); \
-        "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
-        "silhouette": the silhouette shape (e.g. "Straight", "Boxy", "A-line", "Fitted", "Flared"); \
-        "material": the apparent primary material (e.g. "Cotton", "Linen", "Denim", "Wool", "Leather", "Silk", "Knit"); \
-        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede", "Waffle").
-        """
+        var systemPrompt = ModelConfig.Prompts.visionMetadataSystemPrompt
 
         let userContent: [[String: Any]] = [
-            ["type": "text", "text": "Tag this garment."],
+            ["type": "text", "text": ModelConfig.Prompts.visionMetadataUserText],
             ["type": "image_url", "image_url": ["url": dataURI]],
         ]
 

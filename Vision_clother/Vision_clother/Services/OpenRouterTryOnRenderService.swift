@@ -99,7 +99,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
         do {
             try Task.checkCancellation()
 
-            let isChatModel = (model == "google/gemini-2.5-flash-image")
+            let isChatModel = ModelConfig.isChatCompletionImageModel(model)
             var request: URLRequest
 
             if isChatModel {
@@ -110,12 +110,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 // 1. Instructions Prompt
                 contentParts.append([
                     "type": "text",
-                    "text": """
-                    Apply the garments from the clothing reference images onto the person in the base portrait image. \
-                    Put the top on their upper body, and the bottom on their lower body. Ensure the output is a single \
-                    realistic photograph of the person wearing these clothing items, preserving their face, body shape, \
-                    and background. Output ONLY the resulting generated image.
-                    """
+                    "text": ModelConfig.Prompts.tryOnChatInstructions
                 ])
 
                 // 2. Base Portrait Image
@@ -139,7 +134,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 let messages: [[String: Any]] = [
                     [
                         "role": "system",
-                        "content": "You are a virtual try-on assistant. Combine the garments in the provided reference images onto the person in the base portrait image, producing a single realistic try-on output image."
+                        "content": ModelConfig.Prompts.tryOnChatSystemMessage
                     ],
                     [
                         "role": "user",
@@ -176,15 +171,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                     ])
                 }
 
-                let promptText = """
-                Full-body fashion photograph. Apply the clothing items from the reference garment images \
-                onto the person shown in the portrait reference image. Dress them in the outfit: the top \
-                garment on their upper body, and the bottom garment on their lower body. \
-                The output must show the COMPLETE person from head to toe — including the full face, \
-                full torso, legs, and feet — with the original background preserved. \
-                Do NOT crop the image. Do NOT zoom in. Show the full figure in a natural standing pose. \
-                Editorial fashion photography style, realistic, high quality.
-                """
+                let promptText = ModelConfig.Prompts.tryOnImagesPrompt
 
                 let body: [String: Any] = [
                     "model": model,

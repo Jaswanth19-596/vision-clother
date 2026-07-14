@@ -196,6 +196,7 @@ struct DailyAssistantView: View {
         .environment(JobQueueStore(
             repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),

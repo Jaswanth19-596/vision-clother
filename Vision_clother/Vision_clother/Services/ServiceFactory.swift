@@ -50,6 +50,17 @@ enum ServiceFactory {
         VisionBackgroundIsolationService()
     }
 
+    /// Gemini-based image preprocessing (via OpenRouter) — runs
+    /// unconditionally as stage one of every upload
+    /// (`JobQueueStore.performUpload`), so unlike the other OpenRouter-backed
+    /// factory methods above there's no mock-swap gate here; the real class
+    /// itself throws `.missingAPIKey` per call if no key is configured
+    /// (`APIKeys.openRouter`), which `JobQueueStore` catches and falls back
+    /// from to the raw photo.
+    static func makeImagePreprocessingService() -> BackgroundIsolationService {
+        OpenRouterBackgroundIsolationService()
+    }
+
     /// On-device Vision framework, same posture as
     /// `makeBackgroundIsolationService` — no API key gate, runs everywhere.
     static func makePersonPhotoValidationService() -> PersonPhotoValidationService {

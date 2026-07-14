@@ -218,6 +218,7 @@ private func makeJobQueueStore(repository: WardrobeRepository) -> JobQueueStore 
     JobQueueStore(
         repository: repository,
         backgroundIsolationService: MockBackgroundIsolationService(),
+        imagePreprocessingService: MockBackgroundIsolationService(),
         visionMetadataService: MockVisionMetadataExtractionService(),
         tryOnService: MockTryOnRenderService(),
         photoLibrarySaver: MockPhotoLibrarySaver(),

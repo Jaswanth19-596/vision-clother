@@ -44,6 +44,7 @@ struct Vision_clotherApp: App {
         let store = JobQueueStore(
             repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
             backgroundIsolationService: ServiceFactory.makeBackgroundIsolationService(),
+            imagePreprocessingService: ServiceFactory.makeImagePreprocessingService(),
             visionMetadataService: ServiceFactory.makeVisionMetadataExtractionService(),
             tryOnService: ServiceFactory.makeTryOnRenderService(),
             photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),

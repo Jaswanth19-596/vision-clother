@@ -41,6 +41,7 @@ final class JobQueueStore {
 
     private let repository: WardrobeRepository
     private let backgroundIsolationService: BackgroundIsolationService
+    private let imagePreprocessingService: BackgroundIsolationService
     private let visionMetadataService: VisionMetadataExtractionService
     private let tryOnService: TryOnRenderService
     private let photoLibrarySaver: PhotoLibrarySaver
@@ -55,6 +56,7 @@ final class JobQueueStore {
     init(
         repository: WardrobeRepository,
         backgroundIsolationService: BackgroundIsolationService,
+        imagePreprocessingService: BackgroundIsolationService,
         visionMetadataService: VisionMetadataExtractionService,
         tryOnService: TryOnRenderService,
         photoLibrarySaver: PhotoLibrarySaver,
@@ -62,6 +64,7 @@ final class JobQueueStore {
     ) {
         self.repository = repository
         self.backgroundIsolationService = backgroundIsolationService
+        self.imagePreprocessingService = imagePreprocessingService
         self.visionMetadataService = visionMetadataService
         self.tryOnService = tryOnService
         self.photoLibrarySaver = photoLibrarySaver
@@ -97,14 +100,33 @@ final class JobQueueStore {
     /// failure — the user's recourse is Retry from the queue panel or
     /// manual entry.
     private func performUpload(jobID: UUID, payload: UploadPayload) async {
-        setStatus(jobID, .processing("Isolating garment…"))
+        setStatus(jobID, .processing("Enhancing photo…"))
         PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) raw=\(imageFingerprint(payload.rawImageData), privacy: .public) bytes=\(payload.rawImageData.count, privacy: .public)")
 
+        // Stage 1: Gemini (via OpenRouter) preprocesses the raw photo — can
+        // succeed on cases on-device Vision alone can't (a worn garment, a
+        // background similar to the item). Falls back to the raw photo on
+        // any failure so stage 2 still runs.
+        var workingImageData = payload.rawImageData
+        do {
+            workingImageData = try await imagePreprocessingService.isolateForeground(from: payload.rawImageData)
+        } catch {
+            workingImageData = payload.rawImageData
+        }
+        guard !Task.isCancelled else {
+            finishJob(jobID, status: .failed("Cancelled"))
+            return
+        }
+
+        // Stage 2: on-device Vision produces the final transparent-background
+        // cutout from stage 1's output. Falls back to stage 1's output on
+        // failure, same graceful-degradation philosophy.
+        setStatus(jobID, .processing("Isolating garment…"))
         let imageToTag: Data
         do {
-            imageToTag = try await backgroundIsolationService.isolateForeground(from: payload.rawImageData)
+            imageToTag = try await backgroundIsolationService.isolateForeground(from: workingImageData)
         } catch {
-            imageToTag = payload.rawImageData
+            imageToTag = workingImageData
         }
         guard !Task.isCancelled else {
             finishJob(jobID, status: .failed("Cancelled"))

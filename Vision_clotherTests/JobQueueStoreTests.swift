@@ -33,6 +33,7 @@ struct JobQueueStoreTests {
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: mockVision,
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
@@ -68,6 +69,7 @@ struct JobQueueStoreTests {
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: visionService,
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
@@ -99,6 +101,7 @@ struct JobQueueStoreTests {
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: tryOnService,
             photoLibrarySaver: MockPhotoLibrarySaver(),
@@ -134,6 +137,7 @@ struct JobQueueStoreTests {
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: tryOnService,
             photoLibrarySaver: photoLibrarySaver,
@@ -165,6 +169,7 @@ struct JobQueueStoreTests {
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
+            imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: tryOnService,
             photoLibrarySaver: MockPhotoLibrarySaver(),
@@ -195,6 +200,7 @@ private func makeJobQueueStore(repository: WardrobeRepository) -> JobQueueStore 
     JobQueueStore(
         repository: repository,
         backgroundIsolationService: MockBackgroundIsolationService(),
+        imagePreprocessingService: MockBackgroundIsolationService(),
         visionMetadataService: MockVisionMetadataExtractionService(),
         tryOnService: MockTryOnRenderService(),
         photoLibrarySaver: MockPhotoLibrarySaver(),

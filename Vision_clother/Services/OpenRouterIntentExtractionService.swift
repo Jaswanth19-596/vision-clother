@@ -171,11 +171,7 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
             userContent += "\n\nCurrent weather: \(weather.temperatureFahrenheit)°F, \(weather.conditions)."
         }
 
-        var systemPrompt = """
-        You extract structured styling constraints from a user's free-text scenario. \
-        You do not know what clothing the user owns and must never reference specific \
-        garments — only output the constraint fields defined by the schema.
-        """
+        var systemPrompt = ModelConfig.Prompts.intentExtractionSystemPrompt
 
         var body: [String: Any] = [
             "model": model,

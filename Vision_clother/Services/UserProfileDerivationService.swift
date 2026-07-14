@@ -131,18 +131,10 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
     ) throws -> Data {
         let dataURI = "data:image/jpeg;base64,\(portraitData.base64EncodedString())"
 
-        var systemPrompt = """
-        You analyze a single full-body portrait photo to build a personal styling profile for a \
-        wardrobe app. Describe the person's apparent skin tone, undertone (warm/cool/neutral), \
-        and general body type in neutral, respectful, non-judgmental language focused only on \
-        attributes relevant to color and fit recommendations. Do not identify the person or \
-        speculate about anything besides coloring, body type, and style affinities. \
-        "recommended_colors" and "avoid_colors" should be a short list of hex codes or common \
-        color names that complement or clash with the derived undertone.
-        """
+        var systemPrompt = ModelConfig.Prompts.userProfileDerivationSystemPrompt
 
         let userContent: [[String: Any]] = [
-            ["type": "text", "text": "Build a style profile from this photo."],
+            ["type": "text", "text": ModelConfig.Prompts.userProfileDerivationUserText],
             ["type": "image_url", "image_url": ["url": dataURI]],
         ]
 
