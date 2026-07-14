@@ -43,10 +43,10 @@ struct OutfitRecommendationServiceTests {
 
         #expect(response.outfits.count == 1)
         let outfit = try #require(response.outfits.first)
-        #expect(catalogIDs.contains(outfit.topID))
-        #expect(catalogIDs.contains(outfit.bottomID))
-        #expect(catalogIDs.contains(outfit.footwearID))
-        #expect(outfit.outerwearID == nil)
+        #expect(catalogIDs.contains(try #require(outfit.itemIDsBySlot[.top])))
+        #expect(catalogIDs.contains(try #require(outfit.itemIDsBySlot[.bottom])))
+        #expect(catalogIDs.contains(try #require(outfit.itemIDsBySlot[.footwear])))
+        #expect(outfit.itemIDsBySlot[.outerwear] == nil)
         // The mock also self-reports resolved_constraints, matching the real
         // service's contract, so the validator's Tier 1 formality check
         // exercises the same code path on the keyless Simulator run.
@@ -77,7 +77,7 @@ struct OutfitRecommendationServiceTests {
             prompt: "Cold commute", catalog: catalog, profile: nil, weather: weather, history: FeedbackHistory()
         )
 
-        #expect(response.outfits.first?.outerwearID != nil)
+        #expect(response.outfits.first?.itemIDsBySlot[.outerwear] != nil)
     }
 
     @Test func mockReturnsNoOutfitsWhenARequiredSlotIsMissingFromTheCatalog() async throws {

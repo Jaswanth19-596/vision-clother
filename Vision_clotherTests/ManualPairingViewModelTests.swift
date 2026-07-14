@@ -233,8 +233,8 @@ struct ManualPairingViewModelTests {
         #expect(repository.recordedOutfitFeedback.first?.outfitID == repository.savedCombinations.first?.id)
         #expect(repository.savedCombinations.count == 1)
         #expect(repository.savedCombinations.first?.origin == "pairing")
-        #expect(repository.savedCombinations.first?.topItemID == top.id)
-        #expect(repository.savedCombinations.first?.bottomItemID == bottom.id)
+        #expect(repository.savedCombinations.first?.itemIDsBySlot[.top] == top.id)
+        #expect(repository.savedCombinations.first?.itemIDsBySlot[.bottom] == bottom.id)
         #expect(photoLibrarySaver.saveCallCount == 1)
     }
 

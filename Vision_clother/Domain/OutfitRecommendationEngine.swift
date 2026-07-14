@@ -88,38 +88,72 @@ enum OutfitRecommendationEngine {
         let tops = withGhosts.filter { $0.slot == .top }
         let bottoms = withGhosts.filter { $0.slot == .bottom }
         let footwear = withGhosts.filter { $0.slot == .footwear }
-        let outerwear = withGhosts.filter { $0.slot == .outerwear }
 
         guard !tops.isEmpty, !bottoms.isEmpty, !footwear.isEmpty else { return [] }
 
-        let outerwearOptions: [WardrobeItem?] = (constraints.weatherLayeringRequired && !outerwear.isEmpty)
-            ? outerwear.map { $0 }
-            : [nil]
+        // Optional accent slots (outerwear + the three newer accents) are
+        // each either "wanted" (weather for outerwear, `desiredAccentSlots`
+        // for the rest) or omitted entirely (a single `nil` option). Each
+        // wanted slot's candidate list is capped to the closest-formality
+        // matches before cross-producing — an uncapped cross-product across
+        // 4 optional axes explodes combinatorially on a well-stocked closet.
+        let optionalSlots: [Slot] = [.outerwear, .headwear, .accessory, .bag]
+        var optionsBySlot: [Slot: [WardrobeItem?]] = [:]
+        for slot in optionalSlots {
+            let wanted = slot == .outerwear
+                ? constraints.weatherLayeringRequired
+                : constraints.desiredAccentSlots.contains(slot)
+            let candidates = withGhosts.filter { $0.slot == slot }
+            if wanted, !candidates.isEmpty {
+                let capped = Self.topCandidates(candidates, closestTo: constraints.formalityRange.midpoint, limit: 3)
+                optionsBySlot[slot] = capped
+            } else {
+                optionsBySlot[slot] = [nil]
+            }
+        }
 
         var combos: [OutfitCombination] = []
-        combos.reserveCapacity(tops.count * bottoms.count * footwear.count * outerwearOptions.count)
-
         for top in tops {
             for bottom in bottoms {
                 for shoe in footwear {
-                    for outer in outerwearOptions {
-                        let items = [top, bottom, shoe] + (outer.map { [$0] } ?? [])
-                        let score = outfitScore(
-                            for: items,
-                            constraints: constraints,
-                            profile: profile,
-                            weather: weather,
-                            history: history
-                        )
-                        combos.append(
-                            OutfitCombination(top: top, bottom: bottom, footwear: shoe, outerwear: outer, score: score)
-                        )
+                    for outer in optionsBySlot[.outerwear] ?? [nil] {
+                        for headwear in optionsBySlot[.headwear] ?? [nil] {
+                            for accessory in optionsBySlot[.accessory] ?? [nil] {
+                                for bag in optionsBySlot[.bag] ?? [nil] {
+                                    var itemsBySlot: [Slot: WardrobeItem] = [.top: top, .bottom: bottom, .footwear: shoe]
+                                    itemsBySlot[.outerwear] = outer
+                                    itemsBySlot[.headwear] = headwear
+                                    itemsBySlot[.accessory] = accessory
+                                    itemsBySlot[.bag] = bag
+
+                                    let score = outfitScore(
+                                        for: Slot.allCases.compactMap { itemsBySlot[$0] },
+                                        constraints: constraints,
+                                        profile: profile,
+                                        weather: weather,
+                                        history: history
+                                    )
+                                    combos.append(OutfitCombination(itemsBySlot: itemsBySlot, score: score))
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
         return Array(combos.sorted { $0.score > $1.score }.prefix(limit))
+    }
+
+    /// Sorts `candidates` by closeness of `formalityScore` to `target` and
+    /// returns up to `limit`, wrapped as `WardrobeItem?` for direct use as a
+    /// cross-product option list. Bounds the optional-accent-slot
+    /// combinatorics in `generateCandidates` above.
+    private static func topCandidates(_ candidates: [WardrobeItem], closestTo target: Double, limit: Int) -> [WardrobeItem?] {
+        candidates
+            .sorted { abs($0.formalityScore - target) < abs($1.formalityScore - target) }
+            .prefix(limit)
+            .map { $0 }
     }
 
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))

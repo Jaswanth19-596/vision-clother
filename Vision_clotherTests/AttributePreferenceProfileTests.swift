@@ -254,7 +254,7 @@ struct AttributePreferenceProfileTests {
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 
-        let ghost = GhostElementProvider.defaultItem(for: .top)
+        let ghost = GhostElementProvider.defaultItem(for: .top)!
         let realItem = makeItem(colorVibe: .monochrome)
 
         // Both items share the same relevant attributes as the ghost

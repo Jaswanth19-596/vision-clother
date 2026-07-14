@@ -27,9 +27,9 @@ struct ProfileView: View {
     @Query private var styleProfiles: [UserStyleProfile]
 
     /// Segments offered by the "Colors You Wear Well" picker — matches the
-    /// requested Tops/Bottoms/Shoes mockup; outerwear is a much smaller
-    /// slice of most closets and is omitted to keep the picker to three
-    /// segments.
+    /// requested Tops/Bottoms/Shoes mockup; outerwear and the newer
+    /// headwear/accessory/bag accent slots are a much smaller slice of most
+    /// closets and are omitted to keep the picker to three segments.
     private static let colorAffinitySlots: [Slot] = [.top, .bottom, .footwear]
     @State private var selectedColorSlot: Slot = .top
 
@@ -64,6 +64,9 @@ struct ProfileView: View {
         case .bottom: return "Bottoms"
         case .footwear: return "Shoes"
         case .outerwear: return "Outerwear"
+        case .headwear: return "Headwear"
+        case .accessory: return "Accessories"
+        case .bag: return "Bags"
         }
     }
 

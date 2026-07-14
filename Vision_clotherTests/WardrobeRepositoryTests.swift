@@ -26,10 +26,8 @@ struct WardrobeRepositoryTests {
     private func makeCombination(assetName: String, savedAt: Date, origin: String = "pairing") -> SavedCombination {
         SavedCombination(
             imageAssetName: assetName,
-            topItemID: UUID(),
-            bottomItemID: UUID(),
-            topLabel: "Solid Neutral Top",
-            bottomLabel: "Solid Neutral Bottom",
+            itemIDsBySlot: [.top: UUID(), .bottom: UUID()],
+            labelsBySlot: [.top: "Solid Neutral Top", .bottom: "Solid Neutral Bottom"],
             savedAt: savedAt,
             origin: origin
         )
@@ -267,10 +265,8 @@ struct WardrobeRepositoryTests {
         try repository.save(top)
         let combination = SavedCombination(
             imageAssetName: "outfit.png",
-            topItemID: top.id,
-            bottomItemID: UUID(),
-            topLabel: "top",
-            bottomLabel: "bottom",
+            itemIDsBySlot: [.top: top.id, .bottom: UUID()],
+            labelsBySlot: [.top: "top", .bottom: "bottom"],
             origin: "pairing"
         )
         try repository.saveCombination(combination)
@@ -293,10 +289,8 @@ struct WardrobeRepositoryTests {
         let bottomID = UUID()
         let combination = SavedCombination(
             imageAssetName: "outfit.png",
-            topItemID: topID,
-            bottomItemID: bottomID,
-            topLabel: "top",
-            bottomLabel: "bottom",
+            itemIDsBySlot: [.top: topID, .bottom: bottomID],
+            labelsBySlot: [.top: "top", .bottom: "bottom"],
             origin: "pairing"
         )
         try repository.saveCombination(combination)
@@ -318,7 +312,7 @@ struct WardrobeRepositoryTests {
 
         let history = try repository.fetchFeedbackHistory()
 
-        let itemSet = Set([combination.topItemID, combination.bottomItemID])
+        let itemSet = Set(combination.itemIDsBySlot.values)
         #expect((history.outfitNegativeSignalByItemSet[itemSet] ?? 0) <= 0)
     }
 

@@ -33,6 +33,15 @@ struct OutfitRecommendationValidatorTests {
         StructuredRationaleWire(summary: text, confidence: 90)
     }
 
+    private func makeWire(
+        top: String, bottom: String, footwear: String, outerwear: String? = nil,
+        rationale: StructuredRationaleWire
+    ) -> RecommendedOutfitWire {
+        var itemIDsBySlot: [Slot: String] = [.top: top, .bottom: bottom, .footwear: footwear]
+        itemIDsBySlot[.outerwear] = outerwear
+        return RecommendedOutfitWire(itemIDsBySlot: itemIDsBySlot, rationale: rationale)
+    }
+
     @Test func validPicksResolveToScoredOutfits() {
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -40,11 +49,8 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString,
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
                 rationale: makeRationale("A clean neutral look.")
             ),
         ])
@@ -64,11 +70,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: UUID().uuidString, // not in the index
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: UUID().uuidString, // not in the index
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Hallucinated id.")
             ),
         ])
@@ -83,12 +88,11 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                // bottom's id placed in the top_id slot — mismatch.
-                topID: bottom.id.uuidString,
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                // bottom's id placed in the top slot — mismatch.
+                top: bottom.id.uuidString,
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Slot mismatch.")
             ),
         ])
@@ -107,11 +111,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString,
-                bottomID: top.id.uuidString, // same id as top_id
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString,
+                bottom: top.id.uuidString, // same id as top
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Reused id.")
             ),
         ])
@@ -126,11 +129,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString,
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString,
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Ghost picked by mistake.")
             ),
         ])
@@ -141,7 +143,7 @@ struct OutfitRecommendationValidatorTests {
     @Test func allInvalidOutfitsYieldsEmptyArray() {
         let index: [String: WardrobeItem] = [:]
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(topID: "x", bottomID: "y", footwearID: "z", outerwearID: nil, rationale: makeRationale("n/a")),
+            makeWire(top: "x", bottom: "y", footwear: "z", rationale: makeRationale("n/a")),
         ])
 
         #expect(OutfitRecommendationValidator.validate(response, index: index).isEmpty)
@@ -155,9 +157,9 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear, outerwear])
 
         let validOuterwear = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString, bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString, outerwearID: outerwear.id.uuidString,
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString, outerwear: outerwear.id.uuidString,
                 rationale: makeRationale("Layered look.")
             ),
         ])
@@ -166,9 +168,9 @@ struct OutfitRecommendationValidatorTests {
         #expect(validated.first?.outerwear?.id == outerwear.id)
 
         let invalidOuterwear = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString, bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString, outerwearID: UUID().uuidString,
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString, outerwear: UUID().uuidString,
                 rationale: makeRationale("Hallucinated outerwear.")
             ),
         ])
@@ -183,11 +185,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: UUID().uuidString,
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: UUID().uuidString,
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Hallucinated id.")
             ),
         ])
@@ -204,11 +205,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: bottom.id.uuidString, // wrong slot
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: bottom.id.uuidString, // wrong slot
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Slot mismatch.")
             ),
         ])
@@ -224,11 +224,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString,
-                bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString,
+                bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Ghost picked by mistake.")
             ),
         ])
@@ -243,11 +242,10 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString,
-                bottomID: top.id.uuidString,
-                footwearID: footwear.id.uuidString,
-                outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString,
+                bottom: top.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("Reused id.")
             ),
         ])
@@ -263,9 +261,9 @@ struct OutfitRecommendationValidatorTests {
         let index = makeIndex([top, bottom, footwear])
 
         let response = OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString, bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString, outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("A clean neutral look.")
             ),
         ])

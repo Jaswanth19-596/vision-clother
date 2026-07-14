@@ -47,8 +47,10 @@ Background Isolation Service: Automatically isolates clothing boundaries from ra
 
 Vision-LLM Tag Generation: Extracted item graphics are processed via a vision model to append structural metadata automatically.
 
+> **Superseded 2026-07-14:** the closet-category expansion added three optional accent slots — `headwear`, `accessory` (a single signature piece: belt/scarf/tie/watch/sunglasses), `bag` — alongside the original four. `top`/`bottom`/`footwear` remain the only always-required slots; `outerwear` and the three new accents are conditionally included (weather for outerwear, `StyleConstraints.desired_accent_slots` for the rest). See `docs/domain/vision-clother-concepts.md`'s "Slots" section for the authoritative, current list — this table is left as historical context.
+
 Metadata Field	Data Type / Range	Description / Expected Content Values
-slot	Enum	[top, bottom, footwear, outerwear]
+slot	Enum	[top, bottom, footwear, outerwear] — see superseded note above; three more optional slots (headwear, accessory, bag) were added 2026-07-14.
 formality_score	Float (1.0 - 5.0)	1.0 = Loungewear/Gym; 3.0 = Smart-Casual/Tech-Office; 5.0 = Black Tie
 color_profile	Object	Primary hex, secondary hex, categorical classification (e.g., neutral, pastel), and undertone (warm/cool/neutral)
 pattern	Enum	[solid, striped, plaid, graphic, textured]
@@ -153,7 +155,7 @@ Center asset: Swipeable carousel block depicting recommended outfit options form
 Primary interactive button: Callout accent element reading "How does it look on me?" which invokes the visual rendering try-on model instantly on top of the active flatlay selection.
 
 Tab 2: My Closet Inventory Grid
-Categorized layout: Segmented into four persistent columns or horizontal tracks: Tops, Bottoms, Footwear, Outerwear.
+Categorized layout: Segmented into persistent columns or horizontal tracks — originally four (Tops, Bottoms, Footwear, Outerwear), extended 2026-07-14 with three optional accent sections (Headwear, Accessories, Bags) that show a real "add your first..." empty state rather than a Ghost Element when unpopulated (see `docs/domain/vision-clother-concepts.md`'s Ghost Elements section).
 
 Display architecture: Displays every background-isolated asset frame seamlessly within clean rounded profile grid slots.
 
@@ -173,7 +175,7 @@ Request (constructed locally, sent as prompt + structured user content):
 - `weather`: `{ temperature_fahrenheit, conditions }`, or omitted if unavailable.
 - System-prompt guidance includes color-theory rules (complementary/analogous/monochrome pairing, ≤3 color families per outfit, neutral-anchoring) so the LLM's picks are chromatically informed even before local re-scoring.
 
-Response — JSON Schema:
+Response — JSON Schema (illustrative; superseded 2026-07-14 by the generic per-slot builder described below):
 ```json
 {
   "type": "object",
@@ -200,6 +202,8 @@ Response — JSON Schema:
 }
 ```
 `temperature: 0` is used to minimize non-determinism. Every returned ID is validated against the catalog before any outfit is shown to the user (§2.1a step 3).
+
+> **Superseded 2026-07-14:** the actual schema is now built generically from `Slot.allCases` (`Services/OutfitRecommendationService.swift`'s `itemIDSchemaProperties`), producing one `{slot}_id` property per slot — `top_id`/`bottom_id`/`footwear_id` (required, non-nullable), `outerwear_id`/`headwear_id`/`accessory_id`/`bag_id` (required key, nullable value — null unless the scenario/weather calls for that accent). `resolved_constraints` also gained a `desired_accent_slots` array (`headwear`/`accessory`/`bag`) so the model self-reports which accents it judged relevant, mirroring how `weather_layering_required` already drives outerwear. `RecommendedOutfitWire` decodes this into a `[Slot: String]` dictionary on the Swift side via a custom `Codable` implementation — see `docs/domain/vision-clother-concepts.md`.
 
 3.8 User Style Profile
 Derived once (and re-derivable) from the user's existing onboarding portrait photo via a single vision-LLM call — the only recommendation-adjacent call that sends an image, and it is sent exactly once per derivation, never per recommendation request.

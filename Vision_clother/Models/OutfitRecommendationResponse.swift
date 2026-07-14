@@ -32,19 +32,59 @@ struct OutfitRecommendationResponse: Codable, Equatable {
     }
 }
 
-struct RecommendedOutfitWire: Codable, Equatable {
-    var topID: String
-    var bottomID: String
-    var footwearID: String
-    var outerwearID: String?
+/// A slot-keyed dictionary can't be sent/received as a literal dynamic JSON
+/// object under OpenRouter's strict `response_format: json_schema` mode
+/// (which requires a fixed `properties`/`required` list — see
+/// `Services/OutfitRecommendationService.swift`'s schema builder), so this
+/// type stays dictionary-shaped only on the Swift side, via a custom
+/// `Codable` implementation that maps to/from each `Slot.wireKey`. Adding a
+/// future slot only means adding a `Slot` case — this type needs no changes.
+struct RecommendedOutfitWire: Equatable {
+    /// slot -> catalog item id string. Only slots the LLM actually picked
+    /// appear here; required-slot presence is enforced by
+    /// `OutfitRecommendationValidator`, not by this type.
+    var itemIDsBySlot: [Slot: String]
     var rationale: StructuredRationaleWire
+}
 
-    enum CodingKeys: String, CodingKey {
-        case topID = "top_id"
-        case bottomID = "bottom_id"
-        case footwearID = "footwear_id"
-        case outerwearID = "outerwear_id"
-        case rationale
+extension RecommendedOutfitWire: Codable {
+    private struct DynamicCodingKeys: CodingKey {
+        let stringValue: String
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKeys.self)
+        var resolved: [Slot: String] = [:]
+        for slot in Slot.allCases {
+            guard let key = DynamicCodingKeys(stringValue: slot.wireKey) else { continue }
+            if let id = try container.decodeIfPresent(String.self, forKey: key) {
+                resolved[slot] = id
+            }
+        }
+        itemIDsBySlot = resolved
+        guard let rationaleKey = DynamicCodingKeys(stringValue: "rationale") else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "invalid rationale key")
+            )
+        }
+        rationale = try container.decode(StructuredRationaleWire.self, forKey: rationaleKey)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKeys.self)
+        for slot in Slot.allCases {
+            guard let key = DynamicCodingKeys(stringValue: slot.wireKey) else { continue }
+            try container.encodeIfPresent(itemIDsBySlot[slot], forKey: key)
+        }
+        guard let rationaleKey = DynamicCodingKeys(stringValue: "rationale") else {
+            throw EncodingError.invalidValue(
+                rationale, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "invalid rationale key")
+            )
+        }
+        try container.encode(rationale, forKey: rationaleKey)
     }
 }
 

@@ -27,14 +27,9 @@ struct Vision_clotherApp: App {
     init() {
         let container: ModelContainer
         do {
-            container = try ModelContainer(for:
-                WardrobeItem.self,
-                OutfitFeedback.self,
-                ItemFeedback.self,
-                PairFeedback.self,
-                SavedCombination.self,
-                ItemRating.self,
-                UserStyleProfile.self
+            container = try ModelContainer(
+                for: Schema(SchemaV2.models),
+                migrationPlan: SavedCombinationMigrationPlan.self
             )
         } catch {
             fatalError("Failed to create ModelContainer: \(error)")

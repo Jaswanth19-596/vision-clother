@@ -4,7 +4,14 @@ The vocabulary below is shared across the LLM's constraint output, the wardrobe 
 
 ## Slots
 
-Every garment belongs to exactly one of four slots (`Models/WardrobeItem.swift`'s `Slot` enum): `top`, `bottom`, `footwear`, `outerwear`. An `OutfitCombination` always has the first three; `outerwear` is optional and only included when `StyleConstraints.weatherLayeringRequired` is true.
+Every garment belongs to exactly one of seven slots (`Models/WardrobeItem.swift`'s `Slot` enum): `top`, `bottom`, `footwear`, `outerwear`, `headwear`, `accessory`, `bag` — the last three added 2026-07-14 to extend the app from a top/bottom/footwear stylist toward a fully "top to bottom" one. `accessory` is deliberately a single slot covering belt/scarf/tie/watch/sunglasses (one signature piece per outfit, not several simultaneously) rather than a slot per accessory type; jewelry is folded into `accessory` too rather than given its own slot, kept simple for V1.
+
+Two per-slot properties on `Slot` encode the behavioral differences that used to be ad hoc `case .outerwear:` special-casing scattered across the codebase — any new slot should extend these rather than reintroducing that pattern:
+
+- **`isRequired`**: `true` only for `top`/`bottom`/`footwear`. An `OutfitCombination` always has these three; every other slot (`outerwear`, `headwear`, `accessory`, `bag`) is optional and conditionally included — `outerwear` by `StyleConstraints.weatherLayeringRequired`, the three newer accents by `StyleConstraints.desiredAccentSlots` (populated by the recommendation LLM's self-reported `resolved_constraints`, same mechanism as `weatherLayeringRequired`).
+- **`hasGhostDefault`**: whether `GhostElementProvider` backfills an empty instance of the slot — `true` for the original four, `false` for `headwear`/`accessory`/`bag` (see "Ghost Elements" below for why).
+
+`OutfitCombination`, `RecommendedOutfitWire`, and `SavedCombination` are all slot-keyed (`[Slot: WardrobeItem]` / `[Slot: String]` / `[Slot: UUID]`) rather than having one named field per slot, specifically so adding a future category is a new `Slot` case plus the two properties above, not a multi-file field addition. `RecommendedOutfitWire` still presents a fixed `{slot}_id` property per slot on the wire (OpenRouter's strict JSON-schema mode requires an enumerable `properties` list, not a truly dynamic object) — the dictionary shape is achieved via a custom `Codable` implementation keyed by `Slot.wireKey`, not a schema change.
 
 ## Formality score
 
@@ -53,6 +60,8 @@ The **2026-07-10 LLM-as-Recommender reversal** changed the core invariant: the L
 If a slot has zero real items, `Domain/GhostElementProvider.swift` injects a default placeholder garment (a white tee, black jeans, white sneakers, or a neutral jacket) so the recommendation engine — and the Closet grid — never see an empty slot. This is a deliberate onboarding-friction reducer: a brand-new user with an empty wardrobe still gets real, complete outfit suggestions on day one.
 
 **Ghost elements are scored through the exact same code path as real items** — `Domain/PairCompatibilityScoring.swift` has no `isGhostElement` branch anywhere. The aesthetic-prior function is rule-based (formality delta, pattern clash, color-vibe clash) and works identically regardless of provenance; the item-preference term is already neutral for ghost items since no feedback history can exist for them. `isGhostElement` exists purely so the UI (`OutfitCardView`, `ClosetView`) can show a "Starter Piece" badge — the score itself is never faked or penalized for it.
+
+**Headwear/accessory/bag deliberately get no ghost default** (`Slot.hasGhostDefault == false`). Ghost Elements exist to guarantee the *core* outfit silhouette always renders for a brand-new user — an outfit is still complete without a hat, so there's no completeness gap to backfill for these three. There's also no universally-neutral placeholder the way "white tee" is for a core slot — a generic ghost bag or pair of sunglasses would read as arbitrary rather than helpful. And permanently ghost-populating them would clutter `ClosetView` with "Starter Piece" tiles a user could never earn away from. `ClosetView` still shows a section for these slots for discoverability, with a real "add your first..." empty state instead of a ghost tile when the user owns none.
 
 ## Mathematical Pair-Compatibility Scoring (PRD §3.4 — with a bug fix)
 

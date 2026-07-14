@@ -94,6 +94,9 @@ struct ItemDetailView: View {
         case .bottom: return "Bottom"
         case .footwear: return "Footwear"
         case .outerwear: return "Outerwear"
+        case .headwear: return "Headwear"
+        case .accessory: return "Accessory"
+        case .bag: return "Bag"
         }
     }
 

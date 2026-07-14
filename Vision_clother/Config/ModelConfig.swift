@@ -108,7 +108,7 @@ enum ModelConfig {
         For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
         "streetwear", "tailored"). For "color_profile.undertone", classify the primary color's \
         undertone as "warm", "cool", or "neutral". \
-        For "slot", classify which of these four categories the garment belongs to — use the \
+        For "slot", classify which of these seven categories the garment belongs to — use the \
         garment's own cut and construction, not the color or pattern, to decide: \
         "top" = worn on the upper body as a primary layer (t-shirts, shirts, blouses, sweaters, \
         polos, tank tops); \
@@ -116,9 +116,15 @@ enum ModelConfig {
         leggings); \
         "footwear" = worn on the feet (sneakers, boots, sandals, heels, loafers, dress shoes); \
         "outerwear" = worn OVER a top as an extra layer, typically with its own front closure \
-        (jackets, coats, blazers, cardigans, parkas). \
+        (jackets, coats, blazers, cardigans, parkas); \
+        "headwear" = worn on the head (hats, caps, beanies, headbands); \
+        "accessory" = a single signature accessory piece worn on the body that is not a garment \
+        (necklaces and other jewelry, belts, scarves, ties, watches, sunglasses); \
+        "bag" = a carried bag (backpacks, totes, handbags, purses, messenger bags). \
         Choose exactly one slot; only choose "outerwear" when the item is clearly meant to be \
-        layered over other clothing rather than worn as the primary upper-body garment. \
+        layered over other clothing rather than worn as the primary upper-body garment. Never use \
+        "outerwear" as a catch-all for items that don't fit top/bottom/footwear/outerwear — use \
+        "headwear", "accessory", or "bag" instead when applicable. \
         Identify the following additional attributes: \
         "garment_subtype": the specific item subtype (e.g. "Oxford Shirt", "Linen Camp Collar Shirt", "Chinos", "Jeans", "Sneakers", "Loafers", "Blazer", "Cardigan"); \
         "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
@@ -164,14 +170,14 @@ enum ModelConfig {
         /// from `tryOnChatInstructions` above since the two endpoints
         /// expect different prompting styles.
         static let tryOnImagesPrompt = """
-        Full-body fashion photograph. Apply the clothing items from the reference garment images \
-        onto the person shown in the portrait reference image. Dress them in the outfit: the top \
-        garment on their upper body, and the bottom garment on their lower body. \
-        The output must show the COMPLETE person from head to toe — including the full face, \
-        full torso, legs, and feet — with the original background preserved. \
-        Do NOT crop the image. Do NOT zoom in. Show the full figure in a natural standing pose. \
-        Editorial fashion photography style, realistic, high quality.
-        """
+                3D render of the item shown, styled as a clean flat lay, isolated on a transparent background.
+        Render the item from directly overhead (top-down, 90-degree bird's-eye orthographic angle), with no background, backdrop, surface, or shadow — fully isolated with clean alpha-channel cutout edges, ready for e-commerce use.
+        Model and arrange the item the way a professional stylist would for a flat lay of this specific product type — symmetrically centered, all parts (sleeves, legs, straps, laces, collar, etc.) laid out naturally and evenly on both sides, with correct proportions, accurate topology, and no twisting, overlapping, clipping, or awkward angles.
+        The fabric/material surface is taut, smooth, and glass-flat like a freshly ironed garment laid under gentle tension — simulate the surface as pinned flat at the edges so it cannot ripple. Surface reads as crisp and rigid rather than soft or draped, using tight cloth-simulation constraints so there's no visible give, sag, or fold anywhere on the surface.
+        Preserve the exact pattern, color, texture, material shaders, stitching, seams, hardware, logos, and construction details with high-poly geometry and crisp, sharp render focus throughout.
+        Luxury e-commerce catalog style CGI: even studio-quality soft global illumination lighting across the entire item, physically-based rendering (PBR) materials, no harsh shadows, no gradient, no vignette. Ultra sharp focus, high resolution, octane/arnold-style clean render, professional 3D product visualization.
+        No background, no surface, no table, no bed, no hanger, no mannequin, no human body parts, no rendered shadow, no wrinkles, no creases, no folded/bunched material, no uneven lighting, no cropped edges, no visible polygon artifacts, no texture stretching.
+    """
 
         // MARK: Background isolation / AI removal (imageEdit)
 

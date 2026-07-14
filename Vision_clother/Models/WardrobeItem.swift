@@ -11,7 +11,30 @@ import SwiftData
 
 enum Slot: String, Codable, CaseIterable, Identifiable {
     case top, bottom, footwear, outerwear
+    case headwear, accessory, bag
     var id: String { rawValue }
+
+    /// top/bottom/footwear are the only slots every `OutfitCombination` must
+    /// contain. Everything else is conditionally included.
+    var isRequired: Bool {
+        switch self {
+        case .top, .bottom, .footwear: return true
+        case .outerwear, .headwear, .accessory, .bag: return false
+        }
+    }
+
+    /// Whether `GhostElementProvider` backfills an empty instance of this
+    /// slot with a placeholder item.
+    var hasGhostDefault: Bool {
+        switch self {
+        case .top, .bottom, .footwear, .outerwear: return true
+        case .headwear, .accessory, .bag: return false
+        }
+    }
+
+    /// Wire key used by `RecommendedOutfitWire`'s custom Codable
+    /// implementation and the recommendation LLM's JSON schema builder.
+    var wireKey: String { "\(rawValue)_id" }
 }
 
 enum GarmentPattern: String, Codable, CaseIterable {

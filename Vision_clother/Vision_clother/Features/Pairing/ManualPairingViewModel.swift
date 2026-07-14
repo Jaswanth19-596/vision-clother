@@ -179,10 +179,8 @@ final class ManualPairingViewModel {
                 let combination = SavedCombination(
                     id: combinationID,
                     imageAssetName: assetName,
-                    topItemID: top.id,
-                    bottomItemID: bottom.id,
-                    topLabel: top.displayLabel,
-                    bottomLabel: bottom.displayLabel,
+                    itemIDsBySlot: [.top: top.id, .bottom: bottom.id],
+                    labelsBySlot: [.top: top.displayLabel, .bottom: bottom.displayLabel],
                     origin: "pairing"
                 )
                 try? repository.saveCombination(combination)

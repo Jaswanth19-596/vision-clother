@@ -86,7 +86,7 @@ private struct CombinationRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(combination.topLabel) + \(combination.bottomLabel)")
+                Text(combination.displayTitle)
                     .font(.subheadline)
                     .lineLimit(2)
                 Text(combination.savedAt, style: .date)

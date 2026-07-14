@@ -229,8 +229,12 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
                 "items": ["type": "string", "enum": ColorVibe.allCases.map(\.rawValue)],
             ],
             "season_suitability": ["type": "string", "enum": Season.allCases.map(\.rawValue)],
+            "desired_accent_slots": [
+                "type": "array",
+                "items": ["type": "string", "enum": Slot.allCases.filter { !$0.isRequired && $0 != .outerwear }.map(\.rawValue)],
+            ],
         ],
-        "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability"],
+        "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability", "desired_accent_slots"],
         "additionalProperties": false,
     ]
 }

@@ -35,10 +35,10 @@ struct OutfitRecommendationResponseDecodingTests {
         let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
 
         #expect(decoded.outfits.count == 1)
-        #expect(decoded.outfits.first?.topID == "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
-        #expect(decoded.outfits.first?.bottomID == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")
-        #expect(decoded.outfits.first?.footwearID == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")
-        #expect(decoded.outfits.first?.outerwearID == nil)
+        #expect(decoded.outfits.first?.itemIDsBySlot[.top] == "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
+        #expect(decoded.outfits.first?.itemIDsBySlot[.bottom] == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")
+        #expect(decoded.outfits.first?.itemIDsBySlot[.footwear] == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")
+        #expect(decoded.outfits.first?.itemIDsBySlot[.outerwear] == nil)
         #expect(decoded.outfits.first?.rationale.summary == "A balanced, neutral-anchored look.")
         #expect(decoded.outfits.first?.rationale.confidence == 95)
         // Backward compatible: a response without `resolved_constraints`
@@ -90,7 +90,7 @@ struct OutfitRecommendationResponseDecodingTests {
         """
 
         let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
-        #expect(decoded.outfits.first?.outerwearID == "4")
+        #expect(decoded.outfits.first?.itemIDsBySlot[.outerwear] == "4")
     }
 
     @Test func emptyOutfitsArrayDecodes() throws {

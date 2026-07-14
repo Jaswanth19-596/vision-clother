@@ -154,8 +154,8 @@ struct JobQueueStoreTests {
 
         #expect(repository.savedCombinations.count == 1)
         #expect(repository.savedCombinations.first?.origin == "assistant")
-        #expect(repository.savedCombinations.first?.topItemID == outfit.top.id)
-        #expect(repository.savedCombinations.first?.bottomItemID == outfit.bottom.id)
+        #expect(repository.savedCombinations.first?.itemIDsBySlot[.top] == outfit.top.id)
+        #expect(repository.savedCombinations.first?.itemIDsBySlot[.bottom] == outfit.bottom.id)
         #expect(photoLibrarySaver.saveCallCount == 1)
     }
 
@@ -222,9 +222,7 @@ private func makeItem(slot: Slot) -> WardrobeItem {
 
 private func makeOutfit() -> OutfitCombination {
     OutfitCombination(
-        top: makeItem(slot: .top),
-        bottom: makeItem(slot: .bottom),
-        footwear: makeItem(slot: .footwear),
+        itemsBySlot: [.top: makeItem(slot: .top), .bottom: makeItem(slot: .bottom), .footwear: makeItem(slot: .footwear)],
         score: 1.0
     )
 }

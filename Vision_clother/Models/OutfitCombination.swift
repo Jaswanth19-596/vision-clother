@@ -12,10 +12,10 @@ import Foundation
 
 struct OutfitCombination: Identifiable {
     let id = UUID()
-    var top: WardrobeItem
-    var bottom: WardrobeItem
-    var footwear: WardrobeItem
-    var outerwear: WardrobeItem?
+    /// One entry per slot present in this outfit. top/bottom/footwear are
+    /// guaranteed present (see `init`'s assertion) — every other slot is
+    /// present only when the engine/validator decided to include it.
+    var itemsBySlot: [Slot: WardrobeItem]
     /// Mean of the constituent pairwise compatibility posteriors, combined
     /// with per-item preference. See `Domain/PairCompatibilityScoring.swift`.
     var score: Double
@@ -24,8 +24,32 @@ struct OutfitCombination: Identifiable {
     /// deterministic fallback engine.
     var structuredRationale: StructuredRationale? = nil
 
+    init(itemsBySlot: [Slot: WardrobeItem], score: Double, structuredRationale: StructuredRationale? = nil) {
+        assert(
+            Slot.allCases.filter(\.isRequired).allSatisfy { itemsBySlot[$0] != nil },
+            "OutfitCombination missing a required slot"
+        )
+        self.itemsBySlot = itemsBySlot
+        self.score = score
+        self.structuredRationale = structuredRationale
+    }
+
+    // Convenience accessors for the always-required slots and the original
+    // optional-accent slot (outerwear) plus the newer accents — every one of
+    // these force-unwraps/asserts is safe because the two construction sites
+    // (`OutfitRecommendationEngine.generateCandidates`,
+    // `OutfitRecommendationValidator.resolve`) both guard non-empty
+    // top/bottom/footwear before ever constructing an `OutfitCombination`.
+    var top: WardrobeItem { itemsBySlot[.top]! }
+    var bottom: WardrobeItem { itemsBySlot[.bottom]! }
+    var footwear: WardrobeItem { itemsBySlot[.footwear]! }
+    var outerwear: WardrobeItem? { itemsBySlot[.outerwear] }
+    var headwear: WardrobeItem? { itemsBySlot[.headwear] }
+    var accessory: WardrobeItem? { itemsBySlot[.accessory] }
+    var bag: WardrobeItem? { itemsBySlot[.bag] }
+
     var items: [WardrobeItem] {
-        [top, bottom, footwear] + (outerwear.map { [$0] } ?? [])
+        Slot.allCases.compactMap { itemsBySlot[$0] }
     }
 
     /// Ghost elements are scored identically to real items (see

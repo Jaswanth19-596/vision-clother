@@ -5,9 +5,16 @@
 //  A user-confirmed "Save this outfit?" from either the Manual Pairing or
 //  Daily Assistant try-on flow. Unlike `OutfitCombination` (in-memory,
 //  scoring-time only), this is the durable record: the generated preview
-//  image itself (via `ImageStorage`), plus which top/bottom produced it.
+//  image itself (via `ImageStorage`), plus which items produced it.
 //  Labels are denormalized so the Combinations tab still renders correctly
 //  even if the source `WardrobeItem` is later deleted from the closet.
+//
+//  Slot-keyed since the 7-slot expansion (Models/SchemaMigrations.swift
+//  documents the SwiftData migration from the old named-field shape).
+//  Manual Pairing saves only ever populate `.top`/`.bottom`; Daily Assistant
+//  saves populate every slot its source `OutfitCombination` resolved
+//  (Stylist Intelligence Engine Phase 1: needed so `RateCombinationView`'s
+//  Favorite/Weakest Item picker can offer every real slot in the outfit).
 //
 
 import Foundation
@@ -19,21 +26,8 @@ final class SavedCombination {
     /// `ImageStorage` filename for the generated try-on image — resolve with
     /// `ImageStorage.url(for:)` at render time, same as `WardrobeItem.imageAssetName`.
     var imageAssetName: String
-    var topItemID: UUID
-    var bottomItemID: UUID
-    var topLabel: String
-    var bottomLabel: String
-    /// `nil` for Manual Pairing saves, which only ever select a top+bottom —
-    /// populated for Daily Assistant saves, whose source `OutfitCombination`
-    /// always resolves a footwear item (Stylist Intelligence Engine Phase 1:
-    /// needed so `RateCombinationView`'s Favorite/Weakest Item picker can
-    /// offer every real slot in the outfit, not just top/bottom).
-    var footwearItemID: UUID?
-    var footwearLabel: String?
-    /// `nil` when the outfit had no outerwear (optional slot even for Daily
-    /// Assistant saves).
-    var outerwearItemID: UUID?
-    var outerwearLabel: String?
+    var itemIDsBySlot: [Slot: UUID] = [:]
+    var labelsBySlot: [Slot: String] = [:]
     var savedAt: Date
     /// Which flow produced this: "pairing" (Manual Pairing) or "assistant"
     /// (Daily Assistant). Plain String to stay Codable-simple — no enum column.
@@ -42,28 +36,21 @@ final class SavedCombination {
     init(
         id: UUID = UUID(),
         imageAssetName: String,
-        topItemID: UUID,
-        bottomItemID: UUID,
-        topLabel: String,
-        bottomLabel: String,
-        footwearItemID: UUID? = nil,
-        footwearLabel: String? = nil,
-        outerwearItemID: UUID? = nil,
-        outerwearLabel: String? = nil,
+        itemIDsBySlot: [Slot: UUID],
+        labelsBySlot: [Slot: String],
         savedAt: Date = .now,
         origin: String
     ) {
         self.id = id
         self.imageAssetName = imageAssetName
-        self.topItemID = topItemID
-        self.bottomItemID = bottomItemID
-        self.topLabel = topLabel
-        self.bottomLabel = bottomLabel
-        self.footwearItemID = footwearItemID
-        self.footwearLabel = footwearLabel
-        self.outerwearItemID = outerwearItemID
-        self.outerwearLabel = outerwearLabel
+        self.itemIDsBySlot = itemIDsBySlot
+        self.labelsBySlot = labelsBySlot
         self.savedAt = savedAt
         self.origin = origin
+    }
+
+    /// Slot-order label summary for list/detail row titles, e.g. "Top + Bottom".
+    var displayTitle: String {
+        Slot.allCases.compactMap { labelsBySlot[$0] }.joined(separator: " + ")
     }
 }

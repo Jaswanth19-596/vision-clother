@@ -252,22 +252,21 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 "maxItems": 5,
                 "items": [
                     "type": "object",
-                    "properties": [
-                        "top_id": ["type": "string"],
-                        "bottom_id": ["type": "string"],
-                        "footwear_id": ["type": "string"],
-                        "outerwear_id": ["type": ["string", "null"]],
-                        "rationale": [
-                            "type": "object",
-                            "properties": [
-                                "summary": ["type": "string"],
-                                "confidence": ["type": "integer"]
-                            ],
-                            "required": ["summary", "confidence"],
-                            "additionalProperties": false
-                        ]
-                    ],
-                    "required": ["top_id", "bottom_id", "footwear_id", "outerwear_id", "rationale"],
+                    "properties": itemIDSchemaProperties.properties.merging(
+                        [
+                            "rationale": [
+                                "type": "object",
+                                "properties": [
+                                    "summary": ["type": "string"],
+                                    "confidence": ["type": "integer"]
+                                ],
+                                "required": ["summary", "confidence"],
+                                "additionalProperties": false
+                            ]
+                        ],
+                        uniquingKeysWith: { _, new in new }
+                    ),
+                    "required": itemIDSchemaProperties.required + ["rationale"],
                     "additionalProperties": false,
                 ],
             ],
@@ -286,14 +285,33 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                         "items": ["type": "string", "enum": ColorVibe.allCases.map(\.rawValue)],
                     ],
                     "season_suitability": ["type": "string", "enum": Season.allCases.map(\.rawValue)],
+                    "desired_accent_slots": [
+                        "type": "array",
+                        "items": ["type": "string", "enum": Slot.allCases.filter { !$0.isRequired && $0 != .outerwear }.map(\.rawValue)],
+                    ],
                 ],
-                "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability"],
+                "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability", "desired_accent_slots"],
                 "additionalProperties": false,
             ],
         ],
         "required": ["outfits", "resolved_constraints"],
         "additionalProperties": false,
     ]
+
+    /// Per-slot `{slot}_id` JSON Schema properties, shared by the per-outfit
+    /// item schema above — required-but-nullable for optional slots (the
+    /// same pattern `outerwear_id` originally used by hand), plain required
+    /// string for top/bottom/footwear. Adding a future `Slot` case needs no
+    /// change here.
+    private static var itemIDSchemaProperties: (properties: [String: Any], required: [String]) {
+        var properties: [String: Any] = [:]
+        var required: [String] = []
+        for slot in Slot.allCases {
+            properties[slot.wireKey] = slot.isRequired ? ["type": "string"] : ["type": ["string", "null"]]
+            required.append(slot.wireKey)
+        }
+        return (properties, required)
+    }
 }
 
 // MARK: - OpenAI-compatible chat completions response shape
@@ -332,7 +350,10 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
             return OutfitRecommendationResponse(outfits: [])
         }
 
-        let outerwearID: String? = weather != nil ? firstID(for: .outerwear) : nil
+        var itemIDsBySlot: [Slot: String] = [.top: topID, .bottom: bottomID, .footwear: footwearID]
+        if weather != nil, let outerwearID = firstID(for: .outerwear) {
+            itemIDsBySlot[.outerwear] = outerwearID
+        }
 
         // Best-effort resolved constraints from the same inputs a real model
         // call would reason over — wide-open formality band (the mock has no
@@ -347,10 +368,7 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         return OutfitRecommendationResponse(
             outfits: [
                 RecommendedOutfitWire(
-                    topID: topID,
-                    bottomID: bottomID,
-                    footwearID: footwearID,
-                    outerwearID: outerwearID,
+                    itemIDsBySlot: itemIDsBySlot,
                     rationale: StructuredRationaleWire(
                         summary: "A balanced, neutral-anchored look for the occasion.",
                         confidence: 95

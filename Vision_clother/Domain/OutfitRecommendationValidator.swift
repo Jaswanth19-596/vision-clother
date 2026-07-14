@@ -91,45 +91,33 @@ enum OutfitRecommendationValidator {
     ///   (`top_id` -> `.top`, etc.);
     /// - no id may be reused across slots in the same outfit.
     private static func resolve(_ wire: RecommendedOutfitWire, index: [String: WardrobeItem]) -> Result<OutfitCombination, RejectionReason> {
-        switch item(for: wire.topID, expectedSlot: .top, index: index) {
-        case .failure(let reason): return .failure(reason)
-        case .success(let top):
-            switch item(for: wire.bottomID, expectedSlot: .bottom, index: index) {
-            case .failure(let reason): return .failure(reason)
-            case .success(let bottom):
-                switch item(for: wire.footwearID, expectedSlot: .footwear, index: index) {
-                case .failure(let reason): return .failure(reason)
-                case .success(let footwear):
-                    var outerwear: WardrobeItem? = nil
-                    if let outerwearID = wire.outerwearID {
-                        switch item(for: outerwearID, expectedSlot: .outerwear, index: index) {
-                        case .failure(let reason): return .failure(reason)
-                        case .success(let resolved): outerwear = resolved
-                        }
-                    }
+        var itemsBySlot: [Slot: WardrobeItem] = [:]
 
-                    let usedIDs = [top.id, bottom.id, footwear.id] + (outerwear.map { [$0.id] } ?? [])
-                    guard Set(usedIDs).count == usedIDs.count else { return .failure(.duplicateID) }
-
-                    let structured = StructuredRationale(
-                        summary: wire.rationale.summary,
-                        confidence: wire.rationale.confidence
-                    )
-
-                    // Score is a placeholder here — `validate`/`validateVerbose`
-                    // always overwrite it via `OutfitRecommendationEngine.outfitScore`
-                    // before returning, so this initial value never reaches a caller.
-                    return .success(OutfitCombination(
-                        top: top,
-                        bottom: bottom,
-                        footwear: footwear,
-                        outerwear: outerwear,
-                        score: 0,
-                        structuredRationale: structured
-                    ))
+        for slot in Slot.allCases {
+            guard let idString = wire.itemIDsBySlot[slot] else {
+                if slot.isRequired {
+                    return .failure(.unknownID(slot: slot))
                 }
+                continue
+            }
+            switch item(for: idString, expectedSlot: slot, index: index) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let resolved): itemsBySlot[slot] = resolved
             }
         }
+
+        let usedIDs = itemsBySlot.values.map(\.id)
+        guard Set(usedIDs).count == usedIDs.count else { return .failure(.duplicateID) }
+
+        let structured = StructuredRationale(
+            summary: wire.rationale.summary,
+            confidence: wire.rationale.confidence
+        )
+
+        // Score is a placeholder here — `validate`/`validateVerbose`
+        // always overwrite it via `OutfitRecommendationEngine.outfitScore`
+        // before returning, so this initial value never reaches a caller.
+        return .success(OutfitCombination(itemsBySlot: itemsBySlot, score: 0, structuredRationale: structured))
     }
 
     private static func item(for idString: String, expectedSlot: Slot, index: [String: WardrobeItem]) -> Result<WardrobeItem, RejectionReason> {

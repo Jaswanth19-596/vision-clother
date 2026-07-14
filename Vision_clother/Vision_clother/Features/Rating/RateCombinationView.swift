@@ -319,10 +319,8 @@ private struct FavoriteWeakestPicker: View {
     )
     let combination = SavedCombination(
         imageAssetName: "preview",
-        topItemID: top.id,
-        bottomItemID: bottom.id,
-        topLabel: top.displayLabel,
-        bottomLabel: bottom.displayLabel,
+        itemIDsBySlot: [.top: top.id, .bottom: bottom.id],
+        labelsBySlot: [.top: top.displayLabel, .bottom: bottom.displayLabel],
         origin: "pairing"
     )
     RateCombinationView(combination: combination, items: [top, bottom])

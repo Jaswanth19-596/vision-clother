@@ -211,10 +211,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
 
             for feedback in outfitFeedbacks {
                 guard let combination = combinationsByID[feedback.outfitID] else { continue }
-                let itemSet = Set(
-                    [combination.topItemID, combination.bottomItemID, combination.footwearItemID, combination.outerwearItemID]
-                        .compactMap { $0 }
-                )
+                let itemSet = Set(combination.itemIDsBySlot.values)
                 guard !itemSet.isEmpty else { continue }
 
                 let weight = AttributePreferenceProfile.decayWeight(recordedAt: feedback.recordedAt, now: now)
@@ -271,8 +268,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                       let practicality = feedback.practicality
                 else { return [] }
 
-                let itemIDs = [combination.topItemID, combination.bottomItemID, combination.footwearItemID, combination.outerwearItemID].compactMap { $0 }
-                let items = itemIDs.compactMap { itemsByID[$0] }
+                let items = combination.itemIDsBySlot.values.compactMap { itemsByID[$0] }
 
                 let colorHarmonyNorm = Double(colorHarmony - 1) / 4.0
                 let occasionMatchNorm = Double(occasionMatch - 1) / 4.0

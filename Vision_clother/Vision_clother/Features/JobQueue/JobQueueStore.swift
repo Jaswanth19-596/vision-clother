@@ -248,14 +248,8 @@ final class JobQueueStore {
             let combination = SavedCombination(
                 id: combinationID,
                 imageAssetName: assetName,
-                topItemID: outfit.top.id,
-                bottomItemID: outfit.bottom.id,
-                topLabel: outfit.top.displayLabel,
-                bottomLabel: outfit.bottom.displayLabel,
-                footwearItemID: outfit.footwear.id,
-                footwearLabel: outfit.footwear.displayLabel,
-                outerwearItemID: outfit.outerwear?.id,
-                outerwearLabel: outfit.outerwear?.displayLabel,
+                itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id),
+                labelsBySlot: outfit.itemsBySlot.mapValues(\.displayLabel),
                 origin: "assistant"
             )
             try? repository.saveCombination(combination)

@@ -47,6 +47,15 @@ struct OutfitCardView: View {
                 if let outerwear = outfit.outerwear {
                     slotRow(title: "Outerwear", item: outerwear)
                 }
+                if let headwear = outfit.headwear {
+                    slotRow(title: "Headwear", item: headwear)
+                }
+                if let accessory = outfit.accessory {
+                    slotRow(title: "Accessory", item: accessory)
+                }
+                if let bag = outfit.bag {
+                    slotRow(title: "Bag", item: bag)
+                }
             }
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
@@ -147,10 +156,11 @@ struct RationaleRow: View {
 #Preview {
     OutfitCardView(
         outfit: OutfitCombination(
-            top: GhostElementProvider.defaultItem(for: .top),
-            bottom: GhostElementProvider.defaultItem(for: .bottom),
-            footwear: GhostElementProvider.defaultItem(for: .footwear),
-            outerwear: nil,
+            itemsBySlot: [
+                .top: GhostElementProvider.defaultItem(for: .top)!,
+                .bottom: GhostElementProvider.defaultItem(for: .bottom)!,
+                .footwear: GhostElementProvider.defaultItem(for: .footwear)!,
+            ],
             score: 0.82
         )
     )

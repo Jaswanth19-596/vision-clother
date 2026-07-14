@@ -26,6 +26,15 @@ struct DailyAssistantViewModelTests {
         StructuredRationaleWire(summary: text, confidence: 90)
     }
 
+    private func makeWire(
+        top: String, bottom: String, footwear: String, outerwear: String? = nil,
+        rationale: StructuredRationaleWire
+    ) -> RecommendedOutfitWire {
+        var itemIDsBySlot: [Slot: String] = [.top: top, .bottom: bottom, .footwear: footwear]
+        itemIDsBySlot[.outerwear] = outerwear
+        return RecommendedOutfitWire(itemIDsBySlot: itemIDsBySlot, rationale: rationale)
+    }
+
     // MARK: - Primary recommendation path + deterministic fallback (PRD §2.1a)
 
     @Test func happyPathUsesRecommendationServiceAndSkipsTheFallbackEngine() async throws {
@@ -40,9 +49,9 @@ struct DailyAssistantViewModelTests {
 
         let recommendationService = ControllableOutfitRecommendationService()
         recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: top.id.uuidString, bottomID: bottom.id.uuidString,
-                footwearID: footwear.id.uuidString, outerwearID: nil,
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString,
+                footwear: footwear.id.uuidString,
                 rationale: makeRationale("A clean, neutral pairing.")
             ),
         ]))
@@ -105,9 +114,9 @@ struct DailyAssistantViewModelTests {
         // References ids that don't exist in the inventory at all —
         // every outfit must fail validation.
         recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
-            RecommendedOutfitWire(
-                topID: UUID().uuidString, bottomID: UUID().uuidString,
-                footwearID: UUID().uuidString, outerwearID: nil,
+            makeWire(
+                top: UUID().uuidString, bottom: UUID().uuidString,
+                footwear: UUID().uuidString,
                 rationale: makeRationale("Hallucinated.")
             ),
         ]))
@@ -153,9 +162,9 @@ struct DailyAssistantViewModelTests {
         let recommendationService = ControllableOutfitRecommendationService()
         recommendationService.result = .success(OutfitRecommendationResponse(
             outfits: [
-                RecommendedOutfitWire(
-                    topID: top.id.uuidString, bottomID: bottom.id.uuidString,
-                    footwearID: footwear.id.uuidString, outerwearID: nil,
+                makeWire(
+                    top: top.id.uuidString, bottom: bottom.id.uuidString,
+                    footwear: footwear.id.uuidString,
                     rationale: makeRationale("Black tie gala.")
                 ),
             ],
@@ -240,9 +249,7 @@ private func makeItem(slot: Slot) -> WardrobeItem {
 
 private func makeOutfit() -> OutfitCombination {
     OutfitCombination(
-        top: makeItem(slot: .top),
-        bottom: makeItem(slot: .bottom),
-        footwear: makeItem(slot: .footwear),
+        itemsBySlot: [.top: makeItem(slot: .top), .bottom: makeItem(slot: .bottom), .footwear: makeItem(slot: .footwear)],
         score: 1.0
     )
 }

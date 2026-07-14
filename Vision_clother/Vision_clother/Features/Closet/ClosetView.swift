@@ -38,6 +38,9 @@ struct ClosetView: View {
         case .bottom: return 1
         case .footwear: return 2
         case .outerwear: return 3
+        case .headwear: return 4
+        case .accessory: return 5
+        case .bag: return 6
         }
     }
 
@@ -112,14 +115,39 @@ struct ClosetView: View {
                 }
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 12)], spacing: 12) {
-                ForEach(items, id: \.id) { item in
-                    ClosetItemCell(
-                        item: item,
-                        ratingScore: ItemRatingScoring.score(for: item.id, history: feedbackHistory)
+            if items.isEmpty, !slot.hasGhostDefault {
+                // Optional-accent slots (headwear/accessory/bag) never get a
+                // Ghost Element (see Domain/GhostElementProvider.swift) — a
+                // real empty state instead of a ghost tile.
+                Button {
+                    selectedSlotForAdd = slot
+                    isAddItemPresented = true
+                } label: {
+                    HStack {
+                        Image(systemName: "plus")
+                        Text("Add your first \(slotSingularName(slot))")
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
+                            .foregroundStyle(.tertiary)
                     )
-                    .onTapGesture {
-                        detailSelection = DetailSelection(id: item.id, items: displayItems)
+                }
+                .buttonStyle(.plain)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 12)], spacing: 12) {
+                    ForEach(items, id: \.id) { item in
+                        ClosetItemCell(
+                            item: item,
+                            ratingScore: ItemRatingScoring.score(for: item.id, history: feedbackHistory)
+                        )
+                        .onTapGesture {
+                            detailSelection = DetailSelection(id: item.id, items: displayItems)
+                        }
                     }
                 }
             }
@@ -132,6 +160,24 @@ struct ClosetView: View {
         case .bottom: return "Bottoms"
         case .footwear: return "Footwear"
         case .outerwear: return "Outerwear"
+        case .headwear: return "Headwear"
+        case .accessory: return "Accessories"
+        case .bag: return "Bags"
+        }
+    }
+
+    /// Singular, lowercase noun for the empty-state prompt above
+    /// ("Add your first accessory") — `slotTitle` is plural/title-case for
+    /// section headers, so it can't be reused directly here.
+    private func slotSingularName(_ slot: Slot) -> String {
+        switch slot {
+        case .top: return "top"
+        case .bottom: return "bottom"
+        case .footwear: return "pair of footwear"
+        case .outerwear: return "outerwear piece"
+        case .headwear: return "headwear piece"
+        case .accessory: return "accessory"
+        case .bag: return "bag"
         }
     }
 }

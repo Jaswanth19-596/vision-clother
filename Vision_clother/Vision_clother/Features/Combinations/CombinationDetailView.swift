@@ -65,7 +65,7 @@ private struct CombinationDetailPage: View {
                     .frame(maxWidth: .infinity)
 
                 VStack(spacing: 4) {
-                    Text("\(combination.topLabel) + \(combination.bottomLabel)")
+                    Text(combination.displayTitle)
                         .font(.headline)
                     Text(combination.savedAt, style: .date)
                         .font(.caption)

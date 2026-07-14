@@ -192,14 +192,15 @@ enum StylistBrain {
             prompt += """
             
             STYLING RULES:
-            - Every outfit must have a top_id, bottom_id, and footwear_id. outerwear_id is optional (null if not needed).
-            - A top must be a top slot, bottom must be bottom slot, footwear must be footwear slot, outerwear must be outerwear slot.
+            - Every outfit must have a top_id, bottom_id, and footwear_id. outerwear_id, headwear_id, accessory_id, and bag_id are each optional (null unless the scenario/weather calls for them).
+            - accessory_id represents a single signature piece (belt, scarf, tie, watch, or sunglasses) — never try to convey multiple simultaneous accessories in one pick.
+            - A top must be a top slot, bottom must be bottom slot, footwear must be footwear slot, outerwear must be outerwear slot, and likewise for headwear/accessory/bag.
             - Ensure fit & silhouette balance: E.g., pair boxy/oversized tops with straight/slim bottoms, or sleek/fitted tops with relaxed/flared bottoms.
             - Check material harmony: Pair complementary materials (e.g. Cotton and Denim, or Linen and Cotton). Avoid pairing heavy wool with lightweight linen.
             - For a formal suit jacket/blazer worn as outerwear, top_id must still be a compatible layer worn underneath it (e.g. a dress shirt), not left implied or empty.
-            
+
             REASONING WORKFLOW (Reason internally on each candidate outfit):
-            1. Intent & Formality: Evaluate scenario requirements and resolve them to a concrete formality range, weather-layering need, color palette vibe, and season.
+            1. Intent & Formality: Evaluate scenario requirements and resolve them to a concrete formality range, weather-layering need, color palette vibe, season, and which accent slots (if any) the scenario calls for — e.g. a formal/business scenario suggests accessory, an outdoor/sunny scenario suggests headwear, errands/travel/work suggests bag. Report this as `desired_accent_slots` in `resolved_constraints`.
             2. Weather: Check temperature. Is outerwear needed? Are fabric weights appropriate?
             3. Catalog lookup: Choose candidate pieces.
             4. Preferences check: Apply personal color and taste profile.

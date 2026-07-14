@@ -39,7 +39,7 @@ extension WardrobeItem {
 
     /// In-place field overwrite — used by the edit-after-save flow.
     /// Deliberately leaves `id`, `imageAssetName`, `isGhostElement` untouched
-    /// so every FK reference (ItemFeedback.itemID, SavedCombination.topItemID,
+    /// so every FK reference (ItemFeedback.itemID, SavedCombination.itemIDsBySlot,
     /// etc.) stays valid.
     func apply(_ metadata: GarmentMetadata) {
         slot = metadata.slot

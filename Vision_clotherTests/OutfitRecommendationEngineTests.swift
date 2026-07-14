@@ -214,4 +214,84 @@ struct OutfitRecommendationEngineTests {
 
         #expect(scoreWithOverride > scoreWithStaticPenalty)
     }
+
+    // MARK: - Optional accent slots (headwear/accessory/bag)
+
+    private func makeItem(slot: Slot, formalityScore: Double = 2.0) -> WardrobeItem {
+        WardrobeItem(
+            slot: slot,
+            formalityScore: formalityScore,
+            colorProfile: ColorProfile(primaryHex: "#333333", secondaryHex: nil, category: .neutral),
+            pattern: .solid,
+            seasonality: Season.allCases,
+            fabricWeight: .medium
+        )
+    }
+
+    @Test func accentSlotIsOmittedWhenNotDesired() {
+        let inventory = [
+            makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear),
+            makeItem(slot: .headwear),
+        ]
+        let candidates = OutfitRecommendationEngine.generateCandidates(inventory: inventory, constraints: wideOpenConstraints)
+
+        #expect(candidates.allSatisfy { $0.headwear == nil })
+    }
+
+    @Test func accentSlotIsIncludedWhenDesiredAndAvailable() {
+        let inventory = [
+            makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear),
+            makeItem(slot: .headwear),
+        ]
+        var constraints = wideOpenConstraints
+        constraints.desiredAccentSlots = [.headwear]
+
+        let candidates = OutfitRecommendationEngine.generateCandidates(inventory: inventory, constraints: constraints)
+
+        #expect(candidates.contains { $0.headwear != nil })
+    }
+
+    @Test func desiredAccentSlotWithNoMatchingInventoryIsSilentlyOmitted() {
+        // Wanting an accent the closet doesn't own must not empty the result
+        // — top/bottom/footwear alone are still a valid, complete outfit.
+        let inventory = [makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear)]
+        var constraints = wideOpenConstraints
+        constraints.desiredAccentSlots = [.headwear, .accessory, .bag]
+
+        let candidates = OutfitRecommendationEngine.generateCandidates(inventory: inventory, constraints: constraints)
+
+        #expect(!candidates.isEmpty)
+        #expect(candidates.allSatisfy { $0.headwear == nil && $0.accessory == nil && $0.bag == nil })
+    }
+
+    @Test func manyOptionalAccentItemsStayBoundedRatherThanExplodingCombinatorially() {
+        // 5 tops/bottoms/shoes x 6 items in each of 4 optional slots would be
+        // 5*5*5*6*6*6*6 = 162,000 combinations uncapped; the per-slot
+        // formality-closeness cap must keep this from blowing up.
+        var inventory: [WardrobeItem] = []
+        for _ in 0..<5 {
+            inventory.append(makeItem(slot: .top))
+            inventory.append(makeItem(slot: .bottom))
+            inventory.append(makeItem(slot: .footwear))
+        }
+        for _ in 0..<6 {
+            inventory.append(makeItem(slot: .outerwear))
+            inventory.append(makeItem(slot: .headwear))
+            inventory.append(makeItem(slot: .accessory))
+            inventory.append(makeItem(slot: .bag))
+        }
+
+        var constraints = wideOpenConstraints
+        constraints.weatherLayeringRequired = true
+        constraints.desiredAccentSlots = [.headwear, .accessory, .bag]
+
+        let start = Date()
+        let candidates = OutfitRecommendationEngine.generateCandidates(
+            inventory: inventory, constraints: constraints, limit: 5
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(!candidates.isEmpty)
+        #expect(elapsed < 2.0)
+    }
 }

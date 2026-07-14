@@ -48,6 +48,8 @@ struct FormalityRange: Codable, Equatable {
     func contains(_ value: Double, tolerance: Double = 0) -> Bool {
         value >= lowerBound - tolerance && value <= upperBound + tolerance
     }
+
+    var midpoint: Double { (lowerBound + upperBound) / 2 }
 }
 
 /// Matches the JSON Schema in PRD.md §3.3 exactly — this is the only shape
@@ -58,12 +60,51 @@ struct StyleConstraints: Codable, Equatable {
     var weatherLayeringRequired: Bool
     var colorPaletteVibe: [ColorVibe]
     var seasonSuitability: Season
+    /// Optional accent slots (headwear/accessory/bag) the scenario calls
+    /// for, beyond outerwear (still governed by `weatherLayeringRequired`)
+    /// and the always-included top/bottom/footwear. Defaulted to `[]` so
+    /// older fixtures / a model response that omits the field still decode
+    /// cleanly, same migration-safety pattern as `ColorProfile.undertone`.
+    var desiredAccentSlots: Set<Slot> = []
 
     enum CodingKeys: String, CodingKey {
         case formalityRange = "formality_range"
         case weatherLayeringRequired = "weather_layering_required"
         case colorPaletteVibe = "color_palette_vibe"
         case seasonSuitability = "season_suitability"
+        case desiredAccentSlots = "desired_accent_slots"
+    }
+
+    init(
+        formalityRange: FormalityRange,
+        weatherLayeringRequired: Bool,
+        colorPaletteVibe: [ColorVibe],
+        seasonSuitability: Season,
+        desiredAccentSlots: Set<Slot> = []
+    ) {
+        self.formalityRange = formalityRange
+        self.weatherLayeringRequired = weatherLayeringRequired
+        self.colorPaletteVibe = colorPaletteVibe
+        self.seasonSuitability = seasonSuitability
+        self.desiredAccentSlots = desiredAccentSlots
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formalityRange = try container.decode(FormalityRange.self, forKey: .formalityRange)
+        weatherLayeringRequired = try container.decode(Bool.self, forKey: .weatherLayeringRequired)
+        colorPaletteVibe = try container.decode([ColorVibe].self, forKey: .colorPaletteVibe)
+        seasonSuitability = try container.decode(Season.self, forKey: .seasonSuitability)
+        desiredAccentSlots = try container.decodeIfPresent(Set<Slot>.self, forKey: .desiredAccentSlots) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(formalityRange, forKey: .formalityRange)
+        try container.encode(weatherLayeringRequired, forKey: .weatherLayeringRequired)
+        try container.encode(colorPaletteVibe, forKey: .colorPaletteVibe)
+        try container.encode(seasonSuitability, forKey: .seasonSuitability)
+        try container.encode(desiredAccentSlots, forKey: .desiredAccentSlots)
     }
 }
 
