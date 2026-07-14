@@ -13,6 +13,10 @@ import Testing
 
 struct OutfitRecommendationServiceTests {
 
+    private func turns(_ text: String) -> [ConversationTurn] {
+        [ConversationTurn(role: .user, text: text)]
+    }
+
     private func makeEntry(id: UUID = UUID(), slot: Slot) -> CatalogEntry {
         CatalogEntry(
             id: id.uuidString,
@@ -38,7 +42,7 @@ struct OutfitRecommendationServiceTests {
         let catalogIDs = Set(catalog.map(\.id))
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Casual Friday", catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
+            conversationHistory: turns("Casual Friday"), isFinalTurn: false, catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
         )
 
         #expect(response.outfits.count == 1)
@@ -58,7 +62,7 @@ struct OutfitRecommendationServiceTests {
         let cold = WeatherContext(temperatureFahrenheit: 20, conditions: "Snow")
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Winter errands", catalog: catalog, profile: nil, weather: cold, history: FeedbackHistory()
+            conversationHistory: turns("Winter errands"), isFinalTurn: false, catalog: catalog, profile: nil, weather: cold, history: FeedbackHistory()
         )
 
         #expect(response.resolvedConstraints?.weatherLayeringRequired == true)
@@ -74,7 +78,7 @@ struct OutfitRecommendationServiceTests {
         let weather = WeatherContext(temperatureFahrenheit: 40, conditions: "Rain")
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Cold commute", catalog: catalog, profile: nil, weather: weather, history: FeedbackHistory()
+            conversationHistory: turns("Cold commute"), isFinalTurn: false, catalog: catalog, profile: nil, weather: weather, history: FeedbackHistory()
         )
 
         #expect(response.outfits.first?.itemIDsBySlot[.outerwear] != nil)
@@ -86,7 +90,7 @@ struct OutfitRecommendationServiceTests {
         let catalog = [makeEntry(slot: .top), makeEntry(slot: .bottom)]
 
         let response = try await MockOutfitRecommendationService().recommendOutfits(
-            prompt: "Anything", catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
+            conversationHistory: turns("Anything"), isFinalTurn: false, catalog: catalog, profile: nil, weather: nil, history: FeedbackHistory()
         )
 
         #expect(response.outfits.isEmpty)

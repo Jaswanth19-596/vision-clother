@@ -98,4 +98,52 @@ struct OutfitRecommendationResponseDecodingTests {
         let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
         #expect(decoded.outfits.isEmpty)
     }
+
+    // MARK: - Clarification Loop (Stylist Intelligence Engine ADR, Phase 2)
+
+    @Test func omittedClarificationFieldsDecodeAsAlreadyFinal() throws {
+        // Every fixture/response predating this ADR phase omits
+        // intent_clear/follow_up_text/suggested_chips entirely — must still
+        // decode as "already final," matching prior behavior exactly.
+        let json = #"{ "outfits": [] }"#
+        let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
+
+        #expect(decoded.intentClear == true)
+        #expect(decoded.followUpText == nil)
+        #expect(decoded.suggestedChips.isEmpty)
+    }
+
+    @Test func decodesAClarificationTurnWithChipsAndNullResolvedConstraints() throws {
+        let json = """
+        {
+          "outfits": [],
+          "resolved_constraints": null,
+          "intent_clear": false,
+          "follow_up_text": "What kind of event are you dressing for?",
+          "suggested_chips": ["Party", "Church", "Job Interview", "Casual Hangout"]
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
+
+        #expect(decoded.intentClear == false)
+        #expect(decoded.outfits.isEmpty)
+        #expect(decoded.resolvedConstraints == nil)
+        #expect(decoded.followUpText == "What kind of event are you dressing for?")
+        #expect(decoded.suggestedChips == ["Party", "Church", "Job Interview", "Casual Hangout"])
+    }
+
+    @Test func encodesAndDecodesRoundTripForAClarificationTurn() throws {
+        let original = OutfitRecommendationResponse(
+            outfits: [],
+            intentClear: false,
+            followUpText: "Could you tell me more about the occasion?",
+            suggestedChips: ["Party", "Work"]
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: data)
+
+        #expect(decoded == original)
+    }
 }

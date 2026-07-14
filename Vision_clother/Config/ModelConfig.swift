@@ -161,22 +161,34 @@ enum ModelConfig {
         /// instructions text part of the user turn's content array.
         static let tryOnChatInstructions = """
         Apply the garments from the clothing reference images onto the person in the base portrait image. \
-        Put the top on their upper body, and the bottom on their lower body. Ensure the output is a single \
-        realistic photograph of the person wearing these clothing items, preserving their face, body shape, \
-        and background. Output ONLY the resulting generated image.
+        Put the top on their upper body and the bottom on their lower body. If one of the reference images \
+        is an outerwear piece (jacket, blazer, coat, cardigan, parka), it must be layered OVER the top as an \
+        additional outer garment — both the top and the outerwear must remain visible in the final image \
+        (e.g. an open jacket/blazer showing the top underneath, or the top's collar/cuffs visible past the \
+        outerwear); never omit the outerwear or substitute it in place of the top. Put footwear on the feet. \
+        If a headwear, accessory, or bag reference image is included, render it worn or carried appropriately. \
+        Ensure the output is a single realistic photograph of the person wearing every included clothing item, \
+        preserving their face, body shape, and background. Output ONLY the resulting generated image.
         """
         /// `OpenRouterTryOnRenderService`'s dedicated-Images-API branch
         /// (e.g. Seedream) — the `"prompt"` field. Worded independently
         /// from `tryOnChatInstructions` above since the two endpoints
         /// expect different prompting styles.
         static let tryOnImagesPrompt = """
-                3D render of the item shown, styled as a clean flat lay, isolated on a transparent background.
-        Render the item from directly overhead (top-down, 90-degree bird's-eye orthographic angle), with no background, backdrop, surface, or shadow — fully isolated with clean alpha-channel cutout edges, ready for e-commerce use.
-        Model and arrange the item the way a professional stylist would for a flat lay of this specific product type — symmetrically centered, all parts (sleeves, legs, straps, laces, collar, etc.) laid out naturally and evenly on both sides, with correct proportions, accurate topology, and no twisting, overlapping, clipping, or awkward angles.
-        The fabric/material surface is taut, smooth, and glass-flat like a freshly ironed garment laid under gentle tension — simulate the surface as pinned flat at the edges so it cannot ripple. Surface reads as crisp and rigid rather than soft or draped, using tight cloth-simulation constraints so there's no visible give, sag, or fold anywhere on the surface.
-        Preserve the exact pattern, color, texture, material shaders, stitching, seams, hardware, logos, and construction details with high-poly geometry and crisp, sharp render focus throughout.
-        Luxury e-commerce catalog style CGI: even studio-quality soft global illumination lighting across the entire item, physically-based rendering (PBR) materials, no harsh shadows, no gradient, no vignette. Ultra sharp focus, high resolution, octane/arnold-style clean render, professional 3D product visualization.
-        No background, no surface, no table, no bed, no hanger, no mannequin, no human body parts, no rendered shadow, no wrinkles, no creases, no folded/bunched material, no uneven lighting, no cropped edges, no visible polygon artifacts, no texture stretching.
+                Virtual try-on: the first reference image is a base portrait of a person; every subsequent \
+        reference image is one clothing item (top, bottom, footwear, outerwear, headwear, accessory, or bag) \
+        to be composed onto that person.
+        Put the top on their upper body and the bottom on their lower body. If an outerwear reference image \
+        (jacket, blazer, coat, cardigan, parka) is included, layer it OVER the top as an additional outer \
+        garment — both the top and the outerwear must remain visible (e.g. an open jacket/blazer showing the \
+        top underneath, or the top's collar/cuffs visible past the outerwear); never omit the outerwear or \
+        substitute it in place of the top. Put footwear on the feet. If a headwear, accessory, or bag \
+        reference image is included, render it worn or carried appropriately.
+        Preserve the exact pattern, color, texture, material, stitching, seams, hardware, and logos of every \
+        garment. Preserve the person's face, body shape, pose, and background from the base portrait exactly.
+        Output a single realistic photograph of the person wearing every included clothing item — natural \
+        studio-quality lighting, sharp focus, high resolution. No product-catalog flat lay, no isolated \
+        garment renders, no missing body parts, no extra people.
     """
 
         // MARK: Background isolation / AI removal (imageEdit)

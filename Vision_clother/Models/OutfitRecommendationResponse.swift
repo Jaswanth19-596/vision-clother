@@ -23,12 +23,72 @@ struct OutfitRecommendationResponse: Codable, Equatable {
     /// without a second intent-extraction call. Optional and defaulted so
     /// older fixtures and a model that omits it still decode cleanly — the
     /// validator simply skips Tier 1/2 enforcement when it's absent, same as
-    /// today's behavior.
+    /// today's behavior. Nil whenever `intentClear` is false — nothing has
+    /// been resolved yet on a clarification/redirect turn.
     var resolvedConstraints: StyleConstraints? = nil
+
+    /// Clarification Loop (Stylist Intelligence Engine ADR, Phase 2): true
+    /// once the occasion is clear enough (or this is the forced final turn)
+    /// to output real recommendations this turn. Defaults to `true` so a
+    /// pre-clarification-loop fixture/response that omits this key is
+    /// treated as already-final, matching prior behavior exactly.
+    var intentClear: Bool = true
+
+    /// The assistant's own natural-language turn: a clarifying question, an
+    /// out-of-scope redirect, or a wardrobe-aware decision note alongside
+    /// real recommendations (e.g. "you don't have a black suit for this
+    /// funeral — want to build around your darkest option instead?"). Nil
+    /// when there's nothing to say beyond the outfits themselves.
+    var followUpText: String? = nil
+
+    /// Tappable quick-reply suggestions for `followUpText`, e.g.
+    /// `["Party", "Church", "Job Interview", "Casual Hangout"]`. Empty (not
+    /// nil) when there's nothing to suggest — mirrors `outfits`' existing
+    /// empty-array-not-null convention.
+    var suggestedChips: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case outfits
         case resolvedConstraints = "resolved_constraints"
+        case intentClear = "intent_clear"
+        case followUpText = "follow_up_text"
+        case suggestedChips = "suggested_chips"
+    }
+
+    init(
+        outfits: [RecommendedOutfitWire],
+        resolvedConstraints: StyleConstraints? = nil,
+        intentClear: Bool = true,
+        followUpText: String? = nil,
+        suggestedChips: [String] = []
+    ) {
+        self.outfits = outfits
+        self.resolvedConstraints = resolvedConstraints
+        self.intentClear = intentClear
+        self.followUpText = followUpText
+        self.suggestedChips = suggestedChips
+    }
+
+    // Custom Codable (rather than relying on the memberwise defaults above,
+    // which synthesized Codable ignores) so a response/fixture that omits
+    // intent_clear/follow_up_text/suggested_chips — every one predating this
+    // ADR phase — still decodes as "already final," matching prior behavior.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outfits = try container.decode([RecommendedOutfitWire].self, forKey: .outfits)
+        resolvedConstraints = try container.decodeIfPresent(StyleConstraints.self, forKey: .resolvedConstraints)
+        intentClear = try container.decodeIfPresent(Bool.self, forKey: .intentClear) ?? true
+        followUpText = try container.decodeIfPresent(String.self, forKey: .followUpText)
+        suggestedChips = try container.decodeIfPresent([String].self, forKey: .suggestedChips) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(outfits, forKey: .outfits)
+        try container.encodeIfPresent(resolvedConstraints, forKey: .resolvedConstraints)
+        try container.encode(intentClear, forKey: .intentClear)
+        try container.encodeIfPresent(followUpText, forKey: .followUpText)
+        try container.encode(suggestedChips, forKey: .suggestedChips)
     }
 }
 

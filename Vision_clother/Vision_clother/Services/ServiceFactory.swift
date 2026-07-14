@@ -15,8 +15,13 @@ enum ServiceFactory {
         APIKeys.openRouter != nil ? OpenRouterIntentExtractionService() : MockIntentExtractionService()
     }
 
-    static func makeTryOnRenderService() -> TryOnRenderService {
-        APIKeys.openRouter != nil ? OpenRouterTryOnRenderService() : MockTryOnRenderService()
+    /// Wrapped in `CachedTryOnRenderService` so a request for an item set
+    /// that already has a saved render (against the same base portrait)
+    /// reuses that image instead of paying for a fresh AI generation — see
+    /// `Services/CachedTryOnRenderService.swift`.
+    static func makeTryOnRenderService(repository: WardrobeRepository) -> TryOnRenderService {
+        let underlying: TryOnRenderService = APIKeys.openRouter != nil ? OpenRouterTryOnRenderService() : MockTryOnRenderService()
+        return CachedTryOnRenderService(repository: repository, underlying: underlying)
     }
 
     static func makeVisionMetadataExtractionService() -> VisionMetadataExtractionService {

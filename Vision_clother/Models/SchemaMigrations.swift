@@ -92,6 +92,60 @@ enum SchemaV2: VersionedSchema {
             UserStyleProfile.self,
         ]
     }
+
+    /// Frozen snapshot of the post-`.custom`-migration, pre-`basePortraitFingerprint`
+    /// shape — same reason `SchemaV1.SavedCombination` exists: SwiftData computes a
+    /// `VersionedSchema`'s checksum from its own `models` array, so if this schema
+    /// version's `SavedCombination.self` resolved to the live (current, V3) class
+    /// instead of this nested one, SchemaV2 and SchemaV3 would produce byte-identical
+    /// checksums and SwiftData throws "Duplicate version checksums across stages
+    /// detected" at migration-plan validation time. Must never be edited to track the
+    /// live `SavedCombination` type.
+    @Model
+    final class SavedCombination {
+        @Attribute(.unique) var id: UUID
+        var imageAssetName: String
+        var itemIDsBySlot: [Slot: UUID] = [:]
+        var labelsBySlot: [Slot: String] = [:]
+        var savedAt: Date
+        var origin: String
+
+        init(
+            id: UUID = UUID(),
+            imageAssetName: String,
+            itemIDsBySlot: [Slot: UUID],
+            labelsBySlot: [Slot: String],
+            savedAt: Date = .now,
+            origin: String
+        ) {
+            self.id = id
+            self.imageAssetName = imageAssetName
+            self.itemIDsBySlot = itemIDsBySlot
+            self.labelsBySlot = labelsBySlot
+            self.savedAt = savedAt
+            self.origin = origin
+        }
+    }
+}
+
+/// V2 -> V3 only adds `SavedCombination.basePortraitFingerprint` (an
+/// optional column, powering `Services/CachedTryOnRenderService.swift`) — a
+/// purely additive change, so unlike V1 -> V2 this needs no `.custom` stage
+/// to backfill data; `.lightweight` lets SwiftData infer the migration.
+enum SchemaV3: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(3, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+        ]
+    }
 }
 
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
@@ -105,9 +159,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -133,7 +187,7 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
             }
         },
         didMigrate: { context in
-            let migratedCombinations = try context.fetch(FetchDescriptor<SavedCombination>())
+            let migratedCombinations = try context.fetch(FetchDescriptor<SchemaV2.SavedCombination>())
             for combo in migratedCombinations {
                 guard let data = SavedCombinationMigrationCache.pendingSlotData[combo.id] else { continue }
                 combo.itemIDsBySlot = data.items
@@ -142,5 +196,10 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
             try context.save()
             SavedCombinationMigrationCache.pendingSlotData.removeAll()
         }
+    )
+
+    static let migrateV2toV3 = MigrationStage.lightweight(
+        fromVersion: SchemaV2.self,
+        toVersion: SchemaV3.self
     )
 }

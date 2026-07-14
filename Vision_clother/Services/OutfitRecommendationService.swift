@@ -22,8 +22,15 @@
 import Foundation
 
 protocol OutfitRecommendationService {
+    /// `conversationHistory` is the full clarification-loop transcript so
+    /// far (Stylist Intelligence Engine ADR, Phase 2) — index 0 is always
+    /// the user's initial scenario; replayed in full every call since
+    /// OpenRouter is stateless. `isFinalTurn` instructs the model it must
+    /// decide now regardless of remaining ambiguity (the clarification
+    /// turn cap has been reached).
     func recommendOutfits(
-        prompt: String,
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
@@ -65,7 +72,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     }
 
     func recommendOutfits(
-        prompt: String,
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
@@ -74,7 +82,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         do {
             return try await PerfLog.time("recommendation.structuredAttempt") {
                 try await performRequest(
-                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
+                    conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
+                    catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
                 )
             }
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
@@ -85,14 +94,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             // which only doubles latency for a failure mode retrying won't fix.
             return try await PerfLog.time("recommendation.unstructuredFallbackAttempt") {
                 try await performRequest(
-                    prompt: prompt, catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
+                    conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
+                    catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
                 )
             }
         }
     }
 
     private func performRequest(
-        prompt: String,
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
@@ -109,7 +120,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try Self.encodeRequestBody(
             model: model,
-            prompt: prompt,
+            conversationHistory: conversationHistory,
+            isFinalTurn: isFinalTurn,
             catalog: catalog,
             profile: profile,
             weather: weather,
@@ -151,7 +163,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
 
     private static func encodeRequestBody(
         model: String,
-        prompt: String,
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
@@ -160,17 +173,31 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     ) throws -> Data {
         let catalogData = try JSONEncoder().encode(catalog)
         let catalogText = String(decoding: catalogData, as: UTF8.self)
-        
-        let userContent = StylistBrain.DynamicPromptComposer.composeUserContent(
-            prompt: prompt,
-            weather: weather,
-            catalogDataText: catalogText
-        )
 
         var systemPrompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(
             profile: profile,
-            attributeProfile: history.attributeProfile
+            attributeProfile: history.attributeProfile,
+            isFinalTurn: isFinalTurn
         )
+
+        // Replays the full clarification-loop transcript every call —
+        // OpenRouter is stateless, there's no server-side thread to resume
+        // (Stylist Intelligence Engine ADR, Phase 2). Only turn 0 (always
+        // the user's initial scenario) carries the weather/catalog blob;
+        // every later turn's text is sent verbatim with its own role.
+        let turnMessages: [[String: String]] = conversationHistory.enumerated().map { index, turn in
+            let content: String
+            if index == 0 {
+                content = StylistBrain.DynamicPromptComposer.composeUserContent(
+                    scenarioText: turn.text,
+                    weather: weather,
+                    catalogDataText: catalogText
+                )
+            } else {
+                content = turn.text
+            }
+            return ["role": turn.role.rawValue, "content": content]
+        }
 
         var body: [String: Any] = [
             "model": model,
@@ -180,10 +207,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             // configured model may support extended "thinking" reasoning,
             // which this call doesn't need and can't afford latency-wise.
             "reasoning": ["enabled": false],
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userContent],
-            ],
+            "messages": [["role": "system", "content": systemPrompt]] + turnMessages,
         ]
 
         if useStructuredOutput {
@@ -206,10 +230,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             code fences, no explanation, no text before or after the JSON:
             \(schemaText)
             """
-            body["messages"] = [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userContent],
-            ]
+            body["messages"] = [["role": "system", "content": systemPrompt]] + turnMessages
         }
 
         Self.logPromptForDebugging(body: body)
@@ -241,14 +262,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         "properties": [
             "outfits": [
                 "type": "array",
-                // 1, not 3 — the system prompt (StylistBrain.DynamicPromptComposer)
+                // 0, not 1 or 3 — the system prompt (StylistBrain.DynamicPromptComposer)
                 // explicitly permits returning fewer than 3 when the catalog can't
-                // support that many valid, non-duplicate combinations; a stricter
-                // floor here would force the model to pad with poor matches to
-                // satisfy the schema, contradicting that instruction. Shortfalls
+                // support that many valid, non-duplicate combinations, AND permits
+                // zero on a clarification/redirect turn (Stylist Intelligence Engine
+                // ADR, Phase 2 — Clarification Protocol) — see intent_clear below. A
+                // stricter floor here would force the model to pad with poor matches
+                // to satisfy the schema, contradicting both instructions. Shortfalls
                 // below the UX minimum are topped up deterministically by
                 // DailyAssistantViewModel, not by coercing the LLM.
-                "minItems": 1,
+                "minItems": 0,
                 "maxItems": 5,
                 "items": [
                     "type": "object",
@@ -258,7 +281,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                                 "type": "object",
                                 "properties": [
                                     "summary": ["type": "string"],
-                                    "confidence": ["type": "integer"]
+                                    "confidence": ["type": "integer", "minimum": 0, "maximum": 100]
                                 ],
                                 "required": ["summary", "confidence"],
                                 "additionalProperties": false
@@ -271,7 +294,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 ],
             ],
             "resolved_constraints": [
-                "type": "object",
+                "type": ["object", "null"],
+                "description": "Populate only when intent_clear is true and you're returning real recommendations this turn — set null while intent_clear is false (a clarification or redirect turn), since nothing has been resolved yet.",
                 "properties": [
                     "formality_range": [
                         "type": "array",
@@ -293,8 +317,22 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 "required": ["formality_range", "weather_layering_required", "color_palette_vibe", "season_suitability", "desired_accent_slots"],
                 "additionalProperties": false,
             ],
+            "intent_clear": [
+                "type": "boolean",
+                "description": "True once the occasion is clear enough to output real recommendations this turn (or this is the forced final turn — see FINAL TURN in the system prompt). False when you need to ask a clarifying question or redirect an off-topic message.",
+            ],
+            "follow_up_text": [
+                "type": ["string", "null"],
+                "description": "A clarifying question, an off-topic redirect, or a wardrobe-aware decision note alongside real recommendations. Null only when intent_clear is true and there's nothing to say beyond the outfits themselves.",
+            ],
+            "suggested_chips": [
+                "type": "array",
+                "items": ["type": "string"],
+                "maxItems": 4,
+                "description": "2-4 short, Title Case quick-reply suggestions (e.g. \"Job Interview\") for follow_up_text. Empty array when there's nothing to suggest.",
+            ],
         ],
-        "required": ["outfits", "resolved_constraints"],
+        "required": ["outfits", "resolved_constraints", "intent_clear", "follow_up_text", "suggested_chips"],
         "additionalProperties": false,
     ]
 
@@ -307,10 +345,43 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         var properties: [String: Any] = [:]
         var required: [String] = []
         for slot in Slot.allCases {
-            properties[slot.wireKey] = slot.isRequired ? ["type": "string"] : ["type": ["string", "null"]]
+            properties[slot.wireKey] = schemaProperty(for: slot)
             required.append(slot.wireKey)
         }
         return (properties, required)
+    }
+
+    /// `strict: true` (see `outfitRecommendationJSONSchema` above) requires
+    /// every property to appear in `required`, even the four accent/layer
+    /// slots that are semantically optional — strict JSON Schema mode has no
+    /// concept of "required key, optional value." Left unaddressed, this
+    /// reads to a smaller model as "these keys must be filled," biasing it
+    /// toward stuffing a plausible-looking item into every accent slot
+    /// instead of returning `null` (observed failure: a bag forced into an
+    /// interview outfit just because `bag_id` is a required key with a
+    /// formality-matching item sitting in the catalog). Each optional slot's
+    /// `description` explicitly separates "the key must be present" from
+    /// "the value should usually be null," reinforcing the same instruction
+    /// `StylistBrain`'s prompt gives in prose — this is the schema-level
+    /// backstop for it.
+    private static func schemaProperty(for slot: Slot) -> [String: Any] {
+        guard !slot.isRequired else { return ["type": "string"] }
+
+        let omissionNote = "This key must always be present in your JSON output, but that does not mean it should be filled — set it to null whenever the slot doesn't apply. Do not search the catalog for a plausible item just because the key exists."
+        let guidance: String
+        switch slot {
+        case .outerwear:
+            guidance = "Only set when the scenario/weather genuinely calls for a layer (cold, rain, or a formal blazer/jacket). \(omissionNote)"
+        case .headwear:
+            guidance = "Only set for outdoor, sunny, or casual scenarios where headwear is typical. Null for indoor, formal, or business/interview scenarios. \(omissionNote)"
+        case .accessory:
+            guidance = "A single signature accessory piece, only when it genuinely enhances the outfit. \(omissionNote)"
+        case .bag:
+            guidance = "CRITICAL: only set when carrying a bag is typical for the scenario (errands, commute, travel) and a formality-appropriate option exists in the catalog. For interviews, formal business, or black-tie scenarios this must be null unless a structured/formal bag (e.g. a briefcase) is present in the catalog. \(omissionNote)"
+        case .top, .bottom, .footwear:
+            preconditionFailure("unreachable — isRequired slots return above before this switch")
+        }
+        return ["type": ["string", "null"], "description": guidance]
     }
 }
 
@@ -334,7 +405,8 @@ private struct OpenRouterRecommendationChatResponse: Decodable {
 /// not a fixed canned UUID that would always fail validation.
 struct MockOutfitRecommendationService: OutfitRecommendationService {
     func recommendOutfits(
-        prompt: String,
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,

@@ -176,12 +176,19 @@ final class ManualPairingViewModel {
                 // previously this recorded a throwaway random UUID that could
                 // never be looked back up against any saved combination.
                 let combinationID = UUID()
+                // Re-read rather than threading a `portraitData` param through
+                // from `runPipeline` — `UserPortraitStorage.load()` is a cheap
+                // on-device file read, and re-reading here guarantees the
+                // fingerprint always reflects the exact bytes this generated
+                // image was actually rendered against.
+                let basePortraitFingerprint = UserPortraitStorage.load().map(ImageStorage.fingerprint)
                 let combination = SavedCombination(
                     id: combinationID,
                     imageAssetName: assetName,
                     itemIDsBySlot: [.top: top.id, .bottom: bottom.id],
                     labelsBySlot: [.top: top.displayLabel, .bottom: bottom.displayLabel],
-                    origin: "pairing"
+                    origin: "pairing",
+                    basePortraitFingerprint: basePortraitFingerprint
                 )
                 try? repository.saveCombination(combination)
                 try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)

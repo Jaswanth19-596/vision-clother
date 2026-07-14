@@ -25,7 +25,7 @@ struct StylistBrainTests {
     }
 
     @Test func middleTiersArePenalizedNotRejected() {
-        for tier: StylistBrain.DecisionHierarchy in [.dressCode, .weatherContext, .userStyleProfile, .colorHarmony, .fitAndSilhouette] {
+        for tier: StylistBrain.DecisionHierarchy in [.dressCode, .weatherContext, .userStyleProfile, .visualCohesion] {
             #expect(tier.enforcement == .penalize)
         }
     }
@@ -41,15 +41,26 @@ struct StylistBrainTests {
         #expect(prompt.contains(minorText))
     }
 
-    @Test func promptStatesTheFashionConstitutionHonestyClause() {
+    @Test func promptStatesTheNonNegotiableRulesHonestyClause() {
         let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
-        #expect(prompt.contains("FASHION CONSTITUTION"))
+        #expect(prompt.contains("NON-NEGOTIABLE RULES"))
         #expect(prompt.contains("say so"))
     }
 
     @Test func promptInstructsTheModelToSelfReportResolvedConstraints() {
         let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
         #expect(prompt.contains("resolved_constraints"))
+    }
+
+    @Test func promptStatesTheDiversityObjective() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+        #expect(prompt.contains("Diversity:"))
+    }
+
+    @Test func promptGivesConfidenceCalibrationGuidance() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+        #expect(prompt.contains("rationale.confidence"))
+        #expect(prompt.contains("calibrated confidence"))
     }
 
     // MARK: - Symmetric taste injection
@@ -94,5 +105,57 @@ struct StylistBrainTests {
 
         #expect(prompt.contains("USER HISTORICAL TASTE PREFERENCES"))
         #expect(prompt.contains("TENDS TO DISLIKE"))
+    }
+
+    // MARK: - Clarification Loop (Stylist Intelligence Engine ADR, Phase 2)
+
+    @Test func promptDescribesTheClarificationProtocol() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+
+        #expect(prompt.contains("CLARIFICATION PROTOCOL"))
+        #expect(prompt.contains("Occasion is the only thing you may ask about"))
+        #expect(prompt.contains("intent_clear"))
+        #expect(prompt.contains("suggested_chips"))
+        #expect(prompt.contains("follow_up_text"))
+    }
+
+    @Test func defaultTurnDoesNotForceADecision() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+        #expect(!prompt.contains("FINAL TURN"))
+    }
+
+    @Test func promptForcesADecisionOnTheFinalTurn() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil, isFinalTurn: true)
+
+        #expect(prompt.contains("FINAL TURN"))
+        #expect(prompt.contains("MUST set intent_clear to true"))
+    }
+
+    // MARK: - Conversational Refinement Loop (Stylist Intelligence Engine ADR, Phase 2 addendum)
+
+    @Test func promptDistinguishesRefinementFromANewAmbiguousScenario() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+
+        #expect(prompt.contains("REFINEMENT"))
+        #expect(prompt.contains("NOT a new ambiguous scenario"))
+    }
+
+    // MARK: - Prompt-compliance strengthening (2026-07-14: live testing showed
+    // a real model treating "what should I wear today?" as clear enough to
+    // answer directly, and repeating the same top across multiple outfits —
+    // both are LLM judgment gaps to close in prose, not code bugs, per the
+    // project's LLM-as-Recommender invariant).
+
+    @Test func clarificationProtocolCallsOutAGenericNoOccasionRequestAsAmbiguous() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+
+        #expect(prompt.contains("what should I wear today?"))
+        #expect(prompt.contains("No occasion is named at all"))
+    }
+
+    @Test func diversityRuleForbidsReusingAPrimaryGarmentAcrossOutfits() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+
+        #expect(prompt.contains("no single top_id, bottom_id, footwear_id, or outerwear_id may appear in more than one outfit"))
     }
 }

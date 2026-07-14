@@ -235,6 +235,7 @@ struct ManualPairingViewModelTests {
         #expect(repository.savedCombinations.first?.origin == "pairing")
         #expect(repository.savedCombinations.first?.itemIDsBySlot[.top] == top.id)
         #expect(repository.savedCombinations.first?.itemIDsBySlot[.bottom] == bottom.id)
+        #expect(repository.savedCombinations.first?.basePortraitFingerprint == ImageStorage.fingerprint(Data([0x01])))
         #expect(photoLibrarySaver.saveCallCount == 1)
     }
 

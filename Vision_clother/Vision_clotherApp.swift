@@ -28,7 +28,7 @@ struct Vision_clotherApp: App {
         let container: ModelContainer
         do {
             container = try ModelContainer(
-                for: Schema(SchemaV2.models),
+                for: Schema(SchemaV3.models),
                 migrationPlan: SavedCombinationMigrationPlan.self
             )
         } catch {
@@ -36,12 +36,13 @@ struct Vision_clotherApp: App {
         }
         modelContainer = container
 
+        let repository = SwiftDataWardrobeRepository(modelContext: container.mainContext)
         let store = JobQueueStore(
-            repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
+            repository: repository,
             backgroundIsolationService: ServiceFactory.makeBackgroundIsolationService(),
             imagePreprocessingService: ServiceFactory.makeImagePreprocessingService(),
             visionMetadataService: ServiceFactory.makeVisionMetadataExtractionService(),
-            tryOnService: ServiceFactory.makeTryOnRenderService(),
+            tryOnService: ServiceFactory.makeTryOnRenderService(repository: repository),
             photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
             notificationService: ServiceFactory.makeNotificationService()
         )

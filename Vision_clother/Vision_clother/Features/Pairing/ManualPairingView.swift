@@ -41,10 +41,11 @@ struct ManualPairingView: View {
         }
         .task {
             guard viewModel == nil else { return }
+            let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
             viewModel = ManualPairingViewModel(
-                repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                repository: repository,
                 validationService: ServiceFactory.makePersonPhotoValidationService(),
-                tryOnService: ServiceFactory.makeTryOnRenderService(),
+                tryOnService: ServiceFactory.makeTryOnRenderService(repository: repository),
                 photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver()
             )
         }

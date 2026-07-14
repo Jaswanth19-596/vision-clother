@@ -126,4 +126,46 @@ struct SavedCombinationMigrationTests {
         #expect(combo.itemIDsBySlot[.footwear] == nil)
         #expect(combo.itemIDsBySlot[.outerwear] == nil)
     }
+
+    @Test func migratesV2RowsToV3WithNoBasePortraitFingerprint() throws {
+        // V2 -> V3 only adds `basePortraitFingerprint` (an optional column
+        // powering `Services/CachedTryOnRenderService.swift`) — a purely
+        // additive change, so a pre-existing row must survive with the field
+        // `nil` rather than the migration crashing or fabricating a value.
+        let storeURL = makeStoreURL()
+        defer { removeStore(at: storeURL) }
+
+        let v2Schema = Schema(versionedSchema: SchemaV2.self)
+        let v2Container = try ModelContainer(
+            for: v2Schema,
+            configurations: ModelConfiguration(schema: v2Schema, url: storeURL)
+        )
+        let v2Context = ModelContext(v2Container)
+
+        let existing = SavedCombination(
+            imageAssetName: "pre-migration.png",
+            itemIDsBySlot: [.top: UUID(), .bottom: UUID()],
+            labelsBySlot: [.top: "Top", .bottom: "Bottom"],
+            origin: "pairing"
+        )
+        v2Context.insert(existing)
+        try v2Context.save()
+        let existingID = existing.id
+
+        let v3Schema = Schema(versionedSchema: SchemaV3.self)
+        let v3Container = try ModelContainer(
+            for: v3Schema,
+            migrationPlan: SavedCombinationMigrationPlan.self,
+            configurations: ModelConfiguration(schema: v3Schema, url: storeURL)
+        )
+        let v3Context = ModelContext(v3Container)
+
+        let migrated = try v3Context.fetch(FetchDescriptor<SavedCombination>())
+        #expect(migrated.count == 1)
+        let combo = try #require(migrated.first)
+
+        #expect(combo.id == existingID)
+        #expect(combo.imageAssetName == "pre-migration.png")
+        #expect(combo.basePortraitFingerprint == nil)
+    }
 }

@@ -156,6 +156,7 @@ struct JobQueueStoreTests {
         #expect(repository.savedCombinations.first?.origin == "assistant")
         #expect(repository.savedCombinations.first?.itemIDsBySlot[.top] == outfit.top.id)
         #expect(repository.savedCombinations.first?.itemIDsBySlot[.bottom] == outfit.bottom.id)
+        #expect(repository.savedCombinations.first?.basePortraitFingerprint == ImageStorage.fingerprint(Data([0x01])))
         #expect(photoLibrarySaver.saveCallCount == 1)
     }
 

@@ -6,6 +6,7 @@
 //  end: empty-inventory ghost fallback, NaN immunity, and `limit` handling.
 //
 
+import Foundation
 import Testing
 @testable import Vision_clother
 

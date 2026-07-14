@@ -2,6 +2,34 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-14 — Fixed outerwear/suit missing from generated try-on renders
+
+**Status:** Fixed.
+
+User reported that when a recommendation includes an outerwear item (e.g. a suit jacket/blazer — per `Domain/StylistBrain.swift`, a suit is modeled as an `outerwear`-slot item worn over a separately-filled `top`, not its own slot), the generated try-on image showed top/bottom/other slots correctly but never rendered the outerwear layer.
+
+Root cause: `OutfitCombination.items` correctly attaches every populated slot's garment image to the `OpenRouterTryOnRenderService` request, but the accompanying instruction text (`ModelConfig.Prompts.tryOnChatInstructions`) only told the image model to place a "top" on the upper body and a "bottom" on the lower body — outerwear (and footwear/headwear/accessory/bag) were never mentioned. Since outerwear and top both target the same upper-body region, the model treated the outerwear reference image as a redundant alternative to the top and dropped it, while slots targeting other regions rendered fine.
+
+Fix: rewrote `tryOnChatInstructions` (`Config/ModelConfig.swift`) to explicitly instruct layering — outerwear goes *over* the top, both must remain visible — and to cover footwear/headwear/accessory/bag placement instead of only top/bottom. Also rewrote `tryOnImagesPrompt` (the dedicated-Images-API branch, used if `ModelConfig.imageToImage` is ever pointed at a non-Gemini model like Seedream) — it was previously an isolated flat-lay *product-photo* prompt ("no human body parts"), not a try-on prompt at all; not the cause of this bug since that branch is currently inactive (`imageToImage` is a Gemini chat-completion model), but confirmed broken and fixed in the same pass so switching models later doesn't silently reintroduce a missing-outerwear (or missing-everything) bug. Prompt-only change, one file (`Config/ModelConfig.swift`); `xcodebuild clean build` passes.
+
+## 2026-07-14 — Phase 1: restructured the StylistBrain recommendation prompt + fixed the interview/bag formality bug
+
+**Status:** Fixed (Phase 1 of 2 — see `docs/decisions/stylist-intelligence-engine.md`'s 2026-07-14 addendum for the full writeup; Phase 2, multi-accessory support, is planned separately, not implemented).
+
+Two problems: (1) an "interview" recommendation surfaced a bag — a formality mismatch nobody would actually wear — and (2) an independent review of the ~230-line `Domain/StylistBrain.swift` prompt found it mixed policy with data, read as a step-by-step chain-of-thought script, and gave the `confidence` field (already in the wire schema, never explained) no real guidance.
+
+Root cause of (1) turned out to be **two separate biases stacking**: the prompt's only accent-slot heuristic was a coarse "errands/travel/work suggests bag," with nothing re-checking that the specific bag chosen actually cleared the scenario's formality bar; and — caught mid-implementation via user's own diagnosis — `outfitRecommendationJSONSchema` uses `strict: true`, which forces every property (including the four semantically-optional accent/layer slots) into the JSON Schema's `required` array, since strict mode has no concept of "required key, optional value." That structural fact biases a smaller model toward filling every accent slot with a plausible item just because its key exists, regardless of what the prompt prose says.
+
+Fix, two layers:
+- **Prompt (`Domain/StylistBrain.swift`):** full restructure into ROLE / MISSION / NON-NEGOTIABLE RULES / DECISION HIERARCHY / USER PROFILE / OUTPUT FORMAT. `DecisionHierarchy` compressed from 7 tiers to 6 (Color Harmony + Fit/Silhouette merged into one `.visualCohesion` tier — both were already `.penalize`-enforced with no behavioral distinction), each tier now in a Purpose/Priority/Never form instead of a paragraph. The old 6-step "Reasoning Workflow" chain-of-thought is gone, replaced by one declarative sentence. Dress Code (tier 2) now explicitly gates accent slots with scenario-specific guidance (business/interview/formal → at most one subtle accessory, never headwear, bag only if a structured/formal option exists; outdoor/casual → headwear; errands/commute/travel → bag) and an explicit instruction that a present-but-nullable key is not a request to fill it. Preferences (tier 4) split into intrinsic profile vs. learned behavior, with "ratings only break ties" made explicit. Added diversity (outfits must meaningfully differ) and ranking (sort strongest→weakest) objectives. `rationale.confidence` given a real 0-100 calibration rule.
+- **Schema (`Services/OutfitRecommendationService.swift`):** `itemIDSchemaProperties` → `schemaProperty(for:)` now gives each optional slot's JSON Schema entry an explicit `description` that separates "the key must exist" from "the value should usually be null," with `bag_id`'s calling out interview/formal-business by name — a schema-level backstop for the prompt-prose fix, since prompt guidance alone isn't reliably sufficient against strict mode's required-key bias. Also added `"minimum": 0, "maximum": 100` to the previously-unbounded `confidence` integer property.
+
+Also fixed a pre-existing, unrelated compile error blocking the whole test target (`OutfitRecommendationEngineTests.swift` used `Date()` without `import Foundation`) so verification could actually run. Updated `Vision_clotherTests/StylistBrainTests.swift` for the renamed tiers/sections and added two new cross-projection assertions (diversity objective, confidence guidance present in the prompt). Updated `docs/decisions/stylist-intelligence-engine.md` and `docs/domain/vision-clother-concepts.md` to match the 6-tier structure.
+
+`xcodebuild clean build` passes; `StylistBrainTests` (12/12), `OutfitRecommendationServiceTests` (4/4), and `OutfitRecommendationResponseDecodingTests` (5/5) all pass. Two pre-existing, unrelated failures were observed in `OutfitRecommendationEngineTests` (a timing-budget flake and a scoring-logic assertion) in code this change never touches (`OutfitRecommendationEngine.swift`/`PairCompatibilityScoring.swift` have zero diff from `HEAD` this session) — not fixed, out of scope, flagged for a future session.
+
+Not implemented this pass: multiple simultaneous accessories per outfit (necklace + belt + watch) — `itemsBySlot`/`itemIDsBySlot` are `[Slot: SingleValue]` everywhere in this codebase (wire model, domain model, validator, deterministic engine, the SwiftData-persisted `SavedCombination`, and the UI), so this needs a schema/engine/validator/SwiftData-migration change across ~12 files. Scoped as Phase 2, planned separately.
+
 ## 2026-07-14 — Fixed necklace/headwear/bag uploads all landing in "outerwear"; missing accent slots in recommendations was a downstream symptom, not a separate bug
 
 **Status:** Fixed.

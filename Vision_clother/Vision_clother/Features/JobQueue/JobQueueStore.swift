@@ -19,18 +19,16 @@
 //  interleave, so no new actor/ModelActor infrastructure is needed.
 //
 
-import CryptoKit
 import Foundation
 import Observation
 import os
 import UIKit
 
-/// Short content fingerprint for correlating an image's bytes across
-/// ingestion-pipeline log lines — not a security hash, just enough to tell
-/// "same bytes" from "different bytes" when reading logs after the fact.
+/// Correlates an image's bytes across ingestion-pipeline log lines — see
+/// `ImageStorage.fingerprint(_:)`, also used to key `SavedCombination`'s
+/// cache-matching in `Services/CachedTryOnRenderService.swift`.
 private func imageFingerprint(_ data: Data) -> String {
-    let digest = SHA256.hash(data: data)
-    return digest.map { String(format: "%02x", $0) }.joined().prefix(12).description
+    ImageStorage.fingerprint(data)
 }
 
 @Observable
@@ -250,7 +248,8 @@ final class JobQueueStore {
                 imageAssetName: assetName,
                 itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id),
                 labelsBySlot: outfit.itemsBySlot.mapValues(\.displayLabel),
-                origin: "assistant"
+                origin: "assistant",
+                basePortraitFingerprint: ImageStorage.fingerprint(payload.baseImageData)
             )
             try? repository.saveCombination(combination)
             try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)

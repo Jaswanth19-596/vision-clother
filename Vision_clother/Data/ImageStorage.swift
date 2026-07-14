@@ -9,9 +9,20 @@
 //  (SwiftData rows vs. image bytes).
 //
 
+import CryptoKit
 import Foundation
 
 enum ImageStorage {
+    /// Short content fingerprint (not a security hash) used to tell "same
+    /// image bytes" from "different image bytes" — e.g. correlating
+    /// ingestion-pipeline log lines (`JobQueueStore`) and detecting whether a
+    /// `SavedCombination`'s base portrait matches the one on disk right now
+    /// (`Services/CachedTryOnRenderService.swift`).
+    static func fingerprint(_ data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(12).description
+    }
+
     private static var directory: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("WardrobeImages", isDirectory: true)

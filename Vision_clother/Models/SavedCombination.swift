@@ -32,6 +32,12 @@ final class SavedCombination {
     /// Which flow produced this: "pairing" (Manual Pairing) or "assistant"
     /// (Daily Assistant). Plain String to stay Codable-simple — no enum column.
     var origin: String
+    /// `ImageStorage.fingerprint(_:)` of the base portrait used to generate
+    /// `imageAssetName` — lets `Services/CachedTryOnRenderService.swift`
+    /// avoid reusing a render made against a portrait the user has since
+    /// replaced. `nil` for rows saved before this field existed (SchemaV3) —
+    /// those never cache-hit, which is the conservative/correct default.
+    var basePortraitFingerprint: String?
 
     init(
         id: UUID = UUID(),
@@ -39,7 +45,8 @@ final class SavedCombination {
         itemIDsBySlot: [Slot: UUID],
         labelsBySlot: [Slot: String],
         savedAt: Date = .now,
-        origin: String
+        origin: String,
+        basePortraitFingerprint: String? = nil
     ) {
         self.id = id
         self.imageAssetName = imageAssetName
@@ -47,6 +54,7 @@ final class SavedCombination {
         self.labelsBySlot = labelsBySlot
         self.savedAt = savedAt
         self.origin = origin
+        self.basePortraitFingerprint = basePortraitFingerprint
     }
 
     /// Slot-order label summary for list/detail row titles, e.g. "Top + Bottom".
