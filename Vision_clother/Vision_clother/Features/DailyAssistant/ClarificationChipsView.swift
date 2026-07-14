@@ -61,10 +61,17 @@ struct FlowLayout: Layout {
 /// `onSelectChip` with its own label immediately (auto-submit), no separate
 /// confirm step. Reset/"New" lives once in the timeline's toolbar rather
 /// than duplicated per-round here.
+///
+/// Once a chip is tapped `selectedChip` is set immediately, dimming the
+/// other options and showing a checkmark on the chosen one — this gives
+/// instant visual confirmation before the async recommendation round
+/// responds and prevents accidental double-taps.
 struct ClarificationChipsView: View {
     let followUpText: String
     let chips: [String]
     let onSelectChip: (String) -> Void
+
+    @State private var selectedChip: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -75,15 +82,28 @@ struct ClarificationChipsView: View {
             if !chips.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(chips, id: \.self) { chip in
-                        Button(chip) { onSelectChip(chip) }
-                            .buttonStyle(.bordered)
-                            .tint(.accentColor)
+                        Button {
+                            guard selectedChip == nil else { return }
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                                selectedChip = chip
+                            }
+                            onSelectChip(chip)
+                        } label: {
+                            if selectedChip == chip {
+                                Label(chip, systemImage: "checkmark")
+                            } else {
+                                Text(chip)
+                            }
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .opacity(selectedChip == nil || selectedChip == chip ? 1.0 : 0.4)
+                        .disabled(selectedChip != nil)
+                        .animation(.easeOut(duration: 0.2), value: selectedChip)
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .premiumCard()
     }
 }

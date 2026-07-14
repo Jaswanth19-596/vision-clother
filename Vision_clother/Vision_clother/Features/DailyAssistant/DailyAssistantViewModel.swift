@@ -2,10 +2,9 @@
 //  DailyAssistantViewModel.swift
 //  Vision_clother
 //
-//  Drives PRD.md §2.1's full pipeline for Tab 1: free text -> intent
-//  extraction (OpenRouter) -> local retrieval + scoring
-//  (OutfitRecommendationEngine) -> optional try-on render. Try-on itself now
-//  runs as an independent background job — see
+//  Drives the LLM-only recommendation pipeline for Tab 1: free text →
+//  StylistBrain (OpenRouter) → validator + scorer. Try-on itself runs as
+//  an independent background job — see
 //  `Features/JobQueue/JobQueueStore.swift` — so multiple renders can be in
 //  flight at once without this view model owning a single cancel-and-replace
 //  `Task`.
@@ -19,12 +18,12 @@ import os
 @MainActor
 final class DailyAssistantViewModel {
     private static let logger = Logger(subsystem: "com.visionclother", category: "DailyAssistant")
-    /// Hard cap on the whole weather -> profile -> recommendation ->
-    /// deterministic-fallback stretch. Neither `URLSession.shared` (used by
-    /// every OpenRouter service in this chain) nor any call site configures
-    /// its own request timeout, so a degraded connection could otherwise
-    /// leave `extractionState` stuck at `.loading` indefinitely with no
-    /// error ever surfaced — this guarantees the UI always resolves.
+    /// Hard cap on the whole weather → profile → recommendation stretch.
+    /// Neither `URLSession.shared` (used by every OpenRouter service in this
+    /// chain) nor any call site configures its own request timeout, so a
+    /// degraded connection could otherwise leave `extractionState` stuck at
+    /// `.loading` indefinitely with no error ever surfaced — this guarantees
+    /// the UI always resolves.
     private static let requestTimeoutNanoseconds: UInt64 = 15_000_000_000
 
     /// Clarification Loop (Stylist Intelligence Engine ADR, Phase 2): the
@@ -53,11 +52,8 @@ final class DailyAssistantViewModel {
         case awaitingClarification(followUpText: String, chips: [String])
         /// Broadened from a single `IntentExtractionError` (pre-2026-07-10)
         /// to a pre-formatted message: the primary path
-        /// (`Services/OutfitRecommendationService.swift`) and the fallback
-        /// path (`Services/OpenRouterIntentExtractionService.swift`) each
-        /// have their own error types, and the fallback itself only
-        /// surfaces once *both* paths have failed — so there's no single
-        /// error type left to hold here.
+        /// (`Services/OutfitRecommendationService.swift`) has its own error
+        /// type, so there is no single error type left to hold here.
         case failed(String)
 
         static func == (lhs: ExtractionState, rhs: ExtractionState) -> Bool {
@@ -109,7 +105,6 @@ final class DailyAssistantViewModel {
     private var conversationHistory: [ConversationTurn] = []
     private var clarificationTurnCount: Int = 0
 
-    private let intentService: IntentExtractionService
     private let repository: WardrobeRepository
     private let jobQueueStore: JobQueueStore
     /// Primary recommendation path (PRD §2.1a, the 2026-07-10
@@ -131,27 +126,22 @@ final class DailyAssistantViewModel {
     init(
         repository: WardrobeRepository,
         jobQueueStore: JobQueueStore,
-        intentService: IntentExtractionService = MockIntentExtractionService(),
         recommendationService: OutfitRecommendationService = MockOutfitRecommendationService(),
         weatherProvider: CurrentWeatherProviding = MockCurrentWeatherProvider(),
         profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService()
     ) {
         self.repository = repository
         self.jobQueueStore = jobQueueStore
-        self.intentService = intentService
         self.recommendationService = recommendationService
         self.weatherProvider = weatherProvider
         self.profileDerivationService = profileDerivationService
     }
 
     /// Primary path (PRD §2.1a): prompt + bounded wardrobe catalog + style
-    /// profile + weather -> recommendation LLM -> validated outfits. Falls
-    /// back to the fully deterministic §2.1 pipeline (intent extraction ->
-    /// `OutfitRecommendationEngine`) when AI recommendations are disabled
-    /// (`RecommendationSettings.useAIRecommendations`), the recommendation
-    /// call fails, or validation yields nothing usable — so the app always
-    /// produces an outfit when the inventory can support one. Safe to call
-    /// again while `.failed` — that's exactly the manual-retry path the
+    /// profile + weather → recommendation LLM → validated outfits. If the
+    /// catalog is empty, the LLM call fails, or validation yields nothing
+    /// usable, returns `.failure` with a descriptive error message. Safe to
+    /// call again while `.failed` — that's exactly the manual-retry path the
     /// UI's Retry button uses. Starts a brand-new conversation — resets any
     /// in-progress clarification loop, so this always reads as a fresh topic
     /// rather than a continuation of whatever the user was previously asked.
@@ -288,153 +278,60 @@ final class DailyAssistantViewModel {
             let history = try repository.fetchFeedbackHistory()
             let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
 
-            if RecommendationSettings.useAIRecommendations {
-                let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
-                if !catalog.isEmpty {
-                    do {
-                        let response = try await PerfLog.time("recommendation.call") {
-                            try await recommendationService.recommendOutfits(
-                                conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
-                                catalog: catalog, profile: profile, weather: weather, history: history
-                            )
-                        }
-                        // Clarification Loop (Stylist Intelligence Engine ADR,
-                        // Phase 2): the model asked a follow-up instead of
-                        // deciding. Only honored while `!isFinalTurn` — a
-                        // model that disobeys the FINAL TURN instruction and
-                        // still reports `intentClear == false` on the forced
-                        // turn falls through to validation/deterministic
-                        // fallback below exactly like any other empty result,
-                        // rather than looping into a 4th clarification round.
-                        if !response.intentClear && !isFinalTurn {
-                            return .clarification(
-                                followUpText: response.followUpText ?? "Could you tell me more about the occasion?",
-                                chips: response.suggestedChips
-                            )
-                        }
-                        let validated = await PerfLog.time("validation") {
-                            OutfitRecommendationValidator.validate(
-                                response,
-                                index: index,
-                                // Self-reported by the same call, not a second
-                                // intent-extraction round-trip (Stylist Intelligence
-                                // Engine ADR) — closes the gap where Tier 1 dress-code
-                                // alignment was previously unenforced on the LLM path.
-                                constraints: response.resolvedConstraints,
-                                profile: profile,
-                                weather: weather,
-                                history: history
-                            )
-                        }
-                        if !validated.isEmpty {
-                            let topped = await PerfLog.time("topUp") {
-                                await topUpIfNeeded(
-                                    validated: validated,
-                                    conversationHistory: conversationHistory,
-                                    inventory: inventory,
-                                    resolvedConstraints: response.resolvedConstraints,
-                                    profile: profile,
-                                    weather: weather,
-                                    history: history
-                                )
-                            }
-                            return .success(topped)
-                        }
-                    } catch {
-                        // Previously swallowed via `try?` with no logging at
-                        // all — falling back to the deterministic engine is
-                        // correct by design, but a silently-and-permanently
-                        // failing AI path (bad API key, persistent decoding
-                        // failures) was otherwise undiagnosable.
-                        Self.logger.debug("AI outfit recommendation failed, falling back to deterministic engine: \(String(describing: error))")
-                    }
-                }
+            let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
+            guard !catalog.isEmpty else {
+                return .failure("Your wardrobe appears to be empty. Add some items and try again.")
             }
-            // Falls through to the deterministic pipeline below when AI
-            // recommendations are disabled, the catalog is empty, the
-            // recommendation call fails, or every pick fails validation.
 
-            let flattenedPrompt = Self.flattenedUserPrompt(from: conversationHistory)
-            let constraints = try await PerfLog.time("intentExtraction.fallbackCall") {
-                try await intentService.extractConstraints(prompt: flattenedPrompt, weather: weather)
+            let response = try await PerfLog.time("recommendation.call") {
+                try await recommendationService.recommendOutfits(
+                    conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
+                    catalog: catalog, profile: profile, weather: weather, history: history
+                )
             }
-            let generated = await PerfLog.time("deterministicGenerate") {
-                OutfitRecommendationEngine.generateCandidates(
-                    inventory: inventory,
-                    constraints: constraints,
+            // Clarification Loop (Stylist Intelligence Engine ADR,
+            // Phase 2): the model asked a follow-up instead of
+            // deciding. Only honored while `!isFinalTurn` — a
+            // model that disobeys the FINAL TURN instruction and
+            // still reports `intentClear == false` on the forced
+            // turn falls through to validation below exactly like
+            // any other empty result, rather than looping into a
+            // 4th clarification round.
+            if !response.intentClear && !isFinalTurn {
+                return .clarification(
+                    followUpText: response.followUpText ?? "Could you tell me more about the occasion?",
+                    chips: response.suggestedChips
+                )
+            }
+            let validated = await PerfLog.time("validation") {
+                OutfitRecommendationValidator.validate(
+                    response,
+                    index: index,
+                    // Self-reported by the same call, not a second
+                    // intent-extraction round-trip (Stylist Intelligence
+                    // Engine ADR) — closes the gap where Tier 1 dress-code
+                    // alignment was previously unenforced on the LLM path.
+                    constraints: response.resolvedConstraints,
                     profile: profile,
                     weather: weather,
                     history: history
                 )
             }
-            return .success(generated)
+            guard !validated.isEmpty else {
+                return .failure("Couldn’t find outfits matching your request. Try rephrasing or adding more items to your wardrobe.")
+            }
+            return .success(validated)
         } catch is CancellationError {
             return .timedOut
-        } catch let error as IntentExtractionError {
-            return .failure(error.errorDescription ?? "Couldn't understand that.")
         } catch {
             // URLSession surfaces cooperative cancellation (from the timeout
             // deadline above) as `URLError.cancelled`, not `CancellationError`.
             if (error as? URLError)?.code == .cancelled {
                 return .timedOut
             }
+            Self.logger.debug("Outfit recommendation failed: \(String(describing: error))")
             return .failure(error.localizedDescription)
         }
-    }
-
-    /// Flattens the conversation's user turns into a single string for the
-    /// deterministic fallback's `IntentExtractionService`, which still only
-    /// takes a flat `prompt: String` — e.g. `"what should I wear today?.
-    /// Party"` after one clarifying exchange, giving it the fullest context
-    /// available without changing that protocol.
-    private static func flattenedUserPrompt(from conversationHistory: [ConversationTurn]) -> String {
-        conversationHistory.filter { $0.role == .user }.map(\.text).joined(separator: ". ")
-    }
-
-    /// Guarantees the user sees at least `minimumCount` outfits when the LLM
-    /// path under-returns (schema/prompt only hint at 3-5 — the validator can
-    /// still drop picks below that after the fact). Tops up with the
-    /// deterministic engine, excluding any item set already present in
-    /// `validated`, and re-sorts the merged list by score. Never discards a
-    /// validated (rationale-bearing) outfit to make room.
-    private func topUpIfNeeded(
-        validated: [OutfitCombination],
-        conversationHistory: [ConversationTurn],
-        inventory: [WardrobeItem],
-        resolvedConstraints: StyleConstraints?,
-        profile: UserStyleProfile?,
-        weather: WeatherContext?,
-        history: FeedbackHistory
-    ) async -> [OutfitCombination] {
-        let minimumCount = 3
-        let shortfall = minimumCount - validated.count
-        guard shortfall > 0 else { return validated }
-
-        let constraints: StyleConstraints
-        if let resolvedConstraints {
-            constraints = resolvedConstraints
-        } else if let extracted = try? await PerfLog.time("intentExtraction.topUpCall", {
-            try await intentService.extractConstraints(prompt: Self.flattenedUserPrompt(from: conversationHistory), weather: weather)
-        }) {
-            constraints = extracted
-        } else {
-            return validated
-        }
-
-        let usedItemSets = Set(validated.map { Set($0.items.map(\.id)) })
-        let deterministic = OutfitRecommendationEngine.generateCandidates(
-            inventory: inventory,
-            constraints: constraints,
-            profile: profile,
-            weather: weather,
-            history: history,
-            limit: shortfall + 5
-        )
-        let additions = deterministic
-            .filter { !usedItemSets.contains(Set($0.items.map(\.id))) }
-            .prefix(shortfall)
-
-        return (validated + additions).sorted { $0.score > $1.score }
     }
 
     /// Reads the persisted style profile, lazily deriving it once from an

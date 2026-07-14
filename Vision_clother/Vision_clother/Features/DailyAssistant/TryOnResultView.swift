@@ -33,6 +33,9 @@ struct TryOnResultView: View {
     /// closing this race is what fixed the "Rate this item" infinite
     /// spinner (the save was fire-and-forget before).
     @State private var isSaving = false
+    /// Ticks once per completed save — drives the save-confirmation
+    /// critical-action haptic.
+    @State private var didSaveTick = 0
 
     var body: some View {
         VStack(spacing: 20) {
@@ -60,6 +63,8 @@ struct TryOnResultView: View {
                     }
                 }
                 .frame(maxHeight: 400)
+                .clipShape(VCRadius.shape(VCRadius.card))
+                .vcShadow()
 
                 if didSave {
                     HStack {
@@ -67,7 +72,7 @@ struct TryOnResultView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("Done", action: onDone)
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(PrimaryButtonStyle())
                     }
                 } else {
                     Text("Did you like this outfit?").font(.headline)
@@ -78,6 +83,7 @@ struct TryOnResultView: View {
                                 await onSave(false)
                                 didSave = true
                                 isSaving = false
+                                didSaveTick += 1
                             }
                         } label: {
                             if isSaving {
@@ -86,7 +92,7 @@ struct TryOnResultView: View {
                                 Label("Dislike", systemImage: "hand.thumbsdown")
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(SecondaryButtonStyle())
                         .disabled(isSaving)
 
                         Button {
@@ -95,6 +101,7 @@ struct TryOnResultView: View {
                                 await onSave(true)
                                 didSave = true
                                 isSaving = false
+                                didSaveTick += 1
                             }
                         } label: {
                             if isSaving {
@@ -103,7 +110,7 @@ struct TryOnResultView: View {
                                 Label("Like", systemImage: "hand.thumbsup")
                             }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(PrimaryButtonStyle())
                         .disabled(isSaving)
                     }
                     Button("Done", action: onDone)
@@ -114,10 +121,11 @@ struct TryOnResultView: View {
                 Label(error.errorDescription ?? "Something went wrong", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
                 Button("Retry", action: onRetry)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryButtonStyle())
             }
         }
         .padding()
+        .sensoryFeedback(.success, trigger: didSaveTick)
     }
 
     private var cancelButton: some View {

@@ -2,6 +2,98 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-14 — Fix: Try-On Button Allows Duplicate Queue Submissions
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+After tapping "How does it look on me?", the button showed "Added to queue" for 1.5 seconds then reset back to the original label — letting the user submit the same outfit combination to the try-on queue multiple times.
+
+### Fix
+Replaced `justQueuedTryOn: Bool` + `Task.sleep` reset with `queuedOutfitIDs: Set<OutfitCombination.ID>`. Each outfit's queued state is now **permanent and per-outfit**:
+- Once queued, the button stays locked as "Added to queue ✓" for that outfit forever
+- Swiping to a different (unqueued) outfit shows a fresh active button for that card
+- Swiping back to an already-queued outfit keeps it locked — no re-submission possible
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Features/DailyAssistant/DailyAssistantView.swift` | Replaced `@State var justQueuedTryOn: Bool` + `Task.sleep` reset with `@State var queuedOutfitIDs: Set<OutfitCombination.ID>`; removed the Task entirely |
+
+---
+
+## 2026-07-14 — Fix: Outfit Carousel Unswipeable + Screen Scroll Frozen
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+After the previous UX pass, the outfit recommendation carousel was completely unswipeable and tapping anywhere inside the card area froze the entire screen's vertical scroll. Root cause was a three-layer gesture conflict:
+
+```
+ScrollView (vertical)   ← outer chat timeline
+  └── TabView(.page)    ← UIKit page controller stealing horizontal drags
+       └── OutfitCardView
+            └── ScrollView (vertical)  ← inner scroll competing with outer
+```
+
+The `TabView(.page)` UIKit gesture recognisers intercept horizontal drags before the outer `ScrollView` can route them correctly. The `highPriorityGesture(DragGesture)` workaround added previously made things worse — it claimed *all* drag directions, freezing the outer vertical scroll entirely.
+
+### Fix
+Replaced the entire carousel stack with orthogonal `ScrollView`s — iOS routes horizontal drags to the inner one and vertical drags to the outer one automatically, with no workarounds:
+
+```
+ScrollView (vertical)       ← outer chat timeline
+  └── ScrollView(.horizontal) ← new carousel, orthogonal = no conflict
+       └── OutfitCardView      ← plain VStack, inner scroll removed
+```
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Features/DailyAssistant/DailyAssistantView.swift` | Replaced `TabView(.page)` + broken `highPriorityGesture` with `ScrollView(.horizontal)` + `scrollTargetBehavior(.viewAligned)` + `scrollTargetLayout()`; added custom animated dot-indicator row |
+| `Features/DailyAssistant/OutfitCardView.swift` | Removed inner vertical `ScrollView` — was competing with the outer chat `ScrollView` and causing scroll freeze on tap |
+
+---
+
+## 2026-07-14 — UX Polish: Daily Assistant & Recommendations Navigation
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+Buttons in the Daily Assistant and Recommendations screens felt sticky and unresponsive:
+- Swiping between outfit cards in the carousel was intercepted by the outer scroll view
+- Collapse/expand of historical outfit rounds had no animation (jarring instant layout jump)
+- Clarification chips could be double-tapped with no visual feedback during async wait
+- Item picker tiles in Try-On used `.onTapGesture` — no press-down highlight
+- Button spring animation was too slow (0.35s response) making all presses feel laggy
+
+### Changes
+
+| File | Change |
+|---|---|
+| `DesignSystem/VCButtonStyles.swift` | Tightened spring `response: 0.35 → 0.22`, increased scale/opacity travel for crisper press feedback |
+| `Features/DailyAssistant/DailyAssistantView.swift` | Added `.highPriorityGesture(DragGesture)` + `.clipped()` to TabView carousel; animated expand/collapse; animated try-on button label transition; added `.scrollBounceBehavior(.basedOnSize)` |
+| `Features/DailyAssistant/ClarificationChipsView.swift` | Added `@State private var selectedChip` — tapping a chip immediately shows ✓ checkmark and dims all others, blocking double-taps |
+| `Features/Pairing/ManualPairingView.swift` | Replaced `.onTapGesture` with `Button { }.buttonStyle(.plain)` on item cells for proper press feedback; added `.scrollBounceBehavior(.basedOnSize)` |
+
+---
+
+## 2026-07-14 — Premium UI pass: shared DesignSystem module + app-wide rollout
+
+**Status:** Implemented.
+
+The app had zero shared visual design system — no `Theme.swift`/`DesignSystem.swift`, no custom `ButtonStyle` anywhere (every button used stock `.bordered`/`.borderedProminent`), no haptics, no `.continuous` corner style, no shadows in `Features/`, and corner radii/spacing/materials applied ad hoc per-file (10/12/14/16/20pt radii used interchangeably for similar surfaces, confirmed by reading all 25 SwiftUI view files). `AccentColor.colorset` was empty, so the whole app rendered in generic system blue.
+
+Added a new `DesignSystem/` module (sibling to `Features/`) as the single source of truth: `VCSpacing` (4/8/12/16/20/24pt grid), `VCRadius` (`swatch`=10/`control`=12/`card`=16/`prominent`=20, always `.continuous`), `VCShadow` (`subtle`/`elevated` tokens, both intentionally faint per HIG guidance), `PremiumCard` (a `.premiumCard()` view modifier — material + continuous corner + hairline stroke + optional shadow — the one mechanical target every ad hoc `.background(.material, in: RoundedRectangle(...))` call site now converts to), `VCButtonStyles` (`PrimaryButtonStyle`/`SecondaryButtonStyle`, both with press scale+spring; `SecondaryButtonStyle` takes an explicit `tint:` parameter rather than relying on environment `.tint()`, since a bare `ButtonStyle` doesn't inherit it the way `.bordered` does — this is what let `RateItemView`'s wear-again green/red semantic coding survive the migration), and `VCAccentColor` (the literal brand color for the rare call site needing a `Color` rather than the environment tint). Populated the previously-empty `AccentColor.colorset` with a new signature dynamic accent — deep oxblood `#6E2B3A` (light) / warm terracotta `#E08A6C` (dark) — built with the same `dynamic(light:dark:)` `UIColor` trait-collection pattern `ProfileChartPalette.swift` already established as this codebase's dynamic-color idiom.
+
+Rolled the kit out across every Feature folder (Root, JobQueue, Closet, Pairing, DailyAssistant, Rating, Profile, Combinations) in one pass. Notable non-mechanical pieces: `DailyAssistantView`'s conversation UI (the newest surface, added in the prior "Conversation feature" commit) gained a small circular assistant-avatar glyph leading clarification/outfit rounds — it previously had no visual identity distinct from an anonymous material card — plus a hairline divider above the prompt bar; `TryOnResultView` went from having zero cards/materials to a proper elevated image + button treatment. Haptic feedback (`sensoryFeedback`), scoped deliberately to critical actions only (not baked into the shared button styles, which fire on every press): send/get-outfit-ideas, outfit save confirmation (both independent flows — `TryOnResultView` and `ManualPairingView`), submit rating, and delete item.
+
+Explicitly preserved, not touched: `ProfileView`'s `List`/`Section`-based narrative content model (the deliberate 2026-07-13 redesign decision — only its buttons/chrome were restyled), every `Color(hex: item.colorProfile.primaryHex) ?? .gray` garment-swatch fallback (real data, not brand-color debt), ghost-element white overlays, the JobQueue notification badge's `.red` fill, and `ProfileChartPalette`'s validated categorical dataviz palette. `ManualPairingView`'s `PairingItemCell` had its image-clip radius and selection-ring stroke radius migrated to the same token together (a mismatch here would have visibly misaligned the ring against the photo's rounded corner). Also fixed the app's two raw hardcoded pixel-size fonts (`JobQueueBadgeButton`'s badge count, `ManualPairingView`/`ProfileView`'s large placeholder icons) to Dynamic-Type-compliant semantic text styles as a side effect of the corner-radius/typography sweep.
+
+`xcodebuild clean build` passes. See `docs/decisions/` — no new ADR was needed since this is a presentation-layer-only change with no domain/data model impact.
+
 ## 2026-07-14 — Fixed outerwear/suit missing from generated try-on renders
 
 **Status:** Fixed.

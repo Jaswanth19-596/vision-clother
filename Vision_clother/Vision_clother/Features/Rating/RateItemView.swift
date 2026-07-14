@@ -26,6 +26,10 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
     let submitLabel: String
     let onSaved: () -> Void
 
+    /// Ticks once on a completed save — drives the submit-rating
+    /// critical-action haptic.
+    @State private var savedTick = 0
+
     var body: some View {
         Form {
             Section {
@@ -106,6 +110,7 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
                 Task {
                     await viewModel.submit()
                     if viewModel.state == .saved {
+                        savedTick += 1
                         onSaved()
                     }
                 }
@@ -113,10 +118,11 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
                 Text(viewModel.state == .saving ? "Saving…" : submitLabel)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
             .disabled(viewModel.state == .saving)
             .listRowBackground(Color.clear)
         }
+        .sensoryFeedback(.success, trigger: savedTick)
     }
 
     private func shortLabel(for fit: FitRating) -> String {
@@ -142,7 +148,7 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 220)
         } else {
-            RoundedRectangle(cornerRadius: 16)
+            VCRadius.shape(VCRadius.card)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(height: 200)
                 .overlay {
@@ -178,11 +184,13 @@ struct StarRatingRow: View {
                 Image(systemName: value <= rating ? "star.fill" : "star")
                     .foregroundStyle(value <= rating ? .yellow : .secondary)
                     .font(.title2)
+                    .scaleEffect(value == rating ? 1.15 : 1.0)
                     .onTapGesture { rating = value }
             }
             Spacer()
         }
         .padding(.vertical, 4)
+        .animation(.snappy, value: rating)
     }
 }
 
@@ -220,16 +228,14 @@ private struct WearAgainRow: View {
             } label: {
                 Label("Yes", systemImage: "hand.thumbsup.fill")
             }
-            .buttonStyle(.bordered)
-            .tint(wearAgain ? .green : .secondary)
+            .buttonStyle(SecondaryButtonStyle(tint: wearAgain ? .green : .secondary))
 
             Button {
                 wearAgain = false
             } label: {
                 Label("No", systemImage: "hand.thumbsdown.fill")
             }
-            .buttonStyle(.bordered)
-            .tint(!wearAgain ? .red : .secondary)
+            .buttonStyle(SecondaryButtonStyle(tint: !wearAgain ? .red : .secondary))
             Spacer()
         }
         .padding(.vertical, 4)

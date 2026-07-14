@@ -22,6 +22,11 @@ struct ManualPairingView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var viewModel: ManualPairingViewModel?
+    /// Ticks once per "Generate Preview" tap and once per completed save —
+    /// each drives its own critical-action haptic without firing on
+    /// unrelated state changes.
+    @State private var generateTick = 0
+    @State private var didSaveTick = 0
 
     var body: some View {
         NavigationStack {
@@ -52,8 +57,13 @@ struct ManualPairingView: View {
         .onChange(of: viewModel?.didSaveOutfit) { _, didSave in
             // Rating now happens exclusively from the Combinations tab — a
             // successful save just closes this screen.
-            if didSave == true { dismiss() }
+            if didSave == true {
+                didSaveTick += 1
+                dismiss()
+            }
         }
+        .sensoryFeedback(.impact(weight: .medium), trigger: generateTick)
+        .sensoryFeedback(.success, trigger: didSaveTick)
     }
 
     @ViewBuilder
@@ -79,7 +89,7 @@ struct ManualPairingView: View {
     private var missingPortraitPrompt: some View {
         VStack(spacing: 12) {
             Image(systemName: "person.crop.circle.badge.plus")
-                .font(.system(size: 48))
+                .font(.largeTitle)
                 .foregroundStyle(.secondary)
             Text("Add a photo on your Profile tab to try on outfits.")
                 .font(.headline)
@@ -112,11 +122,15 @@ struct ManualPairingView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(items, id: \.id) { item in
-                            PairingItemCell(item: item, isSelected: selected?.id == item.id)
-                                .onTapGesture { onSelect(item) }
+                            Button { onSelect(item) } label: {
+                                PairingItemCell(item: item, isSelected: selected?.id == item.id)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(.horizontal, 2)
                 }
+                .scrollBounceBehavior(.basedOnSize)
             }
         }
     }
@@ -129,9 +143,9 @@ struct ManualPairingView: View {
         case .idle:
             Button("Generate Preview") {
                 viewModel.generatePreview()
+                generateTick += 1
             }
-            .buttonStyle(.borderedProminent)
-            .frame(maxWidth: .infinity)
+            .buttonStyle(PrimaryButtonStyle())
             .disabled(!viewModel.canGeneratePreview)
 
         case .validatingPhoto:
@@ -164,14 +178,14 @@ struct ManualPairingView: View {
                     } label: {
                         Label("Dislike", systemImage: "hand.thumbsdown")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SecondaryButtonStyle())
 
                     Button {
                         Task { await viewModel.saveOutfit(liked: true) }
                     } label: {
                         Label("Like", systemImage: "hand.thumbsup")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryButtonStyle())
                 }
             }
 
@@ -181,7 +195,7 @@ struct ManualPairingView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button("Retry") { viewModel.generatePreview() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryButtonStyle())
             }
         }
     }
@@ -200,14 +214,18 @@ private struct PairingItemCell: View {
     let item: WardrobeItem
     let isSelected: Bool
 
+    @State private var isPressed = false
+
     var body: some View {
         swatch
             .frame(width: 100, height: 100)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipShape(VCRadius.shape(VCRadius.swatch))
             .overlay {
-                RoundedRectangle(cornerRadius: 14)
+                VCRadius.shape(VCRadius.swatch)
                     .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
             }
+            .scaleEffect(isSelected ? 1.04 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
     }
 
     @ViewBuilder
@@ -218,7 +236,7 @@ private struct PairingItemCell: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            RoundedRectangle(cornerRadius: 14)
+            VCRadius.shape(VCRadius.swatch)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
         }
     }

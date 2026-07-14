@@ -78,7 +78,7 @@ private struct CombinationDetailPage: View {
                     Label("Rate this outfit", systemImage: "star.bubble")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(PrimaryButtonStyle())
             }
             .padding()
         }
@@ -90,7 +90,8 @@ private struct CombinationDetailPage: View {
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(VCRadius.shape(VCRadius.card))
+                .vcShadow()
         } else {
             Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
                 .foregroundStyle(.secondary)

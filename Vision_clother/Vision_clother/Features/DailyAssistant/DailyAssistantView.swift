@@ -23,12 +23,10 @@ struct DailyAssistantView: View {
     /// expanded back open — the latest round is always expanded regardless
     /// of membership here.
     @State private var expandedRoundIDs: Set<UUID> = []
-    /// Privacy opt-out (PRD §3.8) — backed by the same key
-    /// `RecommendationSettings.useAIRecommendations` reads, so toggling here
-    /// takes effect on the next `requestOutfitIdeas()` call without any
-    /// extra plumbing between the view and the view model.
-    @AppStorage("com.visionclother.useAIRecommendations") private var useAIRecommendations = true
     @FocusState private var isPromptFocused: Bool
+    /// Ticks once per submit tap — drives the send/get-outfit-ideas
+    /// critical-action haptic without firing on unrelated state changes.
+    @State private var sendTick = 0
 
     var body: some View {
         NavigationStack {
@@ -61,7 +59,6 @@ struct DailyAssistantView: View {
             viewModel = DailyAssistantViewModel(
                 repository: SwiftDataWardrobeRepository(modelContext: modelContext),
                 jobQueueStore: jobQueueStore,
-                intentService: ServiceFactory.makeIntentExtractionService(),
                 recommendationService: ServiceFactory.makeOutfitRecommendationService(),
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
@@ -94,6 +91,8 @@ struct DailyAssistantView: View {
                 .padding()
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.basedOnSize)
+            .contentMargins(.bottom, 8, for: .scrollContent)
             .onTapGesture { isPromptFocused = false }
             .onChange(of: viewModel.rounds.count) { _, _ in
                 withAnimation { proxy.scrollTo("status", anchor: .bottom) }
@@ -123,43 +122,46 @@ struct DailyAssistantView: View {
             switch round.outcome {
             case .clarification(let followUpText, let chips):
                 if isLatest, isAwaitingClarification(viewModel) {
-                    ClarificationChipsView(
-                        followUpText: followUpText,
-                        chips: chips,
-                        onSelectChip: { chip in
-                            isPromptFocused = false
-                            Task { await viewModel.continueConversation(with: chip) }
-                        }
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    assistantRow {
+                        ClarificationChipsView(
+                            followUpText: followUpText,
+                            chips: chips,
+                            onSelectChip: { chip in
+                                isPromptFocused = false
+                                Task { await viewModel.continueConversation(with: chip) }
+                            }
+                        )
+                    }
                 } else {
                     // Already answered — shown as a plain, non-interactive
                     // record of what was asked, not a live prompt.
-                    Label(followUpText, systemImage: "bubble.left.and.text.bubble.right")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .padding()
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    assistantRow {
+                        Label(followUpText, systemImage: "bubble.left.and.text.bubble.right")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .premiumCard()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
             case .outfits(let outfits):
-                OutfitsRoundView(
-                    outfits: outfits,
-                    isExpanded: isLatest || expandedRoundIDs.contains(round.id),
-                    isLatest: isLatest,
-                    onToggleExpanded: {
-                        if expandedRoundIDs.contains(round.id) {
-                            expandedRoundIDs.remove(round.id)
-                        } else {
-                            expandedRoundIDs.insert(round.id)
+                assistantRow {
+                    OutfitsRoundView(
+                        outfits: outfits,
+                        isExpanded: isLatest || expandedRoundIDs.contains(round.id),
+                        isLatest: isLatest,
+                        onToggleExpanded: {
+                            if expandedRoundIDs.contains(round.id) {
+                                expandedRoundIDs.remove(round.id)
+                            } else {
+                                expandedRoundIDs.insert(round.id)
+                            }
+                        },
+                        onStartTryOn: { outfit in
+                            viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
                         }
-                    },
-                    onStartTryOn: { outfit in
-                        viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
-                    }
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    )
+                }
             }
         }
     }
@@ -168,9 +170,25 @@ struct DailyAssistantView: View {
         Text(text)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
+            .background(Color.accentColor, in: VCRadius.shape(VCRadius.card))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// Leading circular glyph + assistant-side content, giving the
+    /// assistant a distinct visual identity from the accent-filled user
+    /// bubble rather than an anonymous card floating in the timeline.
+    private func assistantRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: VCSpacing.sm) {
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(VCAccentColor.brand)
+                .frame(width: 28, height: 28)
+                .background(.thinMaterial, in: Circle())
+
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The current in-flight status, trailing the timeline — loading
@@ -194,7 +212,7 @@ struct DailyAssistantView: View {
                 Button("Retry") {
                     Task { await viewModel.retryLastTurn() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PrimaryButtonStyle())
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -204,34 +222,35 @@ struct DailyAssistantView: View {
     }
 
     private func promptInput(viewModel: DailyAssistantViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField(
-                "What are you dressing for today?",
-                text: Binding(get: { viewModel.prompt }, set: { viewModel.prompt = $0 }),
-                axis: .vertical
-            )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(1...3)
-            .focused($isPromptFocused)
-            .submitLabel(.search)
-            .onSubmit { submit(viewModel: viewModel) }
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(.primary.opacity(0.08))
+                .frame(height: 0.5)
 
-            Button(viewModel.rounds.isEmpty ? "Get Outfit Ideas" : "Send") {
-                submit(viewModel: viewModel)
+            VStack(alignment: .leading, spacing: 8) {
+                TextField(
+                    "What are you dressing for today?",
+                    text: Binding(get: { viewModel.prompt }, set: { viewModel.prompt = $0 }),
+                    axis: .vertical
+                )
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...3)
+                .focused($isPromptFocused)
+                .submitLabel(.search)
+                .onSubmit { submit(viewModel: viewModel) }
+
+                Button(viewModel.rounds.isEmpty ? "Get Outfit Ideas" : "Send") {
+                    submit(viewModel: viewModel)
+                    sendTick += 1
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
-
-            // Privacy opt-out (PRD §3.8): off sends nothing off-device for
-            // recommendations — no wardrobe catalog, no style profile — and
-            // uses only the deterministic engine.
-            Toggle("AI-personalized recommendations", isOn: $useAIRecommendations)
-                .font(.caption)
-                .tint(.accentColor)
+            .padding(.horizontal)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
         }
-        .padding(.horizontal)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
     }
 
     /// Routes the prompt field's submit/button through whichever entry
@@ -275,6 +294,14 @@ struct DailyAssistantView: View {
 /// paged carousel + try-on action — identical for the live round and any
 /// manually re-expanded historical round. Owns its own page-selection/
 /// try-on-queued state since each round's carousel is independent.
+///
+/// ⚠️ Carousel implementation note:
+/// Uses `ScrollView(.horizontal)` + `scrollTargetBehavior(.viewAligned)`
+/// instead of `TabView(.page)`. A paged `TabView` nested inside a vertical
+/// `ScrollView` causes UIKit gesture-recogniser conflicts — the outer scroll
+/// wins horizontal drags, making the carousel unswipeable, and any
+/// DragGesture workaround then blocks vertical scrolling. Two orthogonal
+/// `ScrollView`s negotiate gestures automatically at the UIKit level.
 private struct OutfitsRoundView: View {
     let outfits: [OutfitCombination]
     let isExpanded: Bool
@@ -283,60 +310,96 @@ private struct OutfitsRoundView: View {
     let onStartTryOn: (OutfitCombination) -> Void
 
     @State private var selectedOutfitID: OutfitCombination.ID?
-    @State private var justQueuedTryOn = false
+    /// Permanently tracks which outfits in this round have been queued for
+    /// try-on. Once an outfit is queued the button stays locked — there is
+    /// no timer reset. Swiping to a different outfit shows a fresh button
+    /// for that outfit if it hasn't been queued yet.
+    @State private var queuedOutfitIDs: Set<OutfitCombination.ID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !isLatest {
-                Button(action: onToggleExpanded) {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        onToggleExpanded()
+                    }
+                }) {
                     Label(
                         isExpanded ? "Hide these outfits" : "\(outfits.count) outfit idea\(outfits.count == 1 ? "" : "s") — tap to view",
                         systemImage: isExpanded ? "chevron.up" : "chevron.down"
                     )
                     .font(.subheadline)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(SecondaryButtonStyle())
             }
 
             if isExpanded {
-                // `OutfitCardView` already scrolls its own content
-                // internally, so a moderate fixed height (rather than a
-                // GeometryReader-derived one) is sufficient here — this
-                // view sits inside the timeline's own ScrollView, not a
-                // single full-screen carousel.
-                TabView(selection: $selectedOutfitID) {
-                    ForEach(outfits) { outfit in
-                        OutfitCardView(outfit: outfit)
-                            .tag(Optional(outfit.id))
+                VStack(spacing: 8) {
+                    // Horizontal paging carousel.
+                    // `ScrollView(.horizontal)` + `scrollTargetBehavior(.viewAligned)`
+                    // correctly shares gestures with the outer vertical ScrollView:
+                    // horizontal drags go to this carousel, vertical drags pass
+                    // through to the parent — no workarounds required.
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 0) {
+                            ForEach(outfits) { outfit in
+                                OutfitCardView(outfit: outfit)
+                                    .containerRelativeFrame(.horizontal)
+                                    .id(outfit.id)
+                            }
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollTargetBehavior(.viewAligned)
+                    .scrollIndicators(.never)
+                    .frame(height: 460)
+                    .onScrollTargetVisibilityChange(idType: OutfitCombination.ID.self) { visible in
+                        selectedOutfitID = visible.first ?? outfits.first?.id
+                    }
+                    .onAppear { selectedOutfitID = outfits.first?.id }
+
+                    // Manual page-dot indicator (replaces TabView's built-in dots).
+                    if outfits.count > 1 {
+                        HStack(spacing: 6) {
+                            ForEach(outfits) { outfit in
+                                Circle()
+                                    .fill(outfit.id == selectedOutfitID
+                                          ? Color.accentColor
+                                          : Color.secondary.opacity(0.35))
+                                    .frame(
+                                        width: outfit.id == selectedOutfitID ? 8 : 6,
+                                        height: outfit.id == selectedOutfitID ? 8 : 6
+                                    )
+                                    .animation(.spring(response: 0.25, dampingFraction: 0.7),
+                                               value: selectedOutfitID)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .tabViewStyle(.page(indexDisplayMode: .automatic))
-                .frame(height: 460)
-                .onAppear { selectedOutfitID = outfits.first?.id }
 
                 if let selected = outfits.first(where: { $0.id == selectedOutfitID }) {
+                    let alreadyQueued = queuedOutfitIDs.contains(selected.id)
                     Button {
                         onStartTryOn(selected)
-                        justQueuedTryOn = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            justQueuedTryOn = false
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            queuedOutfitIDs.insert(selected.id)
                         }
                     } label: {
-                        if justQueuedTryOn {
+                        if alreadyQueued {
                             Label("Added to queue", systemImage: "checkmark")
                         } else {
                             Text("How does it look on me?")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.accentColor)
-                    .disabled(justQueuedTryOn)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .vcShadow(VCShadow.elevated)
+                    .disabled(alreadyQueued)
+                    .animation(.easeInOut(duration: 0.2), value: alreadyQueued)
                 }
             }
         }
-        .padding()
-        .background(isLatest ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial), in: RoundedRectangle(cornerRadius: 16))
+        .premiumCard(material: isLatest ? .thinMaterial : .ultraThinMaterial, shadow: nil)
     }
 }
 

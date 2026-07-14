@@ -22,6 +22,9 @@ struct ItemDetailView: View {
     @State private var isDeleteAlertPresented = false
     @State private var isEditSheetPresented = false
     @State private var feedbackHistory = FeedbackHistory()
+    /// Ticks once per completed delete — drives the delete haptic (a
+    /// critical-action site) without firing on unrelated state changes.
+    @State private var didDeleteTick = 0
 
     var body: some View {
         NavigationStack {
@@ -80,6 +83,7 @@ struct ItemDetailView: View {
             } message: {
                 Text("This garment will be permanently removed from your closet.")
             }
+            .sensoryFeedback(.warning, trigger: didDeleteTick)
         }
     }
 
@@ -110,9 +114,10 @@ struct ItemDetailView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(VCRadius.shape(VCRadius.card))
+                .vcShadow()
         } else {
-            RoundedRectangle(cornerRadius: 16)
+            VCRadius.shape(VCRadius.card)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(height: 200)
                 .overlay {
@@ -130,6 +135,7 @@ struct ItemDetailView: View {
                             .foregroundStyle(.white.opacity(0.6))
                     }
                 }
+                .vcShadow()
         }
     }
 
@@ -173,11 +179,8 @@ struct ItemDetailView: View {
             Divider()
             colorRow(for: item)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.regularMaterial)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .premiumCard(radius: VCRadius.control, material: .regularMaterial, padding: 0)
+        .clipShape(VCRadius.shape(VCRadius.control))
     }
 
     private func metadataRow(_ label: String, value: String) -> some View {
@@ -267,6 +270,7 @@ struct ItemDetailView: View {
 
                 withAnimation {
                     items.remove(at: index)
+                    didDeleteTick += 1
                     if let nextSelectionID {
                         selectedItemID = nextSelectionID
                     } else {

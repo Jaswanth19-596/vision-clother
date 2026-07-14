@@ -2,12 +2,11 @@
 //  OutfitRecommendationEngine.swift
 //  Vision_clother
 //
-//  Candidate Retrieval + Permutation & Heuristic Engine (PRD.md §2.1, stages
-//  2–3), running entirely on-device. Pure function of (inventory,
-//  constraints, feedback history) → sorted candidates — no I/O. The caller
-//  (a ViewModel) is responsible for loading `FeedbackHistory` from SwiftData
-//  and passing it in, keeping this module isolated and mockable per
-//  CLAUDE.md §4.
+//  Outfit scoring engine: pure function of (items, constraints, feedback
+//  history) → Double score in 0…1. Used by `OutfitRecommendationValidator`
+//  to re-score LLM-proposed outfits and by feedback-learning modules. No
+//  I/O; the caller (a ViewModel) loads `FeedbackHistory` from SwiftData and
+//  passes it in — keeping this module isolated and mockable per CLAUDE.md §4.
 //
 
 import Foundation
@@ -63,99 +62,6 @@ struct FeedbackHistory {
 }
 
 enum OutfitRecommendationEngine {
-    /// Filters the wardrobe by constraint, fills empty slots with Ghost
-    /// Elements (PRD §3.2), cross-products the remaining slots, scores each
-    /// combination, and returns the top `limit` by score descending.
-    ///
-    /// Returns an empty array (never crashes) if, even after ghost-element
-    /// injection, some required slot has no candidate — e.g. an inventory
-    /// with items but none matching the season filter for a mandatory slot.
-    static func generateCandidates(
-        inventory: [WardrobeItem],
-        constraints: StyleConstraints,
-        profile: UserStyleProfile? = nil,
-        weather: WeatherContext? = nil,
-        history: FeedbackHistory = FeedbackHistory(),
-        limit: Int = 5
-    ) -> [OutfitCombination] {
-        let seasonFiltered = inventory.filter { $0.seasonality.contains(constraints.seasonSuitability) }
-        let formalityFiltered = seasonFiltered.filter {
-            constraints.formalityRange.contains($0.formalityScore, tolerance: 0.5)
-        }
-
-        let withGhosts = GhostElementProvider.ensureGhostElements(in: formalityFiltered)
-
-        let tops = withGhosts.filter { $0.slot == .top }
-        let bottoms = withGhosts.filter { $0.slot == .bottom }
-        let footwear = withGhosts.filter { $0.slot == .footwear }
-
-        guard !tops.isEmpty, !bottoms.isEmpty, !footwear.isEmpty else { return [] }
-
-        // Optional accent slots (outerwear + the three newer accents) are
-        // each either "wanted" (weather for outerwear, `desiredAccentSlots`
-        // for the rest) or omitted entirely (a single `nil` option). Each
-        // wanted slot's candidate list is capped to the closest-formality
-        // matches before cross-producing — an uncapped cross-product across
-        // 4 optional axes explodes combinatorially on a well-stocked closet.
-        let optionalSlots: [Slot] = [.outerwear, .headwear, .accessory, .bag]
-        var optionsBySlot: [Slot: [WardrobeItem?]] = [:]
-        for slot in optionalSlots {
-            let wanted = slot == .outerwear
-                ? constraints.weatherLayeringRequired
-                : constraints.desiredAccentSlots.contains(slot)
-            let candidates = withGhosts.filter { $0.slot == slot }
-            if wanted, !candidates.isEmpty {
-                let capped = Self.topCandidates(candidates, closestTo: constraints.formalityRange.midpoint, limit: 3)
-                optionsBySlot[slot] = capped
-            } else {
-                optionsBySlot[slot] = [nil]
-            }
-        }
-
-        var combos: [OutfitCombination] = []
-        for top in tops {
-            for bottom in bottoms {
-                for shoe in footwear {
-                    for outer in optionsBySlot[.outerwear] ?? [nil] {
-                        for headwear in optionsBySlot[.headwear] ?? [nil] {
-                            for accessory in optionsBySlot[.accessory] ?? [nil] {
-                                for bag in optionsBySlot[.bag] ?? [nil] {
-                                    var itemsBySlot: [Slot: WardrobeItem] = [.top: top, .bottom: bottom, .footwear: shoe]
-                                    itemsBySlot[.outerwear] = outer
-                                    itemsBySlot[.headwear] = headwear
-                                    itemsBySlot[.accessory] = accessory
-                                    itemsBySlot[.bag] = bag
-
-                                    let score = outfitScore(
-                                        for: Slot.allCases.compactMap { itemsBySlot[$0] },
-                                        constraints: constraints,
-                                        profile: profile,
-                                        weather: weather,
-                                        history: history
-                                    )
-                                    combos.append(OutfitCombination(itemsBySlot: itemsBySlot, score: score))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return Array(combos.sorted { $0.score > $1.score }.prefix(limit))
-    }
-
-    /// Sorts `candidates` by closeness of `formalityScore` to `target` and
-    /// returns up to `limit`, wrapped as `WardrobeItem?` for direct use as a
-    /// cross-product option list. Bounds the optional-accent-slot
-    /// combinatorics in `generateCandidates` above.
-    private static func topCandidates(_ candidates: [WardrobeItem], closestTo target: Double, limit: Int) -> [WardrobeItem?] {
-        candidates
-            .sorted { abs($0.formalityScore - target) < abs($1.formalityScore - target) }
-            .prefix(limit)
-            .map { $0 }
-    }
-
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))
     /// + mean(AttributeAffinityBonus(Item)) + FormalityPenalty + WeatherPenalty + ProfileColorsBonus + NegativeFeedbackPenalty`
     /// across every item in the combination — applying the Decision Rubric (added 2026-07-10).

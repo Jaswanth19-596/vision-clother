@@ -119,7 +119,7 @@ private struct JobRow: View {
             HStack(spacing: 12) {
                 thumbnail
                     .frame(width: 48, height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(VCRadius.shape(VCRadius.swatch))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
@@ -138,7 +138,7 @@ private struct JobRow: View {
             switch job.status {
             case .failed:
                 Button("Retry", action: onRetry)
-                    .tint(.blue)
+                    .tint(.accentColor)
             case .queued, .processing:
                 Button("Cancel", role: .destructive, action: onCancel)
             case .succeeded:
@@ -196,8 +196,8 @@ private struct JobRow: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.15))
+            VCRadius.shape(VCRadius.swatch)
+                .fill(.thinMaterial)
                 .overlay {
                     Image(systemName: fallbackSystemImage)
                         .foregroundStyle(.secondary)

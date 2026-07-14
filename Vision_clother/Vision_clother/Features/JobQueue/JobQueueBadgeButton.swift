@@ -23,7 +23,7 @@ struct JobQueueBadgeButton: View {
 
                 if jobQueueStore.activeJobCount > 0 {
                     Text("\(jobQueueStore.activeJobCount)")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(.white)
                         .padding(4)
                         .background(Circle().fill(.red))

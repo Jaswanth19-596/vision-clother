@@ -274,12 +274,12 @@ struct ProfileView: View {
                     } label: {
                         Label(viewModel.hasPortrait ? "Retake Photo" : "Take Photo", systemImage: "camera")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SecondaryButtonStyle())
 
                     PhotosPicker(selection: $photoPickerItem, matching: .images) {
                         Label("Choose from Library", systemImage: "photo.on.rectangle")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SecondaryButtonStyle())
                 }
 
                 if viewModel.isValidatingPhoto {
@@ -322,7 +322,7 @@ struct ProfileView: View {
                 ZStack {
                     Circle().fill(Color.secondary.opacity(0.15))
                     Image(systemName: "person.fill")
-                        .font(.system(size: 48))
+                        .font(.largeTitle)
                         .foregroundStyle(.secondary)
                 }
             }

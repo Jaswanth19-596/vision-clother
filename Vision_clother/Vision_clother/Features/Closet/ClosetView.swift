@@ -132,7 +132,7 @@ struct ClosetView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
                     .background(
-                        RoundedRectangle(cornerRadius: 14)
+                        VCRadius.shape(VCRadius.control)
                             .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
                             .foregroundStyle(.tertiary)
                     )
@@ -203,7 +203,7 @@ private struct ClosetItemCell: View {
         VStack(spacing: 4) {
             swatch
                 .frame(width: 84, height: 84)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .clipShape(VCRadius.shape(VCRadius.swatch))
                 .overlay(alignment: .topTrailing) {
                     Text("\(ratingScore)%")
                         .font(.caption2.bold())
@@ -232,7 +232,7 @@ private struct ClosetItemCell: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            RoundedRectangle(cornerRadius: 14)
+            VCRadius.shape(VCRadius.swatch)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .overlay {
                     if item.isGhostElement {

@@ -19,14 +19,12 @@ struct OutfitCardView: View {
     @State private var detailItem: WardrobeItem?
 
     var body: some View {
-        // The parent `TabView(.page)` in `DailyAssistantView` gives each card
-        // a fixed height (page-style tab views have no intrinsic sizing) —
-        // an internal `ScrollView` keeps longer content (e.g. a full
-        // rationale block at large Dynamic Type sizes) reachable instead of
-        // silently clipped by the page's bounds.
-        ScrollView {
-            cardContent
-        }
+        // Previously wrapped in a ScrollView to handle overflow inside
+        // TabView(.page)'s clipped frame. Now the card sits inside a
+        // fixed-height horizontal ScrollView carousel — no inner vertical
+        // scroll needed, and removing it prevents gesture conflicts with
+        // the outer vertical ScrollView.
+        cardContent
     }
 
     private var cardContent: some View {
@@ -35,8 +33,8 @@ struct OutfitCardView: View {
                 Label("Starter Piece", systemImage: "sparkle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, VCSpacing.sm)
+                    .padding(.vertical, VCSpacing.xs)
                     .background(.thinMaterial, in: Capsule())
             }
 
@@ -57,8 +55,7 @@ struct OutfitCardView: View {
                     slotRow(title: "Bag", item: bag)
                 }
             }
-            .padding()
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .premiumCard(radius: VCRadius.prominent, material: .regularMaterial)
 
             Text("Match score \(Int(outfit.score * 100))%")
                 .font(.footnote)
@@ -76,8 +73,7 @@ struct OutfitCardView: View {
 
                     RationaleRow(icon: "sparkles", text: rationale.summary)
                 }
-                .padding()
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .premiumCard(material: .regularMaterial)
             }
         }
         .padding()
@@ -119,9 +115,9 @@ struct OutfitCardView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(VCRadius.shape(VCRadius.swatch))
         } else {
-            RoundedRectangle(cornerRadius: 10)
+            VCRadius.shape(VCRadius.swatch)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(width: 44, height: 44)
                 .overlay {

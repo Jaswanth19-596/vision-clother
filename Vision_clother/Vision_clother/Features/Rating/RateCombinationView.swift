@@ -133,6 +133,10 @@ private struct RateCombinationQuestionsView: View {
     let submitLabel: String
     let onSaved: () -> Void
 
+    /// Ticks once on a completed save — drives the submit-rating
+    /// critical-action haptic.
+    @State private var savedTick = 0
+
     var body: some View {
         Form {
             Section {
@@ -237,6 +241,7 @@ private struct RateCombinationQuestionsView: View {
                 Task {
                     await viewModel.submit()
                     if viewModel.state == .saved {
+                        savedTick += 1
                         onSaved()
                     }
                 }
@@ -244,10 +249,11 @@ private struct RateCombinationQuestionsView: View {
                 Text(viewModel.state == .saving ? "Saving\u{2026}" : submitLabel)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
             .disabled(viewModel.state == .saving)
             .listRowBackground(Color.clear)
         }
+        .sensoryFeedback(.success, trigger: savedTick)
     }
 
     /// Mirrors `CombinationDetailView.CombinationDetailPage.image`'s pattern
@@ -260,7 +266,7 @@ private struct RateCombinationQuestionsView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(VCRadius.shape(VCRadius.card))
         } else {
             Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
                 .foregroundStyle(.secondary)

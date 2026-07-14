@@ -83,7 +83,7 @@ private struct CombinationRow: View {
         HStack(spacing: 12) {
             thumbnail
                 .frame(width: 60, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(VCRadius.shape(VCRadius.swatch))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(combination.displayTitle)
@@ -103,8 +103,8 @@ private struct CombinationRow: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.gray.opacity(0.3))
+            VCRadius.shape(VCRadius.swatch)
+                .fill(.thinMaterial)
                 .overlay {
                     Image(systemName: "photo")
                         .foregroundStyle(.secondary)

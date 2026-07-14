@@ -125,13 +125,13 @@ struct AddItemView: View {
                 Label("Take Photo", systemImage: "camera")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
 
             PhotosPicker(selection: $photoPickerItems, maxSelectionCount: maxSelectionCount, matching: .images) {
                 Label("Choose from Library", systemImage: "photo.on.rectangle")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(SecondaryButtonStyle())
 
             Button {
                 viewModel.startManualEntry(defaultSlot: defaultSlot ?? .top)
@@ -139,7 +139,7 @@ struct AddItemView: View {
                 Label("Enter Details Manually", systemImage: "pencil.line")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(SecondaryButtonStyle())
         }
         .padding()
         .onChange(of: photoPickerItems) { _, newItems in

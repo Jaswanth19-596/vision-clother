@@ -2,16 +2,9 @@
 //  DailyAssistantViewModelTests.swift
 //  Vision_clotherTests
 //
-//  Covers the primary recommendation path and its deterministic fallback
-//  (PRD §2.1a). Try-on generation and `saveCombination` now run through
+//  Covers the primary LLM recommendation path (PRD §2.1a). Try-on generation
+//  and `saveCombination` now run through
 //  `Features/JobQueue/JobQueueStore.swift` — see JobQueueStoreTests.swift.
-//
-//  `RecommendationSettings.useAIRecommendations` is backed by real
-//  `UserDefaults.standard` (one process-wide value, like
-//  `UserPortraitStorage`'s single file — see ManualPairingViewModelTests.swift's
-//  header) so tests that set it can't run concurrently with each other
-//  without racing; this suite is serialized for that reason, matching that
-//  file's convention.
 //
 
 import Foundation
@@ -35,12 +28,9 @@ struct DailyAssistantViewModelTests {
         return RecommendedOutfitWire(itemIDsBySlot: itemIDsBySlot, rationale: rationale)
     }
 
-    // MARK: - Primary recommendation path + deterministic fallback (PRD §2.1a)
+    // MARK: - Primary recommendation path (PRD §2.1a)
 
-    @Test func happyPathUsesRecommendationServiceAndSkipsTheFallbackEngine() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
+    @Test func happyPathUsesRecommendationServiceAndReturnsValidatedOutfits() async throws {
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -55,12 +45,10 @@ struct DailyAssistantViewModelTests {
                 rationale: makeRationale("A clean, neutral pairing.")
             ),
         ]))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Casual Friday"
@@ -70,40 +58,51 @@ struct DailyAssistantViewModelTests {
         #expect(viewModel.candidates.count == 1)
         #expect(viewModel.candidates.first?.structuredRationale?.summary == "A clean, neutral pairing.")
         #expect(viewModel.extractionState == .idle)
-        #expect(intentService.callCount == 0) // fallback pipeline never engaged
     }
 
-    @Test func recommendationServiceThrowingFallsBackToTheDeterministicEngine() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
+    @Test func emptyCatalogReturnsFailure() async throws {
+        // No items in the repository → empty catalog → .failure, not a crash.
         let repository = InMemoryWardrobeRepository()
         let recommendationService = ControllableOutfitRecommendationService()
-        recommendationService.result = .failure(RecommendationFailure())
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Weekend brunch"
 
         await viewModel.requestOutfitIdeas()
 
-        // Empty inventory still produces ghost-backed candidates via the
-        // fallback engine (see OutfitRecommendationEngineTests) — the point
-        // here is that the fallback actually ran.
-        #expect(!viewModel.candidates.isEmpty)
-        #expect(viewModel.extractionState == .idle)
-        #expect(intentService.callCount == 1)
+        guard case .failed = viewModel.extractionState else {
+            Issue.record("Expected .failed for empty catalog, got \(viewModel.extractionState)")
+            return
+        }
+        #expect(recommendationService.callCount == 0) // never reached the LLM call
     }
 
-    @Test func unresolvableRecommendationIDsFallBackToTheDeterministicEngine() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
+    @Test func recommendationServiceThrowingReturnsFailure() async throws {
+        let repository = InMemoryWardrobeRepository()
+        repository.savedItems = [makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear)]
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.result = .failure(RecommendationFailure())
 
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.prompt = "Weekend brunch"
+
+        await viewModel.requestOutfitIdeas()
+
+        guard case .failed = viewModel.extractionState else {
+            Issue.record("Expected .failed when recommendation service throws")
+            return
+        }
+    }
+
+    @Test func unresolvableRecommendationIDsReturnsFailure() async throws {
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -112,7 +111,7 @@ struct DailyAssistantViewModelTests {
 
         let recommendationService = ControllableOutfitRecommendationService()
         // References ids that don't exist in the inventory at all —
-        // every outfit must fail validation.
+        // every outfit must fail validation, yielding an empty validated set → .failure.
         recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
             makeWire(
                 top: UUID().uuidString, bottom: UUID().uuidString,
@@ -120,21 +119,20 @@ struct DailyAssistantViewModelTests {
                 rationale: makeRationale("Hallucinated.")
             ),
         ]))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Job interview"
 
         await viewModel.requestOutfitIdeas()
 
-        #expect(!viewModel.candidates.isEmpty)
-        #expect(viewModel.extractionState == .idle)
-        #expect(intentService.callCount == 1)
+        guard case .failed = viewModel.extractionState else {
+            Issue.record("Expected .failed when all recommended IDs fail validation")
+            return
+        }
     }
 
     @Test func resolvedConstraintsFromTheRecommendationResponseEnforceFormalityAlignmentOnTheLLMPath() async throws {
@@ -142,12 +140,7 @@ struct DailyAssistantViewModelTests {
         // `constraints: nil` to the validator, so Tier 1 dress-code alignment
         // was only ever prompt guidance, never a deterministic check. Now the
         // recommendation response self-reports `resolved_constraints` and the
-        // view model threads it through — without a second intent-extraction
-        // call (`intentService.callCount` must stay 0, same as the existing
-        // happy-path invariant).
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
+        // view model threads it through.
         let repository = InMemoryWardrobeRepository()
         // All three items are mutually coherent (formality 2.0, small
         // pairwise deltas) so PairCompatibilityScoring's *internal*
@@ -175,12 +168,10 @@ struct DailyAssistantViewModelTests {
                 seasonSuitability: .summer
             )
         ))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Black tie gala"
@@ -193,38 +184,11 @@ struct DailyAssistantViewModelTests {
         )
 
         #expect(candidate.score < scoreWithoutConstraints)
-        #expect(intentService.callCount == 0) // still no extra LLM round-trip on the happy path
-    }
-
-    @Test func privacyOptOutSkipsTheRecommendationServiceEntirely() async throws {
-        RecommendationSettings.useAIRecommendations = false
-        defer { RecommendationSettings.useAIRecommendations = true }
-
-        let repository = InMemoryWardrobeRepository()
-        let recommendationService = ControllableOutfitRecommendationService()
-        let intentService = ControllableIntentExtractionService()
-
-        let viewModel = DailyAssistantViewModel(
-            repository: repository,
-            jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
-            recommendationService: recommendationService
-        )
-        viewModel.prompt = "Grocery run"
-
-        await viewModel.requestOutfitIdeas()
-
-        #expect(recommendationService.callCount == 0)
-        #expect(intentService.callCount == 1)
-        #expect(!viewModel.candidates.isEmpty)
     }
 
     // MARK: - Clarification Loop (Stylist Intelligence Engine ADR, Phase 2)
 
-    @Test func ambiguousOccasionEntersAwaitingClarificationStateWithoutEngagingTheFallback() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
+    @Test func ambiguousOccasionEntersAwaitingClarificationState() async throws {
         let repository = InMemoryWardrobeRepository()
         repository.savedItems = [makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear)]
 
@@ -235,12 +199,10 @@ struct DailyAssistantViewModelTests {
             followUpText: "What kind of event are you dressing for?",
             suggestedChips: ["Party", "Church", "Job Interview", "Casual Hangout"]
         ))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear today?"
@@ -253,14 +215,10 @@ struct DailyAssistantViewModelTests {
         }
         #expect(followUpText == "What kind of event are you dressing for?")
         #expect(chips == ["Party", "Church", "Job Interview", "Casual Hangout"])
-        #expect(intentService.callCount == 0) // fallback pipeline never engaged
         #expect(recommendationService.receivedIsFinalTurnFlags == [false])
     }
 
     @Test func chipReplyContinuesTheSameConversationAndPassesFullHistoryToTheService() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -282,12 +240,10 @@ struct DailyAssistantViewModelTests {
                 ),
             ])),
         ]
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear today?"
@@ -309,13 +265,9 @@ struct DailyAssistantViewModelTests {
             "What should I wear today?", "What kind of event are you dressing for?", "Funeral",
         ])
         #expect(recommendationService.receivedIsFinalTurnFlags == [false, false])
-        #expect(intentService.callCount == 0)
     }
 
     @Test func turnCapForcesTheThirdCallAndHonorsTheForcedDecision() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -335,12 +287,10 @@ struct DailyAssistantViewModelTests {
 
         let recommendationService = ControllableOutfitRecommendationService()
         recommendationService.results = [.success(clarify), .success(clarify), .success(final)]
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear?"
@@ -358,34 +308,33 @@ struct DailyAssistantViewModelTests {
         #expect(!viewModel.candidates.isEmpty)
         #expect(recommendationService.callCount == 3)
         #expect(recommendationService.receivedIsFinalTurnFlags == [false, false, true])
-        #expect(intentService.callCount == 0) // still the AI path, forced to decide, never the fallback
     }
 
-    @Test func modelDisobeyingTheForcedFinalTurnStillFallsBackDeterministically() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
-        // Empty inventory forces ghost-backed fallback candidates, same
-        // pattern as recommendationServiceThrowingFallsBackToTheDeterministicEngine.
+    @Test func modelDisobeyingTheForcedFinalTurnReturnsFailure() async throws {
+        // Empty inventory forces an empty catalog → .failure before the LLM
+        // is even called. This covers the edge case where the model can never
+        // be reached, not just the disobedient-model case.
         let repository = InMemoryWardrobeRepository()
 
         let clarify = OutfitRecommendationResponse(
             outfits: [], intentClear: false, followUpText: "Still unclear.", suggestedChips: ["Party"]
         )
-        // Disobeys the FINAL TURN instruction: still intentClear == false on
-        // the 3rd (forced) call.
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        // Provide two clarification responses followed by a disobedient final
+        // that still has no valid outfits.
         let disobedientFinal = OutfitRecommendationResponse(
             outfits: [], intentClear: false, followUpText: "Still can't tell.", suggestedChips: ["Party"]
         )
-
-        let recommendationService = ControllableOutfitRecommendationService()
         recommendationService.results = [.success(clarify), .success(clarify), .success(disobedientFinal)]
-        let intentService = ControllableIntentExtractionService()
+
+        // We need items in the inventory so the catalog is non-empty and the
+        // LLM path is actually exercised.
+        repository.savedItems = [makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear)]
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear?"
@@ -393,17 +342,18 @@ struct DailyAssistantViewModelTests {
         await viewModel.continueConversation(with: "Not sure")
         await viewModel.continueConversation(with: "Still not sure")
 
-        #expect(viewModel.extractionState == .idle) // doesn't loop into a 4th clarification round
-        #expect(!viewModel.candidates.isEmpty)
+        // Disobedient model returns intentClear==false on a forced turn +
+        // empty outfits → validation yields nothing → .failure, not an
+        // infinite clarification loop.
+        guard case .failed = viewModel.extractionState else {
+            Issue.record("Expected .failed when disobedient model returns empty outfits on the forced turn")
+            return
+        }
         #expect(recommendationService.callCount == 3)
         #expect(recommendationService.receivedIsFinalTurnFlags == [false, false, true])
-        #expect(intentService.callCount == 1) // documented edge-case fallback, not a new invariant break
     }
 
     @Test func resetConversationReturnsToIdleAndClearsHistory() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -415,12 +365,10 @@ struct DailyAssistantViewModelTests {
             outfits: [], intentClear: false,
             followUpText: "What's the occasion?", suggestedChips: ["Party", "Work"]
         ))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear?"
@@ -455,9 +403,6 @@ struct DailyAssistantViewModelTests {
     // MARK: - Conversational Refinement Loop (Stylist Intelligence Engine ADR, Phase 2 addendum)
 
     @Test func refinementContinuesTheSameConversationAfterASuccessfulRound() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -474,12 +419,10 @@ struct DailyAssistantViewModelTests {
                 makeWire(top: secondTop.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString, rationale: makeRationale("No bag, different top.")),
             ])),
         ]
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Casual Friday"
@@ -500,13 +443,9 @@ struct DailyAssistantViewModelTests {
         // first round's outfits (`assistantSummaryText`), not UI prose.
         #expect(secondHistory[1].text.contains("Outfit 1"))
         #expect(secondHistory.last?.text == "No bag or graphic shirt, give me something else")
-        #expect(intentService.callCount == 0)
     }
 
     @Test func refinementTurnsNeverForceAFinalDecisionRegardlessOfCount() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -517,12 +456,10 @@ struct DailyAssistantViewModelTests {
         recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
             makeWire(top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString, rationale: makeRationale("Pick.")),
         ]))
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Casual Friday"
@@ -538,9 +475,6 @@ struct DailyAssistantViewModelTests {
     }
 
     @Test func roundsRecordBothClarificationAndOutfitsOutcomesInOrder() async throws {
-        RecommendationSettings.useAIRecommendations = true
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)
@@ -557,12 +491,10 @@ struct DailyAssistantViewModelTests {
                 makeWire(top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString, rationale: makeRationale("Party pick.")),
             ])),
         ]
-        let intentService = ControllableIntentExtractionService()
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "What should I wear?"
@@ -588,19 +520,20 @@ struct DailyAssistantViewModelTests {
     }
 
     @Test func retryLastTurnResendsTheFailedTurnWithoutWipingPriorRounds() async throws {
-        RecommendationSettings.useAIRecommendations = false
-        defer { RecommendationSettings.useAIRecommendations = true }
-
         let repository = InMemoryWardrobeRepository()
-        repository.savedItems = [makeItem(slot: .top), makeItem(slot: .bottom), makeItem(slot: .footwear)]
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [top, bottom, footwear]
 
         let recommendationService = ControllableOutfitRecommendationService()
-        let intentService = ControllableIntentExtractionService()
+        recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
+            makeWire(top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString, rationale: makeRationale("Pick.")),
+        ]))
 
         let viewModel = DailyAssistantViewModel(
             repository: repository,
             jobQueueStore: makeJobQueueStore(repository: repository),
-            intentService: intentService,
             recommendationService: recommendationService
         )
         viewModel.prompt = "Casual Friday"
@@ -609,18 +542,20 @@ struct DailyAssistantViewModelTests {
         #expect(viewModel.rounds.count == 1)
         #expect(viewModel.extractionState == .idle)
 
-        intentService.errorToThrow = RecommendationFailure()
+        recommendationService.result = .failure(RecommendationFailure())
         await viewModel.continueConversation(with: "No bag please")
 
         guard case .failed = viewModel.extractionState else {
-            Issue.record("Expected .failed after the intent service threw")
+            Issue.record("Expected .failed after the recommendation service threw")
             return
         }
         // Today's Retry (`requestOutfitIdeas()`) would wipe the whole
         // conversation — `retryLastTurn()` must not.
         #expect(viewModel.rounds.count == 1)
 
-        intentService.errorToThrow = nil
+        recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
+            makeWire(top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString, rationale: makeRationale("Retry pick.")),
+        ]))
         await viewModel.retryLastTurn()
 
         #expect(viewModel.extractionState == .idle)
@@ -736,25 +671,3 @@ private final class ControllableOutfitRecommendationService: OutfitRecommendatio
 }
 
 private struct RecommendationFailure: Error {}
-
-/// Spies on how many times the fallback intent-extraction path is actually
-/// engaged — the assertion that matters across the primary/fallback tests
-/// isn't just "candidates non-empty" (ghost elements guarantee that on
-/// their own) but *which* pipeline produced them.
-private final class ControllableIntentExtractionService: IntentExtractionService {
-    private(set) var callCount = 0
-    /// Set to force this call to throw instead of returning — used to drive
-    /// the ViewModel into `.failed` for retry-after-failure tests.
-    var errorToThrow: Error?
-
-    func extractConstraints(prompt: String, weather: WeatherContext?) async throws -> StyleConstraints {
-        callCount += 1
-        if let errorToThrow { throw errorToThrow }
-        return StyleConstraints(
-            formalityRange: FormalityRange(lowerBound: 1.0, upperBound: 5.0),
-            weatherLayeringRequired: false,
-            colorPaletteVibe: [.neutral],
-            seasonSuitability: .summer
-        )
-    }
-}

@@ -25,9 +25,9 @@ struct GarmentAttributesFormView: View {
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(height: 120)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .clipShape(VCRadius.shape(VCRadius.swatch))
                     } else {
-                        RoundedRectangle(cornerRadius: 10)
+                        VCRadius.shape(VCRadius.swatch)
                             .fill(Color(hex: model.primaryHex) ?? .gray)
                             .frame(width: 80, height: 80)
                             .overlay {
@@ -124,9 +124,9 @@ struct GarmentAttributesFormView: View {
                             ForEach(model.styleTags, id: \.self) { tag in
                                 Text(tag)
                                     .font(.caption)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                                    .padding(.horizontal, VCSpacing.sm)
+                                    .padding(.vertical, VCSpacing.xs)
+                                    .background(.thinMaterial, in: Capsule())
                             }
                         }
                     }
@@ -156,7 +156,7 @@ struct GarmentAttributesFormView: View {
                 Text(saveButtonLabel)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PrimaryButtonStyle())
             .listRowBackground(Color.clear)
         }
     }
