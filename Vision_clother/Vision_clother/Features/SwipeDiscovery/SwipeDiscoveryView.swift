@@ -70,17 +70,20 @@ struct SwipeDiscoveryView: View {
         if stack.isEmpty {
             emptyOrLoadingState(viewModel: viewModel)
         } else {
-            ZStack {
-                ForEach(Array(stack.enumerated()), id: \.element.id) { index, photo in
-                    cardView(photo)
-                        .zIndex(Double(stack.count - index))
-                        .scaleEffect(index == 0 ? 1 : 1 - CGFloat(index) * 0.04)
-                        .offset(y: index == 0 ? 0 : CGFloat(index) * 8)
-                        .offset(index == 0 ? dragOffset : .zero)
-                        .rotationEffect(index == 0 ? .degrees(Double(dragOffset.width / 20)) : .zero)
-                        .allowsHitTesting(index == 0)
-                        .gesture(dragGesture(viewModel: viewModel))
+            GeometryReader { proxy in
+                ZStack {
+                    ForEach(Array(stack.enumerated()), id: \.element.id) { index, photo in
+                        cardView(photo, size: proxy.size)
+                            .zIndex(Double(stack.count - index))
+                            .scaleEffect(index == 0 ? 1 : 1 - CGFloat(index) * 0.04)
+                            .offset(y: index == 0 ? 0 : CGFloat(index) * 8)
+                            .offset(index == 0 ? dragOffset : .zero)
+                            .rotationEffect(index == 0 ? .degrees(Double(dragOffset.width / 20)) : .zero)
+                            .allowsHitTesting(index == 0)
+                            .gesture(dragGesture(viewModel: viewModel))
+                    }
                 }
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
         }
     }
@@ -106,7 +109,7 @@ struct SwipeDiscoveryView: View {
         .padding(VCSpacing.xl)
     }
 
-    private func cardView(_ photo: StockPhoto) -> some View {
+    private func cardView(_ photo: StockPhoto, size: CGSize) -> some View {
         ZStack(alignment: .bottom) {
             AsyncImage(url: URL(string: photo.imageURLString)) { phase in
                 switch phase {
@@ -120,7 +123,7 @@ struct SwipeDiscoveryView: View {
                         .overlay(ProgressView())
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: size.width, height: size.height)
             .clipped()
 
             HStack {
@@ -132,7 +135,7 @@ struct SwipeDiscoveryView: View {
             .padding(VCSpacing.sm)
             .background(.black.opacity(0.35))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: size.width, height: size.height)
         .clipShape(VCRadius.shape(VCRadius.prominent))
         .overlay(alignment: .topLeading) { swipeStamp(edge: .leading) }
         .overlay(alignment: .topTrailing) { swipeStamp(edge: .trailing) }

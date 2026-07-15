@@ -67,14 +67,14 @@ final class PexelsImageFeedService: StockImageFeedService {
     }
 
     static let defaultQueryPool: [String] = [
-        "outfit of the day",
-        "street style outfit",
-        "clothing flatlay",
-        "fashion outfit closeup",
-        "wardrobe clothing",
-        "minimalist outfit style",
-        "streetwear clothing",
-        "casual outfit clothing",
+        "menswear street style",
+        "mens clothing flatlay",
+        "men minimalist style outfit",
+        "streetwear men fashion",
+        "men smart casual look",
+        "mens capsule wardrobe aesthetic",
+        "menswear casual details",
+        "men summer outfit style" // or swap seasonally (e.g., "men fall layer outfit")
     ]
 
     func fetchDeck(count: Int) async throws -> [StockPhoto] {
