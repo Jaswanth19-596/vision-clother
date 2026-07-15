@@ -59,11 +59,23 @@ struct FeedbackHistory {
     /// the negative-feedback penalty. Empty by default, so scoring is
     /// unchanged when no such history exists.
     var itemNegativeSignal: [UUID: Double] = [:]
+    /// Learned visual taste from the swipe deck (`Domain/VisualPreferenceProfile.swift`,
+    /// `Features/SwipeDiscovery/`). Defaults to an empty profile — every
+    /// `affinityBonus(forEmbedding:)` call then reads as 0, so `outfitScore`
+    /// is unchanged from before this feature existed.
+    var visualProfile: VisualPreferenceProfile = VisualPreferenceProfile()
+    /// Cached embeddings for the current inventory's photos
+    /// (`Models/SwipeDiscovery.swift`'s `WardrobeItemEmbedding`, keyed by
+    /// `WardrobeItem.id`), populated by `WardrobeRepository.fetchFeedbackHistory()`.
+    /// An item with no entry (no photo yet, or a Ghost Element) scores a
+    /// neutral 0 bonus — see `VisualPreferenceProfile.affinityBonus`.
+    var itemEmbeddings: [UUID: [Float]] = [:]
 }
 
 enum OutfitRecommendationEngine {
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))
-    /// + mean(AttributeAffinityBonus(Item)) + FormalityPenalty + WeatherPenalty + ProfileColorsBonus + NegativeFeedbackPenalty`
+    /// + mean(AttributeAffinityBonus(Item)) + mean(VisualAffinityBonus(Item))
+    /// + FormalityPenalty + WeatherPenalty + ProfileColorsBonus + NegativeFeedbackPenalty`
     /// across every item in the combination — applying the Decision Rubric (added 2026-07-10).
     static func outfitScore(
         for items: [WardrobeItem],
@@ -94,6 +106,16 @@ enum OutfitRecommendationEngine {
 
         let affinityBonuses: [Double] = items.map { history.attributeProfile.affinityBonus(for: $0) }
         let meanAffinityBonus = affinityBonuses.isEmpty ? 0 : affinityBonuses.reduce(0, +) / Double(affinityBonuses.count)
+
+        // Swipe-to-Learn Visual Taste (added 2026-07-14): a second,
+        // independent re-scoring signal parallel to meanAffinityBonus above —
+        // see Domain/VisualPreferenceProfile.swift. Reads a per-item cached
+        // embedding rather than the item itself, since the LLM-facing catalog
+        // never carries images (CLAUDE.md's Core Invariant); this term only
+        // ever runs after LLM candidates return, never influencing the LLM
+        // call itself.
+        let visualBonuses: [Double] = items.map { history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[$0.id]) }
+        let meanVisualBonus = visualBonuses.isEmpty ? 0 : visualBonuses.reduce(0, +) / Double(visualBonuses.count)
 
         // Read Disliked Signals (added 2026-07-11): previously `likedOverall`
         // and `.normalizedRating` were collected but never read by scoring —
@@ -178,7 +200,7 @@ enum OutfitRecommendationEngine {
             }
         }
 
-        return (meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
+        return (meanPairScore + meanPreference + meanAffinityBonus + meanVisualBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
             .clamped(to: 0...1)
     }
 }

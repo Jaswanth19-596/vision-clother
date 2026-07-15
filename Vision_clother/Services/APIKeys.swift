@@ -23,6 +23,13 @@ enum APIKeys {
         value(for: "FAL_API_KEY")
     }
 
+    /// Powers `Services/StockImageFeedService.swift`'s `PexelsImageFeedService`
+    /// (Swipe-to-Learn Visual Taste's stock-photo deck) — from
+    /// [pexels.com/api](https://www.pexels.com/api/).
+    static var pexels: String? {
+        value(for: "PEXELS_API_KEY")
+    }
+
     /// `nil` both when the key is genuinely blank and when `Secrets.plist`
     /// hasn't been created yet — callers should treat both cases identically
     /// and fall back to the mock service rather than crash.

@@ -252,6 +252,7 @@ struct ProfileView: View {
     private func content(viewModel: ProfileViewModel) -> some View {
         List {
             identitySection(viewModel: viewModel)
+            swipeDiscoverySection
             tasteInWordsSection(viewModel: viewModel)
             colorAffinitySection(viewModel: viewModel)
             formalitySection(viewModel: viewModel)
@@ -374,6 +375,20 @@ struct ProfileView: View {
         VStack(spacing: 2) {
             Text(value).font(.caption.weight(.semibold))
             Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Discover Your Style (Swipe-to-Learn Visual Taste)
+
+    private var swipeDiscoverySection: some View {
+        Section {
+            NavigationLink {
+                SwipeDiscoveryView()
+            } label: {
+                Label("Discover Your Style", systemImage: "hand.draw.fill")
+            }
+        } footer: {
+            Text("Swipe through outfit photos — liking and disliking looks helps us fine-tune your recommendations.")
         }
     }
 
@@ -573,6 +588,7 @@ private struct PortraitCameraCaptureView: UIViewControllerRepresentable {
             for: [
                 WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
                 SavedCombination.self, ItemRating.self, UserStyleProfile.self,
+                SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
             ],
             inMemory: true
         )

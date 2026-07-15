@@ -406,6 +406,7 @@ private struct OutfitsRoundView: View {
 #Preview {
     let container = try! ModelContainer(
         for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
+        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     DailyAssistantView()

@@ -338,7 +338,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func save(_ item: WardrobeItem) throws { savedItems.append(item) }
     func update(_ item: WardrobeItem) throws {}
     func delete(_ item: WardrobeItem) throws { savedItems.removeAll { $0.id == item.id } }
-    func fetchFeedbackHistory() throws -> FeedbackHistory { FeedbackHistory() }
+    func fetchFeedbackHistory() async throws -> FeedbackHistory { FeedbackHistory() }
 
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {
         recordedOutfitFeedback.append((outfitID, likedOverall))
@@ -370,6 +370,11 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
             avoidColors: wire.avoidColors
         )
     }
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {}
+    func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
+    func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
+    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }
+    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {}
 }
 
 /// Fires exactly one `.submitting` -> (delay) -> `.succeeded` cycle per

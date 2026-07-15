@@ -222,7 +222,9 @@ struct ItemDetailView: View {
     /// constructed locally.
     private func loadFeedbackHistory() {
         let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
-        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        Task {
+            feedbackHistory = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        }
     }
 
     private func ratingText(for item: WardrobeItem) -> String {

@@ -275,7 +275,7 @@ final class DailyAssistantViewModel {
 
         do {
             let inventory = try repository.fetchInventory()
-            let history = try repository.fetchFeedbackHistory()
+            let history = try await repository.fetchFeedbackHistory()
             let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
 
             let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }

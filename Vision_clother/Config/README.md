@@ -8,6 +8,7 @@ Dev-only API keys, read at runtime by `Services/APIKeys.swift`. **`Secrets.plist
 2. Fill in your keys:
    - `OPENROUTER_API_KEY` — from [openrouter.ai](https://openrouter.ai) (used by `Services/OpenRouterIntentExtractionService.swift`)
    - `FAL_API_KEY` — from [fal.ai](https://fal.ai) (used by `Services/FalTryOnRenderService.swift`)
+   - `PEXELS_API_KEY` — from [pexels.com/api](https://www.pexels.com/api/) (used by `Services/StockImageFeedService.swift`'s Swipe-to-Learn Visual Taste photo deck)
 3. Rebuild. With blank keys, `APIKeys.swift` returns `nil` and the app should be wired (in the ViewModel layer) to fall back to `MockIntentExtractionService` / `MockTryOnRenderService`.
 
 ## ⚠️ Do not ship this

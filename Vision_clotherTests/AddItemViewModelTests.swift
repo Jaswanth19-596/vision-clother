@@ -106,7 +106,7 @@ final class MockWardrobeRepository: WardrobeRepository {
         savedItems.removeAll { $0.id == item.id }
     }
 
-    func fetchFeedbackHistory() throws -> FeedbackHistory {
+    func fetchFeedbackHistory() async throws -> FeedbackHistory {
         FeedbackHistory()
     }
 
@@ -127,4 +127,9 @@ final class MockWardrobeRepository: WardrobeRepository {
 
     func fetchUserProfile() throws -> UserStyleProfile? { nil }
     func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {}
+    func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
+    func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
+    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }
+    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {}
 }

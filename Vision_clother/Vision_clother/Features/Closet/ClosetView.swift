@@ -96,7 +96,9 @@ struct ClosetView: View {
     /// owns directly, which doesn't trigger a tab-selection change).
     private func loadFeedbackHistory() {
         let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
-        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        Task {
+            feedbackHistory = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        }
     }
 
     private func slotSection(_ slot: Slot) -> some View {

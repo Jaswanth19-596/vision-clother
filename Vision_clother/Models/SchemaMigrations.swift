@@ -148,6 +148,30 @@ enum SchemaV3: VersionedSchema {
     }
 }
 
+/// V3 -> V4 adds three brand-new, independent tables (`SwipeEvent`,
+/// `VisualPreferenceState`, `WardrobeItemEmbedding` — Swipe-to-Learn Visual
+/// Taste) with zero changes to any existing V3 type, so like V2 -> V3 this
+/// needs no `.custom` stage — `.lightweight` lets SwiftData infer the
+/// migration.
+enum SchemaV4: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+        ]
+    }
+}
+
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
 /// `.custom` stage below: `willMigrate` runs against the still-V1-shaped
 /// store (old columns present, new ones absent), `didMigrate` runs after the
@@ -159,9 +183,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -201,5 +225,10 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV2toV3 = MigrationStage.lightweight(
         fromVersion: SchemaV2.self,
         toVersion: SchemaV3.self
+    )
+
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: SchemaV3.self,
+        toVersion: SchemaV4.self
     )
 }

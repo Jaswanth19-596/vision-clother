@@ -83,4 +83,18 @@ enum ServiceFactory {
     static func makeNotificationService() -> JobNotificationService {
         UNUserNotificationJobService()
     }
+
+    /// On-device Vision framework (`VNGenerateImageFeaturePrintRequest`),
+    /// same posture as `makeBackgroundIsolationService` — no API key gate,
+    /// runs everywhere. Powers Swipe-to-Learn Visual Taste.
+    static func makeImageEmbeddingService() -> ImageEmbeddingService {
+        VisionFeaturePrintEmbeddingService()
+    }
+
+    /// Swipe-to-Learn Visual Taste's photo deck — same key-gated mock/real
+    /// swap as `makeIntentExtractionService`, so the swipe deck stays
+    /// interactive in Simulator with no Pexels key configured.
+    static func makeStockImageFeedService() -> StockImageFeedService {
+        APIKeys.pexels != nil ? PexelsImageFeedService() : MockStockImageFeedService()
+    }
 }

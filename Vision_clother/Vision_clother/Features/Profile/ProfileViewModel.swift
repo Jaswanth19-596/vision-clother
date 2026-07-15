@@ -54,7 +54,10 @@ final class ProfileViewModel {
     }
 
     func refreshFeedbackHistory() {
-        feedbackHistory = (try? repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.feedbackHistory = (try? await self.repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+        }
     }
 
     /// Validate-then-save-then-derive, in that order — a profile screen is

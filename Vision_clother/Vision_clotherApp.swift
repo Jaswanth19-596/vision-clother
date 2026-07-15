@@ -28,7 +28,7 @@ struct Vision_clotherApp: App {
         let container: ModelContainer
         do {
             container = try ModelContainer(
-                for: Schema(SchemaV3.models),
+                for: Schema(SchemaV4.models),
                 migrationPlan: SavedCombinationMigrationPlan.self
             )
         } catch {

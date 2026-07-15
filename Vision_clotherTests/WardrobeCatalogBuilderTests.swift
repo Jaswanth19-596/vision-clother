@@ -113,4 +113,39 @@ struct WardrobeCatalogBuilderTests {
         #expect(slotsPresent.contains(.bottom))
         #expect(slotsPresent.contains(.footwear))
     }
+
+    // MARK: - Embedding-ranked catalog retrieval (added 2026-07-14)
+
+    @Test func oversizedSlotWithATrainedVisualProfilePrefersHigherAffinityItems() {
+        let lovedItems = (0..<20).map { _ in makeItem(slot: .top) }
+        let neutralItems = (0..<20).map { _ in makeItem(slot: .top) }
+
+        var history = FeedbackHistory()
+        history.visualProfile = VisualPreferenceProfile(likedCentroids: [VisualCentroid(vector: [1, 0, 0], weight: 5)])
+        for item in lovedItems {
+            history.itemEmbeddings[item.id] = [1, 0, 0]
+        }
+        // neutralItems intentionally have no cached embedding — they should
+        // rank behind the loved ones, not crash or throw NaN into the sort.
+
+        let (entries, _) = WardrobeCatalogBuilder.build(from: lovedItems + neutralItems, maxItems: 10, history: history)
+
+        let survivingIDs = Set(entries.map(\.id))
+        for item in lovedItems {
+            #expect(survivingIDs.contains(item.id.uuidString))
+        }
+    }
+
+    @Test func coldStartWithNoLearnedTasteLeavesTruncationOrderUnchanged() {
+        // Regression: an untrained (default, empty) `VisualPreferenceProfile`
+        // must leave slot truncation byte-for-byte identical to building with
+        // no history at all — every item scores a neutral 0, and Swift's
+        // stable sort preserves original order for ties.
+        let items = (0..<20).map { _ in makeItem(slot: .top) }
+
+        let (withoutHistory, _) = WardrobeCatalogBuilder.build(from: items, maxItems: 10)
+        let (withEmptyHistory, _) = WardrobeCatalogBuilder.build(from: items, maxItems: 10, history: FeedbackHistory())
+
+        #expect(withoutHistory.map(\.id) == withEmptyHistory.map(\.id))
+    }
 }

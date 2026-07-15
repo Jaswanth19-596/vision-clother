@@ -41,7 +41,7 @@ protocol WardrobeRepository {
 
     /// Aggregates all persisted feedback into the shape the deterministic
     /// scoring engine expects (`Domain/OutfitRecommendationEngine.swift`).
-    func fetchFeedbackHistory() throws -> FeedbackHistory
+    func fetchFeedbackHistory() async throws -> FeedbackHistory
 
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws
@@ -93,14 +93,44 @@ protocol WardrobeRepository {
     /// row rather than accumulating history, mirroring
     /// Services/UserPortraitStorage.swift's "one portrait" posture.
     func saveUserProfile(_ wire: UserStyleProfileWire) throws
+
+    /// Swipe-to-Learn Visual Taste (`Features/SwipeDiscovery/`): records one
+    /// like/dislike swipe and folds its embedding into the persisted
+    /// `VisualPreferenceState` centroids in the same call — the "hot" path a
+    /// swipe gesture triggers on every card. See `Domain/VisualPreferenceProfile.swift`.
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws
+    /// Current learned visual-taste state, `nil` before the first swipe.
+    func fetchVisualPreferenceState() throws -> VisualPreferenceState?
+    /// Direct upsert of the visual-taste centroids — used by
+    /// `Domain/VisualPreferenceProfile.build(from:dislikedEmbeddings:)`'s
+    /// recovery path (rebuilding from `SwipeEvent` history) rather than
+    /// replaying swipes one at a time through `recordSwipe`.
+    func updateVisualPreferenceState(
+        likedCentroids: [VisualCentroid],
+        dislikedCentroids: [VisualCentroid],
+        embeddingDimension: Int
+    ) throws
+    /// Cached embedding for one wardrobe item's current photo, `nil` if never
+    /// computed (or the item has no photo). `fetchFeedbackHistory()` is the
+    /// only caller that needs this in bulk; exposed individually for tests
+    /// and recovery tooling.
+    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding?
+    /// Upserts one item's cached embedding, keyed by `itemID`.
+    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws
 }
 
 @MainActor
 final class SwiftDataWardrobeRepository: WardrobeRepository {
     private let modelContext: ModelContext
+    /// On-device Vision embedding extractor (`Services/ImageEmbeddingService.swift`)
+    /// — defaulted to the real implementation so every pre-existing call site
+    /// (`SwiftDataWardrobeRepository(modelContext:)`) keeps compiling
+    /// unchanged; tests inject `MockImageEmbeddingService`.
+    private let embeddingService: ImageEmbeddingService
 
-    init(modelContext: ModelContext) {
+    init(modelContext: ModelContext, embeddingService: ImageEmbeddingService = VisionFeaturePrintEmbeddingService()) {
         self.modelContext = modelContext
+        self.embeddingService = embeddingService
     }
 
     func fetchInventory() throws -> [WardrobeItem] {
@@ -126,12 +156,21 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.save()
     }
 
-    func fetchFeedbackHistory() throws -> FeedbackHistory {
+    func fetchFeedbackHistory() async throws -> FeedbackHistory {
         let now = Date.now
-        let pairFeedbacks = try modelContext.fetch(FetchDescriptor<PairFeedback>())
-        let itemFeedbacks = try modelContext.fetch(FetchDescriptor<ItemFeedback>())
-        let itemRatings = try modelContext.fetch(FetchDescriptor<ItemRating>())
-        let outfitFeedbacks = try modelContext.fetch(FetchDescriptor<OutfitFeedback>())
+        let cutoffDate = now.addingTimeInterval(-180 * 24 * 60 * 60)
+        let pairFeedbacks = try modelContext.fetch(FetchDescriptor<PairFeedback>(
+            predicate: #Predicate { $0.recordedAt >= cutoffDate }
+        ))
+        let itemFeedbacks = try modelContext.fetch(FetchDescriptor<ItemFeedback>(
+            predicate: #Predicate { $0.recordedAt >= cutoffDate }
+        ))
+        let itemRatings = try modelContext.fetch(FetchDescriptor<ItemRating>(
+            predicate: #Predicate { $0.recordedAt >= cutoffDate }
+        ))
+        let outfitFeedbacks = try modelContext.fetch(FetchDescriptor<OutfitFeedback>(
+            predicate: #Predicate { $0.recordedAt >= cutoffDate }
+        ))
 
         var history = FeedbackHistory()
 
@@ -294,9 +333,65 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 }
             }
 
-            history.attributeProfile = AttributePreferenceProfile.build(
-                from: ratedAttributes, outfitDimensionRatings: outfitDimensionRatings, inventory: inventory, now: now
+            let inventorySnapshots = inventory.map { item in
+                ItemAttributeSnapshot(
+                    colorCategory: item.colorProfile.category,
+                    pattern: item.pattern,
+                    formalityBand: Int(item.formalityScore.rounded()),
+                    styleTags: item.styleTags,
+                    silhouette: item.silhouette,
+                    fabricWeight: item.fabricWeight,
+                    slot: item.slot
+                )
+            }
+
+            let attributeProfile = await Task.detached(priority: .userInitiated) {
+                AttributePreferenceProfile.build(
+                    from: ratedAttributes,
+                    outfitDimensionRatings: outfitDimensionRatings,
+                    inventorySnapshots: inventorySnapshots,
+                    now: now
+                )
+            }.value
+
+            history.attributeProfile = attributeProfile
+        }
+
+        // Swipe-to-Learn Visual Taste: read the persisted centroid state and
+        // lazily compute/cache per-item embeddings for every real (non-ghost)
+        // inventory item that has a photo — powers both
+        // Domain/OutfitRecommendationEngine.swift's re-rank term and
+        // Domain/WardrobeCatalogBuilder.swift's truncation ranking. Runs
+        // unconditionally (unlike the attribute-profile block above), since
+        // an item can have a photo with zero ratings.
+        if let visualState = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first {
+            history.visualProfile = VisualPreferenceProfile(
+                likedCentroids: visualState.likedCentroids,
+                dislikedCentroids: visualState.dislikedCentroids
             )
+        }
+
+        let embeddableInventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
+        let cachedEmbeddings = try modelContext.fetch(FetchDescriptor<WardrobeItemEmbedding>())
+        let embeddingsByItemID = Dictionary(uniqueKeysWithValues: cachedEmbeddings.map { ($0.itemID, $0) })
+
+        for item in embeddableInventory {
+            guard !item.isGhostElement, let assetName = item.imageAssetName,
+                  let imageData = ImageStorage.loadData(for: assetName)
+            else { continue }
+            let fingerprint = ImageStorage.fingerprint(imageData)
+
+            if let cached = embeddingsByItemID[item.id], cached.sourceFingerprint == fingerprint {
+                history.itemEmbeddings[item.id] = cached.vector
+                continue
+            }
+
+            // Best-effort — a Vision failure on one item's photo shouldn't
+            // fail the whole feedback-history fetch (same posture as the
+            // best-effort file cleanup elsewhere in this class).
+            guard let vector = try? await embeddingService.embedding(for: imageData) else { continue }
+            try? saveWardrobeItemEmbedding(itemID: item.id, vector: vector, sourceFingerprint: fingerprint)
+            history.itemEmbeddings[item.id] = vector
         }
 
         return history
@@ -421,6 +516,81 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             recommendedColors: wire.recommendedColors,
             avoidColors: wire.avoidColors
         ))
+        try modelContext.save()
+    }
+
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {
+        modelContext.insert(SwipeEvent(
+            sourcePhotoID: sourcePhotoID,
+            imageURLString: imageURLString,
+            liked: liked,
+            embedding: embedding
+        ))
+
+        let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
+        let state = existing ?? VisualPreferenceState()
+        if existing == nil {
+            modelContext.insert(state)
+        }
+
+        // Mutate local copies, then reassign — `VisualClusterUpdater.update`
+        // takes `inout`, which a `@Model`-backed stored property can't be
+        // passed as directly.
+        var likedCentroids = state.likedCentroids
+        var dislikedCentroids = state.dislikedCentroids
+        if liked {
+            VisualClusterUpdater.update(&likedCentroids, with: embedding)
+        } else {
+            VisualClusterUpdater.update(&dislikedCentroids, with: embedding)
+        }
+        state.likedCentroids = likedCentroids
+        state.dislikedCentroids = dislikedCentroids
+        state.embeddingDimension = embedding.count
+        state.updatedAt = .now
+
+        try modelContext.save()
+    }
+
+    func fetchVisualPreferenceState() throws -> VisualPreferenceState? {
+        try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
+    }
+
+    func updateVisualPreferenceState(
+        likedCentroids: [VisualCentroid],
+        dislikedCentroids: [VisualCentroid],
+        embeddingDimension: Int
+    ) throws {
+        let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
+        let state = existing ?? VisualPreferenceState()
+        if existing == nil {
+            modelContext.insert(state)
+        }
+        state.likedCentroids = likedCentroids
+        state.dislikedCentroids = dislikedCentroids
+        state.embeddingDimension = embeddingDimension
+        state.updatedAt = .now
+        try modelContext.save()
+    }
+
+    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
+        let descriptor = FetchDescriptor<WardrobeItemEmbedding>(
+            predicate: #Predicate { $0.itemID == itemID }
+        )
+        return try modelContext.fetch(descriptor).first
+    }
+
+    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {
+        if let existing = try fetchWardrobeItemEmbedding(itemID: itemID) {
+            existing.vector = vector
+            existing.sourceFingerprint = sourceFingerprint
+            existing.computedAt = .now
+        } else {
+            modelContext.insert(WardrobeItemEmbedding(
+                itemID: itemID,
+                vector: vector,
+                sourceFingerprint: sourceFingerprint
+            ))
+        }
         try modelContext.save()
     }
 }

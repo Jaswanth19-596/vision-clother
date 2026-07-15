@@ -156,4 +156,67 @@ struct OutfitRecommendationEngineTests {
 
         #expect(scoreWithOverride > scoreWithStaticPenalty)
     }
+
+    // MARK: - Swipe-to-Learn Visual Taste (added 2026-07-14)
+
+    @Test func emptyVisualProfileLeavesScoresUnchanged() {
+        let item = WardrobeItem(
+            slot: .top, formalityScore: 2,
+            colorProfile: ColorProfile(primaryHex: "#FFFFFF", secondaryHex: nil, category: .neutral),
+            pattern: .solid, seasonality: [.summer], fabricWeight: .light
+        )
+
+        let baselineScore = OutfitRecommendationEngine.outfitScore(for: [item], history: FeedbackHistory())
+
+        var historyWithEmptyVisualProfile = FeedbackHistory()
+        historyWithEmptyVisualProfile.visualProfile = VisualPreferenceProfile()
+        historyWithEmptyVisualProfile.itemEmbeddings = [item.id: [1, 0, 0]]
+        let scoreWithEmptyVisualProfile = OutfitRecommendationEngine.outfitScore(for: [item], history: historyWithEmptyVisualProfile)
+
+        #expect(abs(baselineScore - scoreWithEmptyVisualProfile) < 0.0001)
+    }
+
+    @Test func itemWithCachedEmbeddingCloseToLikedCentroidOutranksAnUncachedItem() {
+        let lovedLook = WardrobeItem(
+            slot: .top, formalityScore: 2,
+            colorProfile: ColorProfile(primaryHex: "#FF0000", secondaryHex: nil, category: .vibrant),
+            pattern: .solid, seasonality: [.summer], fabricWeight: .light
+        )
+        let unknownLook = WardrobeItem(
+            slot: .top, formalityScore: 2,
+            colorProfile: ColorProfile(primaryHex: "#EEEEEE", secondaryHex: nil, category: .pastel),
+            pattern: .solid, seasonality: [.summer], fabricWeight: .light
+        )
+
+        var history = FeedbackHistory()
+        history.visualProfile = VisualPreferenceProfile(likedCentroids: [VisualCentroid(vector: [1, 0, 0], weight: 5)])
+        history.itemEmbeddings = [lovedLook.id: [1, 0, 0]] // unknownLook has no cached embedding
+
+        let lovedScore = OutfitRecommendationEngine.outfitScore(for: [lovedLook], history: history)
+        let unknownScore = OutfitRecommendationEngine.outfitScore(for: [unknownLook], history: history)
+
+        #expect(lovedScore > unknownScore)
+    }
+
+    @Test func ghostElementWithNoEmbeddingScoresANeutralVisualBonus() {
+        // Domain/CLAUDE.md: ghost elements score through the identical path
+        // as real items — no special-casing. A ghost never has a cached
+        // embedding, so it should read as neutral (0 visual bonus), not be
+        // penalized for lacking one.
+        let ghost = WardrobeItem(
+            slot: .top, formalityScore: 2,
+            colorProfile: ColorProfile(primaryHex: "#FFFFFF", secondaryHex: nil, category: .neutral),
+            pattern: .solid, seasonality: [.summer], fabricWeight: .light,
+            isGhostElement: true
+        )
+
+        var history = FeedbackHistory()
+        history.visualProfile = VisualPreferenceProfile(likedCentroids: [VisualCentroid(vector: [1, 0, 0], weight: 5)])
+
+        let baselineScore = OutfitRecommendationEngine.outfitScore(for: [ghost], history: FeedbackHistory())
+        let scoreWithTrainedProfile = OutfitRecommendationEngine.outfitScore(for: [ghost], history: history)
+
+        #expect(!scoreWithTrainedProfile.isNaN)
+        #expect(abs(baselineScore - scoreWithTrainedProfile) < 0.0001)
+    }
 }

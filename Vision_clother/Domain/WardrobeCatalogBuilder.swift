@@ -110,7 +110,7 @@ enum WardrobeCatalogBuilder {
         }
 
         if candidates.count > maxItems {
-            candidates = slotBalancedSample(candidates, maxItems: maxItems)
+            candidates = slotBalancedSample(candidates, maxItems: maxItems, history: history)
         }
 
         var index: [String: WardrobeItem] = [:]
@@ -145,17 +145,38 @@ enum WardrobeCatalogBuilder {
 
     /// Caps each slot's share of `maxItems` roughly evenly, so a closet
     /// dominated by e.g. tops can't crowd out bottoms/footwear/outerwear
-    /// entirely when the overall inventory exceeds the cap.
-    private static func slotBalancedSample(_ items: [WardrobeItem], maxItems: Int) -> [WardrobeItem] {
+    /// entirely when the overall inventory exceeds the cap. Within a slot,
+    /// survivors are chosen by learned visual-taste ranking (`rank(_:history:)`)
+    /// rather than arbitrary insertion order — the embedding-ranked catalog
+    /// retrieval half of the swipe-deck plan.
+    private static func slotBalancedSample(_ items: [WardrobeItem], maxItems: Int, history: FeedbackHistory?) -> [WardrobeItem] {
         let bySlot = Dictionary(grouping: items, by: \.slot)
         let slotCount = max(bySlot.count, 1)
         let perSlot = max(maxItems / slotCount, 1)
 
         var sampled: [WardrobeItem] = []
         for (_, slotItems) in bySlot {
-            sampled.append(contentsOf: slotItems.prefix(perSlot))
+            let ranked = rank(slotItems, history: history)
+            sampled.append(contentsOf: ranked.prefix(perSlot))
         }
         return Array(sampled.prefix(maxItems))
+    }
+
+    /// Orders one slot's candidates by learned visual-taste affinity,
+    /// descending, before `slotBalancedSample` caps to `perSlot` — items with
+    /// no cached embedding (no photo yet) or with no learned taste at all
+    /// score a neutral 0 via `VisualPreferenceProfile.affinityBonus`, so a
+    /// cold-start profile leaves every item at the same rank. Swift's `sorted`
+    /// is a stable sort, so in that case this is a byte-for-byte no-op versus
+    /// the original insertion order — the ranking only ever *breaks* ties
+    /// once real taste data exists, never reorders in its absence.
+    private static func rank(_ items: [WardrobeItem], history: FeedbackHistory?) -> [WardrobeItem] {
+        guard let history else { return items }
+        return items.sorted { a, b in
+            let scoreA = history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[a.id])
+            let scoreB = history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[b.id])
+            return scoreA > scoreB
+        }
     }
 
     private static func truncate(_ text: String?, to limit: Int) -> String? {

@@ -2,6 +2,68 @@
 
 ---
 
+## 2026-07-14 — Feature: Swipe-to-Learn Visual Taste + Embedding-Ranked Catalog Retrieval
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Two related asks: (1) let the app learn visual taste from a Tinder-style like/dislike swipe deck of stock fashion photos, and (2) `Domain/WardrobeCatalogBuilder.swift`'s slot-capping truncation (`slotBalancedSample`) dropped overflow items in arbitrary insertion order once a closet's per-slot item count exceeded its share of `maxItems` — a real user with, say, 40 tops and a 20-item budget would have half their tops silently invisible to the recommendation LLM for no principled reason.
+
+### Fix
+Both are solved by the same on-device embedding infrastructure rather than two separate systems:
+1. **On-device embeddings, no bundled ML.** `Services/ImageEmbeddingService.swift`'s `VisionFeaturePrintEmbeddingService` uses Apple's free `VNGenerateImageFeaturePrintRequest` to turn any photo into an L2-normalized vector — no CoreML model to ship, no network call.
+2. **Online mini-batch k-means.** `Domain/VisualPreferenceProfile.swift`'s `VisualClusterUpdater` maintains up to 3 centroids per liked/disliked side (nearest-centroid nudge, not a single running mean) so genuinely bimodal taste (e.g. "goth-grunge" + "pastel-preppy") doesn't collapse into a meaningless average. `VisualPreferenceProfile.affinityBonus` scores a candidate embedding via bounded (±0.3) cosine similarity against those centroids.
+3. **A second, independent re-scoring signal — never touches the LLM.** The app's Core Invariant is that the recommendation LLM only ever sees text/hex attributes, never images. `Domain/OutfitRecommendationEngine.swift`'s `outfitScore` folds in a new `meanVisualBonus` term structurally identical to the existing `AttributePreferenceProfile.affinityBonus` re-rank step — it only runs after LLM candidates return.
+4. **Embedding-ranked catalog truncation.** `WardrobeCatalogBuilder.slotBalancedSample` now ranks a slot's candidates by learned visual affinity before capping to `perSlot`, replacing the old arbitrary `.prefix(perSlot)` order. Hard filters (ghost-exclusion, season/formality) are untouched — this only reorders which already-valid items survive the cap. A cold-start (untrained) profile scores every item 0, so with Swift's stable sort this is a byte-for-byte no-op until the user actually swipes.
+5. **Swipe deck UI.** `Features/SwipeDiscovery/` — a card-stack `DragGesture` view sourcing photos from a new licensed stock-photo service (`Services/StockImageFeedService.swift`, Pexels — simpler attribution-only licensing than Unsplash), entered from a new "Discover Your Style" row in `Features/Profile/ProfileView.swift`.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Models/SwipeDiscovery.swift` (new) | `SwipeEvent`, `VisualCentroid`, `VisualPreferenceState`, `WardrobeItemEmbedding` |
+| `Models/SchemaMigrations.swift` | Added `SchemaV4` (purely additive, `.lightweight` V3→V4 migration) |
+| `Vision_clotherApp.swift` | `Schema(SchemaV3.models)` → `Schema(SchemaV4.models)` |
+| `Services/ImageEmbeddingService.swift` (new) | Protocol + `VisionFeaturePrintEmbeddingService` + `MockImageEmbeddingService` |
+| `Services/StockImageFeedService.swift` (new) | Protocol + `PexelsImageFeedService` + `MockStockImageFeedService`; `APIKeys.pexels` |
+| `Domain/VisualPreferenceProfile.swift` (new) | `VisualClusterUpdater` (online k-means) + `VisualPreferenceProfile` (affinity scoring) |
+| `Domain/OutfitRecommendationEngine.swift` | `FeedbackHistory.visualProfile`/`.itemEmbeddings`; `outfitScore`'s `meanVisualBonus` term |
+| `Domain/WardrobeCatalogBuilder.swift` | `slotBalancedSample` ranks by visual affinity before capping (`rank(_:history:)`) |
+| `Data/WardrobeRepository.swift` | `recordSwipe`/`fetchVisualPreferenceState`/`updateVisualPreferenceState`/`fetchWardrobeItemEmbedding`/`saveWardrobeItemEmbedding`; `fetchFeedbackHistory()` reads visual-taste state and lazily caches per-item embeddings |
+| `Features/SwipeDiscovery/` (new) | `SwipeDiscoveryViewModel` + `SwipeDiscoveryView` (card stack, drag gesture, like/dislike buttons) |
+| `Features/Profile/ProfileView.swift` | New "Discover Your Style" entry point |
+| `ServiceFactory.swift` | `makeImageEmbeddingService()`, `makeStockImageFeedService()` |
+| `Config/` | `PEXELS_API_KEY` added to `Secrets.plist`/`Secrets.example.plist`/`README.md` |
+| `Vision_clotherTests/*` | New: `VisualClusterUpdaterTests`, `VisualPreferenceProfileTests`, `ImageEmbeddingServiceTests`, `SchemaV4MigrationTests`, `SwipeDiscoveryViewModelTests`. Extended: `OutfitRecommendationEngineTests`, `WardrobeCatalogBuilderTests`, `WardrobeRepositoryTests`. Updated 6 `WardrobeRepository` test doubles with the 5 new protocol methods. |
+
+---
+
+## 2026-07-14 — Optimization: Database Query Pruning & Background Preference Rebuilding (Bottleneck C)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+In `fetchFeedbackHistory()`, the app fetched all database rows for feedback and ratings and processed them sequentially in memory on `@MainActor`. Recomputing the entire historical feedback history on every view appearance causes linear degradation of responsiveness as history grows, freezing the UI.
+
+### Fix
+1. **Time-window predicates:** Added a 180-day time-window predicate to SwiftData queries for `PairFeedback`, `ItemFeedback`, `ItemRating`, and `OutfitFeedback` inside `fetchFeedbackHistory()`, resolving the query bloat at the database level.
+2. **Background processing:** Overloaded `AttributePreferenceProfile.build()` with a `[ItemAttributeSnapshot]` payload and offloaded the computation to `Task.detached` to avoid blocking `@MainActor`.
+3. **Async Signatures:** Made `fetchFeedbackHistory()` async and updated all 4 call sites (`ClosetView`, `ItemDetailView`, `ProfileViewModel`, `DailyAssistantViewModel`) to run the fetch concurrently.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Domain/AttributePreferenceProfile.swift` | Added `ItemAttributeSnapshot` sendable struct; added overload for `build(from:outfitDimensionRatings:inventorySnapshots:now:)` |
+| `Data/WardrobeRepository.swift` | Updated `fetchFeedbackHistory()` to be async; added 180-day query predicate pruning; offloaded profile rebuilding using `Task.detached` |
+| `Features/Closet/ClosetView.swift` | Made `loadFeedbackHistory()` fetch asynchronously inside a `Task` block |
+| `Features/Closet/ItemDetailView.swift` | Made `loadFeedbackHistory()` fetch asynchronously inside a `Task` block |
+| `Features/Profile/ProfileViewModel.swift` | Updated `refreshFeedbackHistory()` to fetch asynchronously in a `Task` block |
+| `Features/DailyAssistant/DailyAssistantViewModel.swift` | Updated `resolveOutfits()` to call `fetchFeedbackHistory()` asynchronously with `await` |
+| `Vision_clotherTests/*` | Updated test mock stubs in 7 test suites to conform to the updated async protocol signature |
+
+---
+
 ## 2026-07-14 — Fix: Try-On Button Allows Duplicate Queue Submissions
 
 **Status:** ✅ Shipped — Build Succeeded

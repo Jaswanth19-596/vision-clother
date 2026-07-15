@@ -17,10 +17,10 @@ struct WardrobeRepositoryTests {
     private func makeRepository() throws -> SwiftDataWardrobeRepository {
         let container = try ModelContainer(
             for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self,
-            ItemRating.self, UserStyleProfile.self,
+            ItemRating.self, UserStyleProfile.self, SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
-        return SwiftDataWardrobeRepository(modelContext: ModelContext(container))
+        return SwiftDataWardrobeRepository(modelContext: ModelContext(container), embeddingService: MockImageEmbeddingService())
     }
 
     private func makeCombination(assetName: String, savedAt: Date, origin: String = "pairing") -> SavedCombination {
@@ -91,7 +91,7 @@ struct WardrobeRepositoryTests {
         #expect(ratings.first?.qualityPerception == 3)
     }
 
-    @Test func fetchFeedbackHistoryFoldsRatingsIntoItemPreferenceAndAttributeProfile() throws {
+    @Test func fetchFeedbackHistoryFoldsRatingsIntoItemPreferenceAndAttributeProfile() async throws {
         let repository = try makeRepository()
         let item = makeWardrobeItem(colorVibe: .vibrant)
         try repository.save(item)
@@ -103,7 +103,7 @@ struct WardrobeRepositoryTests {
             versatility: 5, frequency: 5, styleIdentity: 5, qualityPerception: 5
         )
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
 
         let itemEntry = history.itemFeedback[item.id]
         #expect(abs((itemEntry?.total ?? 0) - 1) < 0.01)
@@ -113,7 +113,7 @@ struct WardrobeRepositoryTests {
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
     }
 
-    @Test func fetchFeedbackHistoryFoldsItemLevelStyleIdentityIntoStyleTagAffinity() throws {
+    @Test func fetchFeedbackHistoryFoldsItemLevelStyleIdentityIntoStyleTagAffinity() async throws {
         let repository = try makeRepository()
         let item = WardrobeItem(
             slot: .top,
@@ -134,7 +134,7 @@ struct WardrobeRepositoryTests {
             versatility: 3, frequency: 3, styleIdentity: 5, qualityPerception: 3
         )
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
 
         #expect(history.attributeProfile.styleTagAffinity["minimalist"] != nil)
         #expect((history.attributeProfile.styleTagAffinity["minimalist"] ?? 0) > 0.5)
@@ -187,7 +187,7 @@ struct WardrobeRepositoryTests {
         #expect(allProfiles.first?.bodyType == "slim build")
     }
 
-    @Test func fetchFeedbackHistorySkipsRatingsForDeletedItems() throws {
+    @Test func fetchFeedbackHistorySkipsRatingsForDeletedItems() async throws {
         let repository = try makeRepository()
         let orphanID = UUID()
 
@@ -198,7 +198,7 @@ struct WardrobeRepositoryTests {
 
         // No crash and no attribute contribution — the item no longer
         // exists to join attributes from.
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
         #expect(abs((history.itemFeedback[orphanID]?.total ?? 0) - 1) < 0.01)
     }
 
@@ -240,7 +240,7 @@ struct WardrobeRepositoryTests {
         #expect(feedback.first?.overallSatisfaction == 5)
     }
 
-    @Test func favoriteAndWeakestItemFoldIntoItemPreferenceChannel() throws {
+    @Test func favoriteAndWeakestItemFoldIntoItemPreferenceChannel() async throws {
         let repository = try makeRepository()
         let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
         try repository.saveCombination(combination)
@@ -252,14 +252,14 @@ struct WardrobeRepositoryTests {
             submission: makeSubmission(favoriteItemID: favoriteID, weakestItemID: weakestID)
         )
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
         #expect(abs((history.itemFeedback[favoriteID]?.total ?? 0) - 1) < 0.01)
         #expect(abs((history.itemFeedback[favoriteID]?.likes ?? 0) - 1) < 0.01)
         #expect(abs((history.itemFeedback[weakestID]?.total ?? 0) - 1) < 0.01)
         #expect(abs((history.itemFeedback[weakestID]?.likes ?? 0) - 0) < 0.01)
     }
 
-    @Test func detailedOutfitRatingJoinsRealItemsIntoAttributeProfile() throws {
+    @Test func detailedOutfitRatingJoinsRealItemsIntoAttributeProfile() async throws {
         let repository = try makeRepository()
         let top = makeWardrobeItem(colorVibe: .vibrant)
         try repository.save(top)
@@ -276,11 +276,11 @@ struct WardrobeRepositoryTests {
             submission: makeSubmission(occasionMatch: 5, colorHarmony: 5)
         )
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
     }
 
-    @Test func dislikedSavedCombinationPopulatesOutfitNegativeSignalByExactItemSet() throws {
+    @Test func dislikedSavedCombinationPopulatesOutfitNegativeSignalByExactItemSet() async throws {
         // Read Disliked Signals (2026-07-11): a freshly generated
         // OutfitCombination has no durable id of its own, so whole-outfit
         // dislike history must be matched by which items it contains.
@@ -296,7 +296,7 @@ struct WardrobeRepositoryTests {
         try repository.saveCombination(combination)
         try repository.recordOutfitFeedback(outfitID: combination.id, likedOverall: false)
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
 
         let itemSet = Set([topID, bottomID])
         #expect((history.outfitNegativeSignalByItemSet[itemSet] ?? 0) > 0)
@@ -304,35 +304,149 @@ struct WardrobeRepositoryTests {
         #expect(history.outfitNegativeSignalByItemSet[Set([UUID(), UUID()])] == nil)
     }
 
-    @Test func likedSavedCombinationDoesNotPopulateOutfitNegativeSignal() throws {
+    @Test func likedSavedCombinationDoesNotPopulateOutfitNegativeSignal() async throws {
         let repository = try makeRepository()
         let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
         try repository.saveCombination(combination)
         try repository.recordOutfitFeedback(outfitID: combination.id, likedOverall: true)
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
 
         let itemSet = Set(combination.itemIDsBySlot.values)
         #expect((history.outfitNegativeSignalByItemSet[itemSet] ?? 0) <= 0)
     }
 
-    @Test func dislikedItemFeedbackPopulatesItemNegativeSignal() throws {
+    @Test func dislikedItemFeedbackPopulatesItemNegativeSignal() async throws {
         let repository = try makeRepository()
         let itemID = UUID()
         try repository.recordItemFeedback(itemID: itemID, likedFit: false)
 
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
 
         #expect((history.itemNegativeSignal[itemID] ?? 0) > 0)
     }
 
-    @Test func simpleAutoRecordedOutfitFeedbackDoesNotContributeToAttributeProfile() throws {
+    @Test func simpleAutoRecordedOutfitFeedbackDoesNotContributeToAttributeProfile() async throws {
         let repository = try makeRepository()
         try repository.recordOutfitFeedback(outfitID: UUID(), likedOverall: true)
 
         // No detailed fields, so `normalizedRating` is `nil` and this event
         // is excluded from the attribute-profile join — no crash, no bias.
-        let history = try repository.fetchFeedbackHistory()
+        let history = try await repository.fetchFeedbackHistory()
         #expect(history.attributeProfile.colorVibeAffinity.isEmpty)
+    }
+
+    // MARK: - Swipe-to-Learn Visual Taste (added 2026-07-14)
+
+    @Test func fetchVisualPreferenceStateIsNilBeforeAnySwipe() throws {
+        let repository = try makeRepository()
+        #expect(try repository.fetchVisualPreferenceState() == nil)
+    }
+
+    @Test func recordSwipePersistsEventAndUpdatesVisualPreferenceState() throws {
+        let repository = try makeRepository()
+        try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.likedCentroids.count == 1)
+        #expect(state?.likedCentroids.first?.weight == 1)
+        #expect(state?.dislikedCentroids.isEmpty == true)
+    }
+
+    @Test func recordSwipeAccumulatesAcrossMultipleCalls() throws {
+        let repository = try makeRepository()
+        try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+        try repository.recordSwipe(sourcePhotoID: "p2", imageURLString: "https://example.com/p2.jpg", liked: false, embedding: [0, 1, 0])
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.likedCentroids.count == 1)
+        #expect(state?.dislikedCentroids.count == 1)
+    }
+
+    @Test func updateVisualPreferenceStateUpsertsRatherThanAccumulating() throws {
+        let repository = try makeRepository()
+        try repository.updateVisualPreferenceState(
+            likedCentroids: [VisualCentroid(vector: [1, 0, 0], weight: 1)],
+            dislikedCentroids: [],
+            embeddingDimension: 3
+        )
+        try repository.updateVisualPreferenceState(
+            likedCentroids: [VisualCentroid(vector: [0, 1, 0], weight: 2)],
+            dislikedCentroids: [VisualCentroid(vector: [0, 0, 1], weight: 1)],
+            embeddingDimension: 3
+        )
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.likedCentroids.count == 1)
+        #expect(state?.likedCentroids.first?.vector == [0, 1, 0])
+        #expect(state?.dislikedCentroids.count == 1)
+    }
+
+    @Test func wardrobeItemEmbeddingRoundTripsThroughSaveAndFetch() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [1, 0, 0], sourceFingerprint: "abc123")
+
+        let fetched = try repository.fetchWardrobeItemEmbedding(itemID: itemID)
+        #expect(fetched?.vector == [1, 0, 0])
+        #expect(fetched?.sourceFingerprint == "abc123")
+    }
+
+    @Test func savingAWardrobeItemEmbeddingTwiceUpsertsRatherThanAccumulating() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [1, 0, 0], sourceFingerprint: "v1")
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [0, 1, 0], sourceFingerprint: "v2")
+
+        let fetched = try repository.fetchWardrobeItemEmbedding(itemID: itemID)
+        #expect(fetched?.vector == [0, 1, 0])
+        #expect(fetched?.sourceFingerprint == "v2")
+    }
+
+    @Test func fetchFeedbackHistoryPopulatesItemEmbeddingsForItemsWithAPhoto() async throws {
+        let repository = try makeRepository()
+        let assetName = try ImageStorage.save(Data([0xAA, 0xBB, 0xCC]))
+        let item = makeWardrobeItem()
+        item.imageAssetName = assetName
+        try repository.save(item)
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect(history.itemEmbeddings[item.id] != nil)
+    }
+
+    @Test func fetchFeedbackHistorySkipsEmbeddingsForItemsWithNoPhoto() async throws {
+        let repository = try makeRepository()
+        let item = makeWardrobeItem() // no imageAssetName
+        try repository.save(item)
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect(history.itemEmbeddings[item.id] == nil)
+    }
+
+    @Test func fetchFeedbackHistoryReusesCachedEmbeddingWhenFingerprintMatches() async throws {
+        let repository = try makeRepository()
+        let assetName = try ImageStorage.save(Data([0xAA, 0xBB, 0xCC]))
+        let item = makeWardrobeItem()
+        item.imageAssetName = assetName
+        try repository.save(item)
+
+        _ = try await repository.fetchFeedbackHistory()
+        // Overwrite the cache with a sentinel vector distinguishable from
+        // whatever the mock embedding service would compute fresh — if the
+        // second fetch reuses the cache (fingerprint unchanged), this
+        // sentinel survives; if it recomputes, it's overwritten.
+        let fingerprint = ImageStorage.fingerprint(Data([0xAA, 0xBB, 0xCC]))
+        try repository.saveWardrobeItemEmbedding(itemID: item.id, vector: [9, 9, 9], sourceFingerprint: fingerprint)
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect(history.itemEmbeddings[item.id] == [9, 9, 9])
+    }
+
+    @Test func fetchFeedbackHistoryPopulatesVisualProfileFromPersistedState() async throws {
+        let repository = try makeRepository()
+        try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect(history.visualProfile.likedCentroids.count == 1)
     }
 }

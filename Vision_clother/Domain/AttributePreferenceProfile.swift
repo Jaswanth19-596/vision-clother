@@ -122,6 +122,31 @@ struct OutfitDimensionRatedAttributes {
     }
 }
 
+/// Sendable projection of a `WardrobeItem`'s attribute fields — the only
+/// subset `AttributePreferenceProfile.build()` reads. Used by
+/// `WardrobeRepository.fetchFeedbackHistory()` to pass inventory data across
+/// an actor boundary (into `Task.detached`) without transmitting live
+/// `@Model` instances, which are not `Sendable`.
+struct ItemAttributeSnapshot: Sendable {
+    let colorCategory: ColorVibe
+    let pattern: GarmentPattern
+    let formalityBand: Int
+    let styleTags: [String]
+    let silhouette: String?
+    let fabricWeight: FabricWeight
+    let slot: Slot
+
+    init(colorCategory: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleTags: [String], silhouette: String?, fabricWeight: FabricWeight, slot: Slot) {
+        self.colorCategory = colorCategory
+        self.pattern = pattern
+        self.formalityBand = formalityBand
+        self.styleTags = styleTags
+        self.silhouette = silhouette
+        self.fabricWeight = fabricWeight
+        self.slot = slot
+    }
+}
+
 /// Bayesian-shrunk affinity per attribute value, in `[0,1]`, seeded at a
 /// neutral 0.5 — same shrinkage shape as `PairCompatibilityScoring.itemPreference`.
 struct AttributePreferenceProfile {
@@ -202,6 +227,31 @@ struct AttributePreferenceProfile {
         inventory: [WardrobeItem] = [],
         now: Date = .now
     ) -> AttributePreferenceProfile {
+        let snapshots = inventory.map { item in
+            ItemAttributeSnapshot(
+                colorCategory: item.colorProfile.category,
+                pattern: item.pattern,
+                formalityBand: Int(item.formalityScore.rounded()),
+                styleTags: item.styleTags,
+                silhouette: item.silhouette,
+                fabricWeight: item.fabricWeight,
+                slot: item.slot
+            )
+        }
+        return build(
+            from: ratings,
+            outfitDimensionRatings: outfitDimensionRatings,
+            inventorySnapshots: snapshots,
+            now: now
+        )
+    }
+
+    static func build(
+        from ratings: [RatedAttributes],
+        outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
+        inventorySnapshots: [ItemAttributeSnapshot],
+        now: Date = .now
+    ) -> AttributePreferenceProfile {
         var colorSums: [ColorVibe: (sum: Double, count: Double)] = [:]
         var colorSumsBySlot: [Slot: [ColorVibe: (sum: Double, count: Double)]] = [:]
         var patternSums: [GarmentPattern: (sum: Double, count: Double)] = [:]
@@ -253,10 +303,6 @@ struct AttributePreferenceProfile {
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
         }
 
-        // Baseline counts — how many closet items currently share each
-        // attribute value — feed the dynamic prior above. An item can
-        // contribute to multiple style-tag buckets at once (it may carry
-        // several tags); every other axis is one-value-per-item.
         var colorBaseline: [ColorVibe: Int] = [:]
         var colorBaselineBySlot: [Slot: [ColorVibe: Int]] = [:]
         var patternBaseline: [GarmentPattern: Int] = [:]
@@ -264,13 +310,13 @@ struct AttributePreferenceProfile {
         var styleTagBaseline: [String: Int] = [:]
         var silhouetteBaseline: [String: Int] = [:]
         var fabricWeightBaseline: [FabricWeight: Int] = [:]
-        for item in inventory {
-            colorBaseline[item.colorProfile.category, default: 0] += 1
+        for item in inventorySnapshots {
+            colorBaseline[item.colorCategory, default: 0] += 1
             var slotBaselineMap = colorBaselineBySlot[item.slot] ?? [:]
-            slotBaselineMap[item.colorProfile.category, default: 0] += 1
+            slotBaselineMap[item.colorCategory, default: 0] += 1
             colorBaselineBySlot[item.slot] = slotBaselineMap
             patternBaseline[item.pattern, default: 0] += 1
-            formalityBaseline[Int(item.formalityScore.rounded()), default: 0] += 1
+            formalityBaseline[item.formalityBand, default: 0] += 1
             for tag in item.styleTags {
                 styleTagBaseline[tag, default: 0] += 1
             }
