@@ -14,6 +14,8 @@
 //  writes wouldn't appear in the live `@Query`-backed views.
 //
 
+import FirebaseAuth
+import GoogleSignIn
 import SwiftData
 import SwiftUI
 import UserNotifications
@@ -25,6 +27,10 @@ struct Vision_clotherApp: App {
     private let notificationDelegate = NotificationDelegate()
 
     init() {
+        // Must run before any Firebase Auth call — see
+        // Config/FirebaseBootstrap.swift.
+        FirebaseBootstrap.configure()
+
         let schema = Schema(SchemaV8.models)
         let container: ModelContainer
         do {
@@ -61,6 +67,14 @@ struct Vision_clotherApp: App {
         WindowGroup {
             RootTabView()
                 .environment(jobQueueStore)
+                // Routes both the Google Sign-In consent redirect and the
+                // phone-auth reCAPTCHA verification redirect back into the
+                // app — see Vision_clother/Config/URLSchemes.plist and
+                // Services/AuthService.swift.
+                .onOpenURL { url in
+                    if GIDSignIn.sharedInstance.handle(url) { return }
+                    _ = Auth.auth().canHandle(url)
+                }
         }
         .modelContainer(modelContainer)
     }

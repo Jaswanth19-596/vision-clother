@@ -32,9 +32,9 @@ The project's `CLAUDE.md` originally scaffolded build commands for a `backend/` 
 └──────────────────────────────┬───────────────────────────────────┘
                                  ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  4. Visual Generation Canvas (Fal.ai, submit → poll queue)      │
+│  4. Visual Generation Canvas (OpenRouter, synchronous request)  │
 │     [WardrobeItem] + base portrait  ──▶  rendered image         │
-│     Services/FalTryOnRenderService.swift                         │
+│     Services/OpenRouterTryOnRenderService.swift                  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,9 +44,9 @@ The project's `CLAUDE.md` originally scaffolded build commands for a `backend/` 
 
 A second entry point into stage 4, alongside the engine-recommended flow above: the user manually picks a top and bottom from `ClosetView` (real ingested items only — Ghost Elements have no backing photo file) instead of getting a scored `OutfitCombination` from the recommendation engine, and generates a try-on preview of themselves wearing both.
 
-- **Model**: `fal-ai/fashn/tryon/v1.6` (FASHN Virtual Try-On v1.6), the concrete model behind `Services/FalTryOnRenderService.swift`'s abstraction — see CLAUDE.md guardrail #2.
-- **FASHN v1.6 applies exactly one garment per call** (`model_image` + `garment_image` + `category`: `tops`/`bottoms`/`one-pieces`/`auto`) — there's no multi-garment input. A full top+bottom outfit is built by **chaining two calls**: call 1's result image becomes call 2's `model_image`. `TryOnRenderService.renderTryOn` takes `items: [WardrobeItem]` and only chains over `.top`/`.bottom` slots (in that order) — footwear/outerwear items aren't visually represented, since FASHN v1.6 has no category for them. This applies to both the manual-pairing flow and the existing recommendation-engine "how does it look on me?" flow (which now passes `outfit.items` instead of the whole `OutfitCombination`).
-- **Photo validation** (`Services/PersonPhotoValidationService.swift`) runs entirely on-device via Vision framework before anything is sent to Fal — single person (`VNDetectHumanRectanglesRequest`), full body visible (`VNDetectHumanBodyPoseRequest` landmark presence), basic lighting (`CIAreaAverage`). These are heuristic gates, not a quality guarantee.
+- **Model**: `ModelConfig.imageToImage` (currently `google/gemini-3.1-flash-lite-image`), a Gemini image-generation model called through OpenRouter — the concrete model behind `Services/OpenRouterTryOnRenderService.swift`'s abstraction. See `docs/decisions/resolved-v1.md` § Diffusion Provider (superseded Fal + fashn/tryon/v1.6) for the history.
+- **A single call composes every garment at once.** The base portrait plus one reference image per non-ghost item are sent together as `image_url` parts in one request, with the prompt instructing the model how to layer them (top under outerwear, footwear on the feet, etc.) — no per-garment call chaining. `TryOnRenderService.renderTryOn` takes the full `items: [WardrobeItem]`; footwear/outerwear/headwear/accessories/bags are all visually represented, unlike the superseded FASHN-based plan which only modeled tops/bottoms. This applies to both the manual-pairing flow and the existing recommendation-engine "how does it look on me?" flow (which passes `outfit.items` instead of the whole `OutfitCombination`).
+- **Photo validation** (`Services/PersonPhotoValidationService.swift`) runs entirely on-device via Vision framework before anything is sent to OpenRouter — single person (`VNDetectHumanRectanglesRequest`), full body visible (`VNDetectHumanBodyPoseRequest` landmark presence), basic lighting (`CIAreaAverage`). These are heuristic gates, not a quality guarantee.
 - **Storage**: the user's portrait is a single fixed file (`Services/UserPortraitStorage.swift`), overwritten on re-capture — no SwiftData row, since presence-on-disk is the only state that exists. The generated preview image itself is never persisted anywhere.
 - **"Save this outfit?"** records a positive signal through the existing three-tier feedback tables (`WardrobeRepository.recordPairFeedback`/`recordOutfitFeedback`) — no new SwiftData schema. There is no browsable "saved outfits" list; this only affects future pair-compatibility scoring inputs.
 
@@ -55,14 +55,13 @@ A second entry point into stage 4, alongside the engine-recommended flow above: 
 | Concern | Owner | Notes |
 |---|---|---|
 | Wardrobe inventory, feedback history | SwiftData (`Data/WardrobeRepository.swift`) | Local only. No sync in V1. |
-| Constraint extraction | OpenRouter (`openai/gpt-4o-mini`) | Stateless per-request; no conversation history kept. |
+| Constraint extraction | OpenRouter (`ModelConfig.textToText`) | Stateless per-request; no conversation history kept. |
 | Compatibility scoring | Pure Swift (`Domain/`) | No I/O — a function of `(inventory, constraints, feedback history)`. |
-| Try-on rendering | Fal.ai | Async job; the app polls, it doesn't hold a persistent connection. |
+| Try-on rendering | OpenRouter (`ModelConfig.imageToImage`) | Single synchronous request (120s timeout); no persistent connection, no async poll job. |
 
 ## Known limitations of this architecture (flag before shipping)
 
-- **API keys ship in the app bundle** (`Config/Secrets.plist`) for OpenRouter and Fal. This is explicitly a dev-only posture — see `docs/approach/conventions.md` § API keys.
+- **API keys ship in the app bundle** (`Config/Secrets.plist`) for OpenRouter. This is explicitly a dev-only posture — see `docs/approach/conventions.md` § API keys.
 - **No cross-device sync.** SwiftData is local to the device; there's no CloudKit/iCloud mirroring wired up yet.
 - **Base portrait capture has no dedicated onboarding flow.** It's captured the first time the user opens Manual Outfit Pairing (`Services/UserPortraitStorage.swift`) rather than during first-run onboarding; `DailyAssistantView`'s "how does it look on me?" now reads the same stored portrait, so it'll fail with a normal error state (not crash) if the user hasn't captured one via Manual Outfit Pairing yet.
-- **Footwear/outerwear aren't visually represented in try-on previews.** FASHN v1.6 only models tops/bottoms/one-pieces; see "Manual Outfit Pairing" above.
 - **Photo validation is heuristic, not exact.** On-device Vision framework checks (single person, full-body landmarks, basic brightness) can false-accept or false-reject at the margins.

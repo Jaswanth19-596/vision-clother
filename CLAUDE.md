@@ -28,7 +28,7 @@ Read the relevant doc **before** modifying a layer:
 ## 4. Key Invariants (Details in Subdirectory CLAUDE.md Files)
 * **Schema bounds:** Explicit `CodingKeys` on all wire types — see `Models/CLAUDE.md`
 * **Scoring isolation:** `Domain/PairCompatibilityScoring.swift` is mockable, NaN-safe, ghost-element-identical — see `Domain/CLAUDE.md`
-* **Async boundaries:** Fal pipeline uses explicit `TryOnState` + bounded poll budget, never bare unbounded loops — see `Services/CLAUDE.md`
+* **Async boundaries:** `OpenRouterTryOnRenderService` drives a single bounded-timeout request through explicit `TryOnState`, never a bare unbounded loop — see `Services/CLAUDE.md`
 
 ## 5. Workflow Rules
 * Always propose a plan before making changes to 3+ files.

@@ -2,6 +2,51 @@
 
 ---
 
+## 2026-07-16 — Backend: Google Sign-In + Phone Auth Replace Sign in with Apple; Firestore Provisioned
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`), backend tests 12/12 passing
+
+### Problem
+The Firebase proxy shipped earlier the same day assumed Sign in with Apple + App Check (App Attest) as the only auth path — both require a paid Apple Developer account, which isn't available yet. The user asked to wire the app to their existing Firebase project (`visionclother`, number `1008598090428`), use Google Sign-In + Phone Number auth instead, register the iOS app in that project, and provision Firestore.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `backend/.firebaserc` | Points at project `visionclother` (via `npx -y firebase-tools@latest use`) |
+| Firebase project (via CLI, no console clicks except the one below) | iOS app registered (`apps:create IOS`), `GoogleService-Info.plist` fetched (`apps:sdkconfig IOS`), Firestore Standard-edition default database created, Google Sign-In enabled (`firebase.json`'s `auth` block + `deploy --only auth`) |
+| `backend/firestore.rules`, `backend/firebase.json` | New deny-all Firestore rules (only the Admin SDK's rate-limit counter touches it) |
+| `backend/functions/src/app.ts` | Middleware chain drops `verifyAppCheck` — App Check deferred, same paid-account blocker |
+| `backend/functions/src/middleware/verifyAppCheck.ts` | Deleted (never actually built — the SPM product was never linked) |
+| `backend/functions/test/middleware.test.ts` | App-Check test cases removed |
+| `Vision_clother.xcodeproj/project.pbxproj` | `FirebaseDatabase` (Realtime Database, mistakenly linked) swapped for `FirebaseFirestore`; `GoogleSignIn-iOS` package added; `INFOPLIST_FILE` set on the app target (Debug/Release) to a supplemental `Config/URLSchemes.plist`, kept alongside `GENERATE_INFOPLIST_FILE = YES` — done via a one-off script using the same `XcodeProj` Swift library `xcode-project-setup`'s vetted script uses, not hand-edited text |
+| `Vision_clother/Config/URLSchemes.plist` (new) | `CFBundleURLTypes`: Google's `REVERSED_CLIENT_ID` + the app's bundle ID (for phone auth's reCAPTCHA redirect) |
+| `Vision_clother/Config/GoogleService-Info.plist` (new) | Firebase client config for the `visionclother` project — not a secret, safe to commit |
+| `Vision_clother/Services/AuthService.swift` | Sign in with Apple (`AuthenticationServices`/nonce/delegate) replaced with `signInWithGoogle()` (`GoogleSignIn` SDK), `startPhoneSignIn`/`confirmPhoneSignIn` (`PhoneAuthProvider`), new `signOut()` |
+| `Vision_clother/Config/FirebaseBootstrap.swift` | App Check provider registration dropped; configures `GIDSignIn` with Firebase's client ID |
+| `Vision_clother/Services/ProxyAuthHeaders.swift` | Drops the `X-Firebase-AppCheck` header |
+| `Vision_clother/Vision_clotherApp.swift` | `.onOpenURL` routes the Google consent redirect and phone-auth reCAPTCHA redirect back into the app |
+| `Vision_clother/Vision_clother/Features/Profile/AccountSectionView.swift` (new) | Google button + phone number/OTP two-step flow + sign-out, wired as the first section in `ProfileView.swift` |
+| `docs/backend/architecture.md`, `docs/backend/conventions.md`, `docs/decisions/resolved-v1.md`, `backend/README.md` | Reflect Google/Phone auth, dropped App Check, Firestore on `visionclother` |
+
+## 2026-07-16 — Docs: Reconcile Try-On Architecture Docs with OpenRouter Reality
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+A code-review pass flagged that `docs/decisions/resolved-v1.md`, `docs/ios/architecture.md`, `docs/architecture.md`, and `docs/backend/architecture.md` all still described the try-on renderer as Fal + `fashn/tryon/v1.6` (async submit → poll queue, one garment per call). No `Fal*.swift` file has ever existed in the tree — the app moved to `Services/OpenRouterTryOnRenderService.swift` (Gemini image models via OpenRouter, single synchronous request, all garments composed in one call) before the Fal path was ever implemented, and the docs were never updated to match.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `docs/decisions/resolved-v1.md` | Diffusion Provider decision marked **superseded**; new decision documents OpenRouter/Gemini (`ModelConfig.imageToImage`), single-call multi-garment compose, no async poll |
+| `docs/architecture.md`, `docs/ios/architecture.md`, `docs/backend/architecture.md`, `docs/backend/conventions.md`, `docs/approach/conventions.md` | All Fal/FASHN references (diagrams, model names, "async submit → poll", per-garment chaining, API key mentions) replaced with the actual OpenRouter/Gemini single-request architecture |
+| `CLAUDE.md`, `Vision_clother/Services/CLAUDE.md` | "Fal pipeline" async-boundary guardrail rewritten to describe `OpenRouterTryOnRenderService`'s single bounded-timeout request instead of a poll loop |
+| `Vision_clother/Vision_clother/Features/DailyAssistant/DailyAssistantViewModel.swift` | Stray comment citing `FalTryOnRenderService`'s precedent renamed to `OpenRouterTryOnRenderService` |
+| `Vision_clother/Services/APIKeys.swift` | Removed dead `APIKeys.fal` (no remaining caller) |
+| `Vision_clother/Config/README.md`, `Secrets.example.plist`, `Secrets.plist` | Removed `FAL_API_KEY` — never read by any real service |
+
 ## 2026-07-15 — Feature: Multi-Accessory Outfits
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)

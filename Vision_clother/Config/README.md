@@ -1,16 +1,19 @@
-# Config/Secrets.plist
+# Config/
 
-Dev-only API keys, read at runtime by `Services/APIKeys.swift`. **`Secrets.plist` is gitignored** — this file only exists locally and is bundled into the app so the OpenRouter/Fal services can pick up real keys during local development.
+## `GoogleService-Info.plist` (Firebase — required)
 
-## Setup
+Not present in this repo yet — download it from the Firebase console after registering the iOS app (see `backend/README.md`'s one-time setup) and place it here as `Config/GoogleService-Info.plist`. Unlike `Secrets.plist` below, **this file is not a secret** and is safe to commit — it's Firebase's public client configuration, not a credential. It's what `FirebaseBootstrap.configure()` (`Config/FirebaseBootstrap.swift`) reads at launch.
 
-1. Copy `Secrets.example.plist` to `Secrets.plist` (already done for you — `Secrets.plist` ships with blank placeholder values so the project builds out of the box using the mock services).
-2. Fill in your keys:
-   - `OPENROUTER_API_KEY` — from [openrouter.ai](https://openrouter.ai) (used by `Services/OpenRouterIntentExtractionService.swift`)
-   - `FAL_API_KEY` — from [fal.ai](https://fal.ai) (used by `Services/FalTryOnRenderService.swift`)
-   - `PEXELS_API_KEY` — from [pexels.com/api](https://www.pexels.com/api/) (used by `Services/StockImageFeedService.swift`'s Swipe-to-Learn Visual Taste photo deck)
-3. Rebuild. With blank keys, `APIKeys.swift` returns `nil` and the app should be wired (in the ViewModel layer) to fall back to `MockIntentExtractionService` / `MockTryOnRenderService`.
+## `Secrets.plist` (legacy — superseded by the Firebase proxy)
 
-## ⚠️ Do not ship this
+`Secrets.plist` (gitignored) previously held the OpenRouter/Pexels keys read directly by `Services/APIKeys.swift`. That file has been removed — every OpenRouter/Pexels call now goes through the Firebase Cloud Functions proxy (`backend/`), which holds those keys server-side instead (see `docs/backend/architecture.md`). `Secrets.example.plist` is kept as an empty template in case a future provider integration needs a dev-only client-side key again, but nothing in the app currently reads it.
 
-Embedding provider keys in the app bundle is acceptable **only** for personal development and testing on your own device. **Never** distribute a build (TestFlight, App Store, or otherwise) with real keys in `Secrets.plist` — anyone with the `.ipa` can extract them. Before any real distribution, move these calls behind a thin proxy backend that holds the keys server-side (see CLAUDE.md §5).
+The app's mock/real service gate (`Vision_clother/Vision_clother/Services/ServiceFactory.swift`) now checks `AuthService.shared.isSignedIn` (Firebase Auth via Sign in with Apple — `Services/AuthService.swift`) instead of key presence. With no Firebase project configured and no sign-in, the app falls back to the `Mock*` services exactly as before, so it's still fully interactive in Simulator out of the box.
+
+## `ModelConfig.swift`
+
+Unchanged — still the single place to swap OpenRouter model IDs and edit prompt text (`Services/CLAUDE.md`).
+
+## `ProxyConfig.swift`
+
+Base URL of the Firebase proxy — points at the local emulator in DEBUG builds, the deployed function URL in release. See `backend/README.md`.

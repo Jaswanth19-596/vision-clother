@@ -142,15 +142,17 @@ protocol WardrobeRepository {
 @MainActor
 final class SwiftDataWardrobeRepository: WardrobeRepository {
     private let modelContext: ModelContext
-    /// On-device Vision embedding extractor (`Services/ImageEmbeddingService.swift`)
-    /// — defaulted to the real implementation so every pre-existing call site
-    /// (`SwiftDataWardrobeRepository(modelContext:)`) keeps compiling
-    /// unchanged; tests inject `MockImageEmbeddingService`.
-    private let embeddingService: ImageEmbeddingService
+    /// Runs the on-device Vision embedding extractor
+    /// (`Services/ImageEmbeddingService.swift`) off the main actor
+    /// (`Services/WardrobeEmbeddingWorker.swift`) — `fetchFeedbackHistory()`
+    /// is the only caller. Defaulted to the real implementation so every
+    /// pre-existing call site (`SwiftDataWardrobeRepository(modelContext:)`)
+    /// keeps compiling unchanged; tests inject `MockImageEmbeddingService`.
+    private let embeddingWorker: WardrobeEmbeddingWorker
 
     init(modelContext: ModelContext, embeddingService: ImageEmbeddingService = VisionFeaturePrintEmbeddingService()) {
         self.modelContext = modelContext
-        self.embeddingService = embeddingService
+        self.embeddingWorker = WardrobeEmbeddingWorker(embeddingService: embeddingService)
     }
 
     func fetchInventory() throws -> [WardrobeItem] {
@@ -160,10 +162,12 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     func save(_ item: WardrobeItem) throws {
         modelContext.insert(item)
         try modelContext.save()
+        WardrobeMutationTracker.shared.markMutated()
     }
 
     func update(_ item: WardrobeItem) throws {
         try modelContext.save()
+        WardrobeMutationTracker.shared.markMutated()
     }
 
     func delete(_ item: WardrobeItem) throws {
@@ -174,6 +178,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         }
         modelContext.delete(item)
         try modelContext.save()
+        WardrobeMutationTracker.shared.markMutated()
     }
 
     func fetchFeedbackHistory() async throws -> FeedbackHistory {
@@ -191,6 +196,13 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         let outfitFeedbacks = try modelContext.fetch(FetchDescriptor<OutfitFeedback>(
             predicate: #Predicate { $0.recordedAt >= cutoffDate }
         ))
+
+        // Fetched once and reused by every block below (attribute-profile
+        // join, outfit-negative-signal join, embedding pass) — previously
+        // each block re-fetched its own copy of the same full table.
+        let inventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
+        let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
+        let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
 
         var history = FeedbackHistory()
 
@@ -265,9 +277,6 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // `SavedCombination` it rated and key the resulting time-decayed
         // net-negativity by that outfit's full item-id set.
         if !outfitFeedbacks.isEmpty {
-            let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
-            let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
-
             for feedback in outfitFeedbacks {
                 guard let combination = combinationsByID[feedback.outfitID] else { continue }
                 let itemSet = Set(combination.itemIDsBySlot.values)
@@ -298,7 +307,6 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // skipped — there's no attribute to learn from.
         let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
         if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty {
-            let inventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
             let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
 
             let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
@@ -321,8 +329,6 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 )
             }
 
-            let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
-            let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
             let outfitDimensionRatings: [OutfitDimensionRatedAttributes] = detailedOutfitFeedbacks.flatMap { feedback -> [OutfitDimensionRatedAttributes] in
                 guard let combination = combinationsByID[feedback.outfitID],
                       let colorHarmony = feedback.colorHarmony,
@@ -410,11 +416,14 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             )
         }
 
-        let embeddableInventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
         let cachedEmbeddings = try modelContext.fetch(FetchDescriptor<WardrobeItemEmbedding>())
         let embeddingsByItemID = Dictionary(uniqueKeysWithValues: cachedEmbeddings.map { ($0.itemID, $0) })
 
-        for item in embeddableInventory {
+        // Cheap, synchronous pass on the main actor: sort cache hits straight
+        // into `history.itemEmbeddings` and collect only the missing/stale
+        // items into a batch for the background worker below.
+        var pendingRequests: [WardrobeEmbeddingWorker.EmbeddingRequest] = []
+        for item in inventory {
             guard !item.isGhostElement, let assetName = item.imageAssetName,
                   let imageData = ImageStorage.loadData(for: assetName)
             else { continue }
@@ -425,12 +434,21 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 continue
             }
 
-            // Best-effort — a Vision failure on one item's photo shouldn't
-            // fail the whole feedback-history fetch (same posture as the
-            // best-effort file cleanup elsewhere in this class).
-            guard let vector = try? await embeddingService.embedding(for: imageData) else { continue }
-            try? saveWardrobeItemEmbedding(itemID: item.id, vector: vector, sourceFingerprint: fingerprint)
-            history.itemEmbeddings[item.id] = vector
+            pendingRequests.append(WardrobeEmbeddingWorker.EmbeddingRequest(
+                itemID: item.id, imageData: imageData, sourceFingerprint: fingerprint
+            ))
+        }
+
+        // Off-main-actor, parallel across cores — best-effort per item, same
+        // posture as the serial loop this replaces (a Vision failure on one
+        // item's photo shouldn't fail the whole feedback-history fetch).
+        let embeddingResults = await embeddingWorker.computeEmbeddings(for: pendingRequests)
+
+        // Back on the main actor: this is the only place that touches
+        // `ModelContext`, so the worker itself never needs to.
+        for result in embeddingResults {
+            try? saveWardrobeItemEmbedding(itemID: result.itemID, vector: result.vector, sourceFingerprint: result.sourceFingerprint)
+            history.itemEmbeddings[result.itemID] = result.vector
         }
 
         return history

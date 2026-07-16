@@ -251,6 +251,7 @@ struct ProfileView: View {
     @ViewBuilder
     private func content(viewModel: ProfileViewModel) -> some View {
         List {
+            AccountSectionView()
             identitySection(viewModel: viewModel)
             swipeDiscoverySection
             styleCheckSection

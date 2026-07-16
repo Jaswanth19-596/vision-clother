@@ -30,8 +30,8 @@ final class DailyAssistantViewModel {
     /// `requestTimeoutNanoseconds` since this path chains isolate + vision
     /// tagging (two extra network-ish legs) in front of the same
     /// weather/profile/recommendation stretch — matches
-    /// `FalTryOnRenderService`'s precedent of a wider budget for a
-    /// multi-step pipeline.
+    /// `OpenRouterTryOnRenderService`'s precedent of a wider timeout (120s
+    /// request timeout) for a multi-step, multi-image pipeline.
     private static let prospectivePurchaseTimeoutNanoseconds: UInt64 = 45_000_000_000
 
     private static let prospectivePurchaseScenarioText = "The user is deciding whether to buy the item flagged as their prospective purchase in the wardrobe catalog. Build the best, most versatile, everyday-appropriate outfits using their real wardrobe, built around that item."
@@ -158,6 +158,17 @@ final class DailyAssistantViewModel {
     /// timed-out request's late result landing after `.failed` was already
     /// shown.
     private var currentRequestID: UUID?
+
+    /// In-memory snapshot cache for `wardrobeSnapshot()` — avoids re-running
+    /// `repository.fetchInventory()`/`fetchFeedbackHistory()` (a full-table
+    /// SwiftData scan plus Vision embedding work) on every conversation turn.
+    /// Invalidated by comparing `cachedSnapshotVersion` against
+    /// `WardrobeMutationTracker.shared.version`, which only changes on an
+    /// actual add/edit/delete of a `WardrobeItem` — never on a timer or a
+    /// new conversation starting.
+    private var inventoryCache: [WardrobeItem]?
+    private var feedbackHistoryCache: FeedbackHistory?
+    private var cachedSnapshotVersion: UUID?
 
     init(
         repository: WardrobeRepository,
@@ -325,12 +336,30 @@ final class DailyAssistantViewModel {
         }.joined(separator: "\n")
     }
 
+    /// Reuses the last fetched inventory/feedback-history pair across
+    /// conversation turns (and across conversations) unless a wardrobe
+    /// mutation has bumped `WardrobeMutationTracker.shared.version` since —
+    /// the first call after launch, or after any add/edit/delete, pays the
+    /// real fetch; every other call is a dictionary lookup.
+    private func wardrobeSnapshot() async throws -> (inventory: [WardrobeItem], history: FeedbackHistory) {
+        let currentVersion = WardrobeMutationTracker.shared.version
+        if let inventoryCache, let feedbackHistoryCache, cachedSnapshotVersion == currentVersion {
+            return (inventoryCache, feedbackHistoryCache)
+        }
+
+        let inventory = try repository.fetchInventory()
+        let history = try await repository.fetchFeedbackHistory()
+        self.inventoryCache = inventory
+        self.feedbackHistoryCache = history
+        self.cachedSnapshotVersion = currentVersion
+        return (inventory, history)
+    }
+
     private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
         let weather = await PerfLog.time("weather") { await weatherProvider.currentWeather() }
 
         do {
-            let inventory = try repository.fetchInventory()
-            let history = try await repository.fetchFeedbackHistory()
+            let (inventory, history) = try await wardrobeSnapshot()
             let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
 
             let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
@@ -472,8 +501,7 @@ final class DailyAssistantViewModel {
             let filename = try ImageStorage.save(imageData)
             let prospectiveItem = WardrobeItem.make(from: metadata, imageAssetName: filename)
 
-            let inventory = try repository.fetchInventory()
-            let history = try await repository.fetchFeedbackHistory()
+            let (inventory, history) = try await wardrobeSnapshot()
             let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
 
             let (catalog, index) = await PerfLog.time("catalogBuild") {

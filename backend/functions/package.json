@@ -1,0 +1,31 @@
+{
+  "name": "vision-clother-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Thin passthrough proxy for OpenRouter and Pexels — holds provider API keys server-side. See backend/README.md.",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "serve": "npm run build && firebase emulators:start --only functions,auth,firestore",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "firebase-admin": "^12.3.0",
+    "firebase-functions": "^5.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

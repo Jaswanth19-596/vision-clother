@@ -73,7 +73,10 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
         items: [WardrobeItem],
         onUpdate: @escaping (TryOnState) -> Void
     ) async {
-        guard let apiKey = APIKeys.openRouter else {
+        let proxyHeaders: [String: String]
+        do {
+            proxyHeaders = try await ProxyAuthHeaders.current()
+        } catch {
             onUpdate(.failed(.missingAPIKey))
             return
         }
@@ -103,7 +106,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             var request: URLRequest
 
             if isChatModel {
-                request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+                request = URLRequest(url: ProxyConfig.openRouterChatURL)
 
                 var contentParts: [[String: Any]] = []
 
@@ -149,7 +152,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 ]
                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
             } else {
-                request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/images")!)
+                request = URLRequest(url: ProxyConfig.openRouterImagesURL)
 
                 var inputReferences: [[String: Any]] = []
 
@@ -187,10 +190,10 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             // generation time — bump it so slow uploads surface as a real
             // result instead of a spurious -1001 timeout.
             request.timeoutInterval = 120
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("https://github.com/Antigravity", forHTTPHeaderField: "HTTP-Referer")
-            request.setValue("Vision Clother iOS", forHTTPHeaderField: "X-Title")
+            for (field, value) in proxyHeaders {
+                request.setValue(value, forHTTPHeaderField: field)
+            }
 
             let (data, response) = try await session.data(for: request)
 

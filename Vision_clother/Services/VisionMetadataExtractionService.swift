@@ -54,7 +54,7 @@ enum VisionMetadataExtractionError: Error, LocalizedError {
 final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionService {
     private let session: URLSession
     private let model: String
-    private let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+    private let endpoint = ProxyConfig.openRouterChatURL
 
     init(session: URLSession = .shared, model: String = ModelConfig.imageToText) {
         self.session = session
@@ -87,14 +87,19 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
     }
 
     private func performRequest(imageData: Data, useStructuredOutput: Bool) async throws -> GarmentMetadata {
-        guard let apiKey = APIKeys.openRouter else {
+        let proxyHeaders: [String: String]
+        do {
+            proxyHeaders = try await ProxyAuthHeaders.current()
+        } catch {
             throw VisionMetadataExtractionError.missingAPIKey
         }
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        for (field, value) in proxyHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
         request.httpBody = try Self.encodeRequestBody(
             model: model,
             imageData: imageData,

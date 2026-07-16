@@ -14,7 +14,7 @@ Domain/     Pure, synchronous, unit-tested business logic — no I/O, no SwiftDa
 Data/       WardrobeRepository protocol + SwiftDataWardrobeRepository — the only
             place that touches a ModelContext
 Services/   Network-facing protocols (IntentExtractionService, TryOnRenderService)
-            + real (OpenRouter/Fal) and Mock implementations
+            + real (OpenRouter) and Mock implementations
 Models/     Shared value/persisted types used by every layer above
 ```
 
@@ -29,16 +29,16 @@ The dependency direction is strictly downward — `Domain/` never imports `Data/
 
 ## Networking (CLAUDE.md guardrails #1 and #2)
 
-Swift has no official OpenRouter or Fal SDK, so both services are raw `URLSession` calls:
+Swift has no official OpenRouter SDK, so every service is a raw `URLSession` call — all providers (intent extraction, vision tagging, recommendation, try-on rendering) go through OpenRouter, selected per call shape by `Config/ModelConfig.swift` (`textToText` / `imageToText` / `imageToImage`):
 
 - `Services/OpenRouterIntentExtractionService.swift` — POSTs to OpenRouter's OpenAI-compatible `/chat/completions` endpoint with `response_format: json_schema` constraining the model to exactly PRD.md §3.3's `StyleConstraints` shape. One silent automatic retry on a decode/empty-response failure; network/HTTP failures surface to the UI for a manual retry.
-- `Services/FalTryOnRenderService.swift` — Fal's async submit → poll-status → fetch-result queue pattern, driving an explicit `TryOnState` (`submitting` / `polling(elapsedSeconds:)` / `succeeded` / `failed`) rather than a bare `async throws`. Poll cadence backs off from 1s to a 3s cap; total budget is 45s before it gives up as `.timedOut`.
+- `Services/OpenRouterTryOnRenderService.swift` — a single synchronous POST (120s timeout) with the base portrait plus each non-ghost garment's image as base64 `image_url` parts. Two request shapes depending on `ModelConfig.isChatCompletionImageModel`: Gemini image models go to `/chat/completions` with `modalities: ["text", "image"]` (the current default, `google/gemini-3.1-flash-lite-image`); dedicated Images-API models (e.g. `bytedance-seed/seedream-4.5`) go to `/images`. There is no async submit/poll job — `TryOnState` still exposes `submitting` / `polling(elapsedSeconds:)` / `succeeded` / `failed` for the UI, but the real service only ever drives `.submitting` → `.succeeded`/`.failed`; `.polling` is only emitted by `MockTryOnRenderService`'s simulated staged delay. Images are downscaled to a 1280px max dimension client-side before encoding, since full-resolution camera captures were too large to upload inside the timeout.
 
 Both are hidden behind a protocol (`IntentExtractionService`, `TryOnRenderService`) with a `Mock*` implementation used whenever no API key is configured (`Services/ServiceFactory.swift`) — so the app is fully interactive in Simulator with zero setup, and no test or `#Preview` ever depends on real network access or a real API key.
 
 ## API keys — dev-only posture
 
-`Services/APIKeys.swift` reads from a bundled `Config/Secrets.plist`, which is gitignored (see `Config/README.md`). To bypass bundling limitations during simulator local development, it falls back to loading the file directly from the local absolute path `/Users/jaswanth/mydocs/ios-apps/vision_clother/Vision_clother/Vision_clother/Config/Secrets.plist` in debug mode. This means the app can call OpenRouter/Fal directly with an embedded key — acceptable for personal development, **not** for any distributed build. Before shipping to TestFlight/App Store, this needs to move behind a thin proxy backend that holds the keys server-side (see `docs/backend/architecture.md`).
+`Services/APIKeys.swift` reads from a bundled `Config/Secrets.plist`, which is gitignored (see `Config/README.md`). To bypass bundling limitations during simulator local development, it falls back to loading the file directly from the local absolute path `/Users/jaswanth/mydocs/ios-apps/vision_clother/Vision_clother/Vision_clother/Config/Secrets.plist` in debug mode. This means the app can call OpenRouter directly with an embedded key — acceptable for personal development, **not** for any distributed build. Before shipping to TestFlight/App Store, this needs to move behind a thin proxy backend that holds the key server-side (see `docs/backend/architecture.md`).
 
 ## LLM-as-Recommender pipeline (2026-07-10 reversal — PRD §2.1a)
 
@@ -86,9 +86,9 @@ prompt ─┬─> WardrobeCatalogBuilder.build(inventory)  ──┐
 
 ## Manual Outfit Pairing with AI Virtual Try-On
 
-`Features/Pairing/ManualPairingView.swift` + `ManualPairingViewModel.swift`, entered from a toolbar action in `ClosetView`. Lets the user pick a top and bottom directly (Ghost Elements excluded — they have no backing photo file) rather than getting a scored `OutfitCombination` from the recommendation engine, and renders a try-on preview via the same `TryOnRenderService` the recommendation flow uses (`Services/FalTryOnRenderService.swift`, `fal-ai/fashn/tryon/v1.6`).
+`Features/Pairing/ManualPairingView.swift` + `ManualPairingViewModel.swift`, entered from a toolbar action in `ClosetView`. Lets the user pick a top and bottom directly (Ghost Elements excluded — they have no backing photo file) rather than getting a scored `OutfitCombination` from the recommendation engine, and renders a try-on preview via the same `TryOnRenderService` the recommendation flow uses (`Services/OpenRouterTryOnRenderService.swift`, `ModelConfig.imageToImage`).
 
 - `Services/UserPortraitStorage.swift` — the user's own full-body photo, one fixed file, not a SwiftData model.
-- `Services/PersonPhotoValidationService.swift` — on-device Vision framework gate (single person, full-body landmarks, basic lighting) run before the portrait is ever sent to Fal. Always real, no API key gate (`ServiceFactory.makePersonPhotoValidationService`), same posture as `makeBackgroundIsolationService`.
+- `Services/PersonPhotoValidationService.swift` — on-device Vision framework gate (single person, full-body landmarks, basic lighting) run before the portrait is ever sent to OpenRouter. Always real, no API key gate (`ServiceFactory.makePersonPhotoValidationService`), same posture as `makeBackgroundIsolationService`.
 - `ManualPairingViewModel.State` (`idle`/`validatingPhoto`/`preparingImages`/`generatingPreview(TryOnStage)`/`success`/`failed`) drives the view; reselecting a top/bottom mid-generation cancels the in-flight `Task` and — since `Task.cancel()` is only cooperative — also checks a `currentGenerationID` token in the completion callback so a stale result can never land after a newer selection has started.
 - "Save this outfit?" → Yes persists both the feedback rows and the generated image itself (see "Saved combinations (Tab 4)" above) — the preview is no longer discarded after a positive save.

@@ -133,7 +133,10 @@ final class OpenRouterBackgroundIsolationService: BackgroundIsolationService {
     }
 
     func isolateForeground(from imageData: Data) async throws -> Data {
-        guard let apiKey = APIKeys.openRouter else {
+        let proxyHeaders: [String: String]
+        do {
+            proxyHeaders = try await ProxyAuthHeaders.current()
+        } catch {
             throw BackgroundIsolationError.missingAPIKey
         }
 
@@ -151,7 +154,7 @@ final class OpenRouterBackgroundIsolationService: BackgroundIsolationService {
         var request: URLRequest
 
         if isChatModel {
-            request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+            request = URLRequest(url: ProxyConfig.openRouterChatURL)
 
             let messages: [[String: Any]] = [
                 [
@@ -179,7 +182,7 @@ final class OpenRouterBackgroundIsolationService: BackgroundIsolationService {
             ]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } else {
-            request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/images")!)
+            request = URLRequest(url: ProxyConfig.openRouterImagesURL)
 
             let body: [String: Any] = [
                 "model": model,
@@ -203,10 +206,10 @@ final class OpenRouterBackgroundIsolationService: BackgroundIsolationService {
         // body-photo-sized renders — give it more headroom than that
         // service's 120s.
         request.timeoutInterval = 150
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("https://github.com/Antigravity", forHTTPHeaderField: "HTTP-Referer")
-        request.setValue("Vision Clother iOS", forHTTPHeaderField: "X-Title")
+        for (field, value) in proxyHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
 
         let data: Data
         let response: URLResponse

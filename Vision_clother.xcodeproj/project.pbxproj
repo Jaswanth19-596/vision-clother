@@ -6,6 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 925AC4A168A2D38F747732A6 /* FirebaseFirestore */; };
+		ACC9820030090FEA00E07357 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ACC981FF30090FEA00E07357 /* FirebaseAuth */; };
+		ACC9820230090FEA00E07357 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ACC9820130090FEA00E07357 /* FirebaseCore */; };
+		E3F66F56BD2BAE37B524748C /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		AC57969E2FFF8A8D00DEEE33 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -33,6 +40,7 @@
 		AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Config/URLSchemes.plist,
 				Data/CLAUDE.md,
 				Domain/CLAUDE.md,
 				Models/CLAUDE.md,
@@ -74,6 +82,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ACC9820230090FEA00E07357 /* FirebaseCore in Frameworks */,
+				ACC9820030090FEA00E07357 /* FirebaseAuth in Frameworks */,
+				04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */,
+				E3F66F56BD2BAE37B524748C /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,6 +146,10 @@
 			);
 			name = Vision_clother;
 			packageProductDependencies = (
+				ACC981FF30090FEA00E07357 /* FirebaseAuth */,
+				ACC9820130090FEA00E07357 /* FirebaseCore */,
+				925AC4A168A2D38F747732A6 /* FirebaseFirestore */,
+				6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */,
 			);
 			productName = Vision_clother;
 			productReference = AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */;
@@ -217,6 +233,10 @@
 			);
 			mainGroup = AC5796872FFF8A8C00DEEE33;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				1242530FB979697EA900946D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AC5796912FFF8A8C00DEEE33 /* Products */;
 			projectDirPath = "";
@@ -422,6 +442,7 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Vision_clother/Config/URLSchemes.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Vision Clother uses your location to check the current weather for outfit recommendations.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
@@ -457,6 +478,7 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Vision_clother/Config/URLSchemes.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Vision Clother uses your camera to add garments to your closet.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Vision Clother uses your location to check the current weather for outfit recommendations.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Vision Clother saves your generated try-on images to your photo library.";
@@ -606,6 +628,48 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1242530FB979697EA900946D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+		ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.16.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1242530FB979697EA900946D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		925AC4A168A2D38F747732A6 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		ACC981FF30090FEA00E07357 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		ACC9820130090FEA00E07357 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AC5796882FFF8A8C00DEEE33 /* Project object */;
 }

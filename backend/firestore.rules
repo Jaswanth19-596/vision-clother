@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// The only Firestore collection in this project is the proxy's per-uid
+// rate-limit counter (backend/functions/src/middleware/rateLimit.ts), read
+// and written exclusively by Cloud Functions via the Admin SDK, which
+// bypasses these rules entirely. No client (iOS app) ever talks to Firestore
+// directly, so this denies all client access outright.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

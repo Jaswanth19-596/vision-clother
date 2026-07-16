@@ -2,17 +2,19 @@
 //  ServiceFactory.swift
 //  Vision_clother
 //
-//  Picks the real network service when a dev API key is configured
-//  (Config/Secrets.plist) and falls back to the mock otherwise — so the app
-//  is fully interactive out of the box in Simulator with no keys set, per
-//  Config/README.md.
+//  Picks the real (Firebase-proxy-backed) network service when a signed-in
+//  Firebase Auth session exists (`AuthService.shared.isSignedIn`) and falls
+//  back to the mock otherwise — so the app is fully interactive out of the
+//  box in Simulator with no Firebase sign-in, per Config/README.md. Prior to
+//  the Firebase proxy, this gate was API-key presence
+//  (`Config/Secrets.plist`) — see docs/backend/architecture.md.
 //
 
 import Foundation
 
 enum ServiceFactory {
     static func makeIntentExtractionService() -> IntentExtractionService {
-        APIKeys.openRouter != nil ? OpenRouterIntentExtractionService() : MockIntentExtractionService()
+        AuthService.shared.isSignedIn ? OpenRouterIntentExtractionService() : MockIntentExtractionService()
     }
 
     /// Wrapped in `CachedTryOnRenderService` so a request for an item set
@@ -20,26 +22,26 @@ enum ServiceFactory {
     /// reuses that image instead of paying for a fresh AI generation — see
     /// `Services/CachedTryOnRenderService.swift`.
     static func makeTryOnRenderService(repository: WardrobeRepository) -> TryOnRenderService {
-        let underlying: TryOnRenderService = APIKeys.openRouter != nil ? OpenRouterTryOnRenderService() : MockTryOnRenderService()
+        let underlying: TryOnRenderService = AuthService.shared.isSignedIn ? OpenRouterTryOnRenderService() : MockTryOnRenderService()
         return CachedTryOnRenderService(repository: repository, underlying: underlying)
     }
 
     static func makeVisionMetadataExtractionService() -> VisionMetadataExtractionService {
-        APIKeys.openRouter != nil ? OpenRouterVisionMetadataExtractionService() : MockVisionMetadataExtractionService()
+        AuthService.shared.isSignedIn ? OpenRouterVisionMetadataExtractionService() : MockVisionMetadataExtractionService()
     }
 
     /// User Style Profile derivation (PRD §3.8) — sends the onboarding
     /// portrait once per derivation, never per recommendation request.
     static func makeUserProfileDerivationService() -> UserProfileDerivationService {
-        APIKeys.openRouter != nil ? OpenRouterUserProfileDerivationService() : MockUserProfileDerivationService()
+        AuthService.shared.isSignedIn ? OpenRouterUserProfileDerivationService() : MockUserProfileDerivationService()
     }
 
     /// Primary recommendation call (PRD §3.7) — the LLM-as-Recommender path.
-    /// The mock reads the real catalog it's given, so the keyless Simulator
-    /// path still exercises `Domain/OutfitRecommendationValidator.swift`
+    /// The mock reads the real catalog it's given, so the signed-out
+    /// Simulator path still exercises `Domain/OutfitRecommendationValidator.swift`
     /// with genuinely valid picks.
     static func makeOutfitRecommendationService() -> OutfitRecommendationService {
-        APIKeys.openRouter != nil ? OpenRouterOutfitRecommendationService() : MockOutfitRecommendationService()
+        AuthService.shared.isSignedIn ? OpenRouterOutfitRecommendationService() : MockOutfitRecommendationService()
     }
 
     /// `OpenMeteoWeatherProvider` needs no API key/entitlement — CoreLocation
@@ -59,8 +61,8 @@ enum ServiceFactory {
     /// unconditionally as stage one of every upload
     /// (`JobQueueStore.performUpload`), so unlike the other OpenRouter-backed
     /// factory methods above there's no mock-swap gate here; the real class
-    /// itself throws `.missingAPIKey` per call if no key is configured
-    /// (`APIKeys.openRouter`), which `JobQueueStore` catches and falls back
+    /// itself throws `.missingAPIKey` per call if the user isn't signed in
+    /// (`ProxyAuthHeaders`), which `JobQueueStore` catches and falls back
     /// from to the raw photo.
     static func makeImagePreprocessingService() -> BackgroundIsolationService {
         OpenRouterBackgroundIsolationService()
@@ -91,10 +93,10 @@ enum ServiceFactory {
         VisionFeaturePrintEmbeddingService()
     }
 
-    /// Swipe-to-Learn Visual Taste's photo deck — same key-gated mock/real
-    /// swap as `makeIntentExtractionService`, so the swipe deck stays
-    /// interactive in Simulator with no Pexels key configured.
+    /// Swipe-to-Learn Visual Taste's photo deck — same sign-in-gated
+    /// mock/real swap as `makeIntentExtractionService`, so the swipe deck
+    /// stays interactive in Simulator with no Firebase sign-in.
     static func makeStockImageFeedService() -> StockImageFeedService {
-        APIKeys.pexels != nil ? PexelsImageFeedService() : MockStockImageFeedService()
+        AuthService.shared.isSignedIn ? PexelsImageFeedService() : MockStockImageFeedService()
     }
 }

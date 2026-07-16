@@ -7,8 +7,8 @@
 //  attribution-only licensing (Unsplash also requires a "download trigger"
 //  API ping on every use). Raw URLSession, typed Codable response, same
 //  protocol-first pattern as every other Services/ file (Services/CLAUDE.md)
-//  — mock swap gated on `APIKeys.pexels` via `ServiceFactory`, same posture
-//  as the OpenRouter-backed services.
+//  — mock swap gated on `AuthService.shared.isSignedIn` via `ServiceFactory`,
+//  same posture as the OpenRouter-backed services.
 //
 
 import Foundation
@@ -78,12 +78,15 @@ final class PexelsImageFeedService: StockImageFeedService {
     ]
 
     func fetchDeck(count: Int) async throws -> [StockPhoto] {
-        guard let apiKey = APIKeys.pexels else {
+        let proxyHeaders: [String: String]
+        do {
+            proxyHeaders = try await ProxyAuthHeaders.current()
+        } catch {
             throw StockImageFeedError.missingAPIKey
         }
 
         let query = queryPool.randomElement() ?? "clothing outfit"
-        var components = URLComponents(string: "https://api.pexels.com/v1/search")!
+        var components = URLComponents(url: ProxyConfig.pexelsSearchURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "per_page", value: String(min(max(count, 1), 80))),
@@ -99,8 +102,9 @@ final class PexelsImageFeedService: StockImageFeedService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 30
-        // Pexels expects the raw key in this header — no "Bearer" prefix.
-        request.setValue(apiKey, forHTTPHeaderField: "Authorization")
+        for (field, value) in proxyHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
 
         let data: Data
         let response: URLResponse

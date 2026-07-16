@@ -21,7 +21,10 @@ import CoreImage
 import Foundation
 import Vision
 
-protocol ImageEmbeddingService {
+/// `Sendable`: both conformers are stateless, and `WardrobeEmbeddingWorker`
+/// (`Services/WardrobeEmbeddingWorker.swift`) captures an instance across an
+/// actor boundary to run embedding work off the main actor.
+protocol ImageEmbeddingService: Sendable {
     /// Returns an L2-normalized embedding vector for the given image bytes.
     /// Throws `ImageEmbeddingError` if the image can't be read or Vision
     /// can't produce a feature print for it.
@@ -42,7 +45,7 @@ enum ImageEmbeddingError: Error, LocalizedError {
     }
 }
 
-final class VisionFeaturePrintEmbeddingService: ImageEmbeddingService {
+final class VisionFeaturePrintEmbeddingService: ImageEmbeddingService, @unchecked Sendable {
     func embedding(for imageData: Data) async throws -> [Float] {
         guard let ciImage = CIImage(data: imageData) else {
             throw ImageEmbeddingError.invalidImage
