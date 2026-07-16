@@ -14,7 +14,7 @@ Vision Clother is a mobile-first AI stylist providing scenario-based flatlay rec
 ### iOS Client (SwiftUI) — the only build target for V1
 The Xcode project lives at the repo root.
 * **Build:** `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build`
-* **Test:** `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator test`
+* **Test:** Do not test the application, the tests are taking more resources than what the system can handle. So skip tests for now. 
 
 ## 3. Reference Docs
 Read the relevant doc **before** modifying a layer:
