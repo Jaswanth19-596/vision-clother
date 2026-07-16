@@ -58,7 +58,7 @@ struct AddItemView: View {
         }
         .task {
             guard viewModel == nil else { return }
-            viewModel = AddItemViewModel(repository: SwiftDataWardrobeRepository(modelContext: modelContext))
+            viewModel = AddItemViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
         }
         .onChange(of: viewModel?.didSave) { _, didSave in
             if didSave == true { dismiss() }
@@ -207,7 +207,7 @@ struct CameraCaptureView: UIViewControllerRepresentable {
     AddItemView(defaultSlot: nil)
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
+            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),

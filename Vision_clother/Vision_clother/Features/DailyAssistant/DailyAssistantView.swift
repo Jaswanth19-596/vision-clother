@@ -69,7 +69,7 @@ struct DailyAssistantView: View {
         .task {
             guard viewModel == nil else { return }
             viewModel = DailyAssistantViewModel(
-                repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                repository: SyncingWardrobeRepository(modelContext: modelContext),
                 jobQueueStore: jobQueueStore,
                 recommendationService: ServiceFactory.makeOutfitRecommendationService(),
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
@@ -699,7 +699,7 @@ private struct PurchaseCheckRoundView: View {
     DailyAssistantView()
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
+            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 925AC4A168A2D38F747732A6 /* FirebaseFirestore */; };
+		247F9BC74FF38B55A65D6DB6 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 90460C2D24468B54CB94D949 /* FirebaseStorage */; };
 		ACC9820030090FEA00E07357 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ACC981FF30090FEA00E07357 /* FirebaseAuth */; };
 		ACC9820230090FEA00E07357 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ACC9820130090FEA00E07357 /* FirebaseCore */; };
 		E3F66F56BD2BAE37B524748C /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */; };
@@ -86,6 +87,7 @@
 				ACC9820030090FEA00E07357 /* FirebaseAuth in Frameworks */,
 				04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */,
 				E3F66F56BD2BAE37B524748C /* GoogleSignIn in Frameworks */,
+				247F9BC74FF38B55A65D6DB6 /* FirebaseStorage in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,6 +152,7 @@
 				ACC9820130090FEA00E07357 /* FirebaseCore */,
 				925AC4A168A2D38F747732A6 /* FirebaseFirestore */,
 				6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */,
+				90460C2D24468B54CB94D949 /* FirebaseStorage */,
 			);
 			productName = Vision_clother;
 			productReference = AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */;
@@ -172,8 +175,6 @@
 				AC5796A02FFF8A8D00DEEE33 /* Vision_clotherTests */,
 			);
 			name = Vision_clotherTests;
-			packageProductDependencies = (
-			);
 			productName = Vision_clotherTests;
 			productReference = AC57969D2FFF8A8D00DEEE33 /* Vision_clotherTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -195,8 +196,6 @@
 				AC5796AA2FFF8A8D00DEEE33 /* Vision_clotherUITests */,
 			);
 			name = Vision_clotherUITests;
-			packageProductDependencies = (
-			);
 			productName = Vision_clotherUITests;
 			productReference = AC5796A72FFF8A8D00DEEE33 /* Vision_clotherUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -653,6 +652,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1242530FB979697EA900946D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignIn;
+		};
+		90460C2D24468B54CB94D949 /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
 		};
 		925AC4A168A2D38F747732A6 /* FirebaseFirestore */ = {
 			isa = XCSwiftPackageProductDependency;

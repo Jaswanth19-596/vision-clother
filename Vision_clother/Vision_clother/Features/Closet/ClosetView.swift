@@ -95,7 +95,7 @@ struct ClosetView: View {
     /// Manual Pairing's sheet dismissal (a sibling presentation `ClosetView`
     /// owns directly, which doesn't trigger a tab-selection change).
     private func loadFeedbackHistory() {
-        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
         Task {
             feedbackHistory = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
         }

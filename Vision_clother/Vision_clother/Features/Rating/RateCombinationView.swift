@@ -85,13 +85,13 @@ struct RateCombinationView: View {
                 outfitViewModel = RateCombinationViewModel(
                     outfitID: combination.id,
                     items: items,
-                    repository: SwiftDataWardrobeRepository(modelContext: modelContext)
+                    repository: SyncingWardrobeRepository(modelContext: modelContext)
                 )
             case .item(let index):
                 guard index < items.count else { return }
                 itemViewModel = RateItemViewModel(
                     item: items[index],
-                    repository: SwiftDataWardrobeRepository(modelContext: modelContext)
+                    repository: SyncingWardrobeRepository(modelContext: modelContext)
                 )
             }
         }

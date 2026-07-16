@@ -56,7 +56,7 @@ struct EditItemView: View {
 
     private func save() {
         item.apply(editor.makeMetadata())
-        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
         do {
             try repository.update(item)
             dismiss()

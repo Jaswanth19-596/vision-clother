@@ -16,7 +16,9 @@ enum ProxyConfig {
     /// function URL after `firebase deploy` (see `backend/README.md`).
     static let baseURL: URL = {
         #if DEBUG
-        return URL(string: "http://localhost:5001/REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID/us-central1/api")!
+        // return URL(string: "http://localhost:5001/REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID/us-central1/api")!
+        return URL(string: "https://5747-2601-243-c884-d480-1da0-d138-6153-810f.ngrok-free.app/visionclother/us-central/api")!
+
         #else
         return URL(string: "https://REPLACE_WITH_YOUR_DEPLOYED_FUNCTION_URL/api")!
         #endif

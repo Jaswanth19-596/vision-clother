@@ -402,6 +402,31 @@ enum SchemaV8: VersionedSchema {
     }
 }
 
+/// V8 -> V9 adds one brand-new, independent table (`SyncMetadata` — Cloud
+/// Sync's local outbox/conflict-resolution bookkeeping) with zero changes to
+/// any existing V8 type, so like V3 -> V4 and V5 -> V6 this needs no
+/// `.custom` stage; `.lightweight` lets SwiftData infer the migration.
+enum SchemaV9: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(9, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+        ]
+    }
+}
+
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
 /// `.custom` stage below: `willMigrate` runs against the still-V1-shaped
 /// store (old columns present, new ones absent), `didMigrate` runs after the
@@ -413,9 +438,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -480,5 +505,10 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV7toV8 = MigrationStage.lightweight(
         fromVersion: SchemaV7.self,
         toVersion: SchemaV8.self
+    )
+
+    static let migrateV8toV9 = MigrationStage.lightweight(
+        fromVersion: SchemaV8.self,
+        toVersion: SchemaV9.self
     )
 }

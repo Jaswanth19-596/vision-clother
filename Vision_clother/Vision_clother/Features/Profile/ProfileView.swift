@@ -228,7 +228,7 @@ struct ProfileView: View {
         .task {
             guard viewModel == nil else { return }
             let vm = ProfileViewModel(
-                repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                repository: SyncingWardrobeRepository(modelContext: modelContext),
                 validationService: ServiceFactory.makePersonPhotoValidationService(),
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )

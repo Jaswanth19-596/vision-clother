@@ -99,4 +99,12 @@ enum ServiceFactory {
     static func makeStockImageFeedService() -> StockImageFeedService {
         AuthService.shared.isSignedIn ? PexelsImageFeedService() : MockStockImageFeedService()
     }
+
+    /// Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section) —
+    /// same sign-in-gated mock/real swap as `makeIntentExtractionService`, so
+    /// `Data/SyncingWardrobeRepository.swift`/`Data/WardrobeSyncCoordinator.swift`
+    /// stay interactive in Simulator/previews with no Firebase sign-in.
+    static func makeWardrobeSyncService() -> WardrobeSyncService {
+        AuthService.shared.isSignedIn ? FirestoreWardrobeSyncService() : MockWardrobeSyncService()
+    }
 }

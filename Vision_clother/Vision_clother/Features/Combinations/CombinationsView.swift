@@ -39,7 +39,7 @@ struct CombinationsView: View {
         }
         .task {
             guard viewModel == nil else { return }
-            viewModel = CombinationsViewModel(repository: SwiftDataWardrobeRepository(modelContext: modelContext))
+            viewModel = CombinationsViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
         }
         .onAppear {
             viewModel?.loadCombinations()

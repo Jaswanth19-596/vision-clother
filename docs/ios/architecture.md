@@ -27,6 +27,15 @@ The dependency direction is strictly downward — `Domain/` never imports `Data/
 - `Vision_clotherApp.swift` registers the model container for `WardrobeItem`, `OutfitFeedback`, `ItemFeedback`, `PairFeedback`, `SavedCombination`, `ItemRating`, `UserStyleProfile`.
 - `UserStyleProfile` is deliberately a single-row SwiftData model (queried, upserted via `WardrobeRepository.saveUserProfile`) rather than a disk file like `UserPortraitStorage` — it's structured data the Profile tab renders, with no image blob to store.
 
+### Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section)
+
+Local SwiftData is a per-account cache/mirror, not the sole source of truth, once a user has signed in — Firestore + Cloud Storage hold the durable per-account copy.
+
+- `Data/SyncingWardrobeRepository.swift` decorates `WardrobeRepository`, queuing a durable outbox write (`Models/SyncMetadata.swift`, drained by `Data/SyncOutboxWorker.swift`) alongside every local mutation. Every real call site constructs this, not `SwiftDataWardrobeRepository` directly.
+- `Data/WardrobeSyncCoordinator.swift` reacts to `AuthService.shared.$uid` changes — bootstrap (push-local-up for a brand-new account, or wipe-and-pull for a returning one) and the foreground delta-reconcile safety net.
+- `Data/Sync/FirestoreDTOs.swift` / `Services/WardrobeSyncService.swift` are the Firestore/Storage transport — direct client SDK calls gated by `backend/firestore.rules`/`backend/storage.rules`, no backend involvement.
+- 9 of the 11 `@Model` types sync; `WardrobeItemEmbedding` and `RecommendationImpressionEvent` stay local-only (see the Cloud Sync decision doc for why).
+
 ## Networking (CLAUDE.md guardrails #1 and #2)
 
 Swift has no official OpenRouter SDK, so every service is a raw `URLSession` call — all providers (intent extraction, vision tagging, recommendation, try-on rendering) go through OpenRouter, selected per call shape by `Config/ModelConfig.swift` (`textToText` / `imageToText` / `imageToImage`):

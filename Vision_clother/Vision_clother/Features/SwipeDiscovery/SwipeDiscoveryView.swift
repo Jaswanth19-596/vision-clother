@@ -30,7 +30,7 @@ struct SwipeDiscoveryView: View {
         .task {
             guard viewModel == nil else { return }
             let vm = SwipeDiscoveryViewModel(
-                repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                repository: SyncingWardrobeRepository(modelContext: modelContext),
                 feedService: ServiceFactory.makeStockImageFeedService(),
                 embeddingService: ServiceFactory.makeImageEmbeddingService()
             )

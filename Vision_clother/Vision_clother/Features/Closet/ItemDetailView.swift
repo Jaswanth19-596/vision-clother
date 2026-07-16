@@ -221,7 +221,7 @@ struct ItemDetailView: View {
     /// dedicated view model exists for this view, so the repository is
     /// constructed locally.
     private func loadFeedbackHistory() {
-        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
         Task {
             feedbackHistory = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
         }
@@ -253,7 +253,7 @@ struct ItemDetailView: View {
     private func deleteCurrentItem() {
         guard let itemToDelete = currentItem else { return }
 
-        let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
         do {
             try repository.delete(itemToDelete)
 

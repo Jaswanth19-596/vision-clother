@@ -99,7 +99,7 @@ struct JobQueuePanelView: View {
         switch job.kind {
         case .upload:
             guard case .succeeded = job.status, let itemID = job.resultItemID else { return }
-            let repository = SwiftDataWardrobeRepository(modelContext: modelContext)
+            let repository = SyncingWardrobeRepository(modelContext: modelContext)
             uploadDetailItem = (try? repository.fetchInventory())?.first { $0.id == itemID }
         case .tryOn:
             guard job.tryOnResultState != nil else { return }

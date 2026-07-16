@@ -269,7 +269,7 @@ private struct RateItemQuestionsViewPreviewHost: View {
         }
         .task {
             guard viewModel == nil else { return }
-            viewModel = RateItemViewModel(item: item, repository: SwiftDataWardrobeRepository(modelContext: modelContext))
+            viewModel = RateItemViewModel(item: item, repository: SyncingWardrobeRepository(modelContext: modelContext))
         }
     }
 }

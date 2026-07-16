@@ -24,14 +24,20 @@ import UserNotifications
 struct Vision_clotherApp: App {
     private let modelContainer: ModelContainer
     private let jobQueueStore: JobQueueStore
+    /// Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section) —
+    /// retained for the app's lifetime so its `AuthService.shared.$uid`
+    /// Combine subscription (`Data/WardrobeSyncCoordinator.swift`) stays
+    /// alive; a locally-scoped instance would be deallocated immediately.
+    private let syncCoordinator: WardrobeSyncCoordinator
     private let notificationDelegate = NotificationDelegate()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // Must run before any Firebase Auth call — see
         // Config/FirebaseBootstrap.swift.
         FirebaseBootstrap.configure()
 
-        let schema = Schema(SchemaV8.models)
+        let schema = Schema(SchemaV9.models)
         let container: ModelContainer
         do {
             container = try ModelContainer(
@@ -43,7 +49,8 @@ struct Vision_clotherApp: App {
         }
         modelContainer = container
 
-        let repository = SwiftDataWardrobeRepository(modelContext: container.mainContext)
+        let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
+        syncCoordinator = WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: ServiceFactory.makeWardrobeSyncService())
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: ServiceFactory.makeBackgroundIsolationService(),
@@ -74,6 +81,15 @@ struct Vision_clotherApp: App {
                 .onOpenURL { url in
                     if GIDSignIn.sharedInstance.handle(url) { return }
                     _ = Auth.auth().canHandle(url)
+                }
+                // Cloud Sync foreground safety net — a bounded delta
+                // reconcile, not a full pull, catching anything missed by
+                // the best-effort per-mutation push (e.g. offline at the
+                // time). See Data/WardrobeSyncCoordinator.swift.
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        Task { await syncCoordinator.reconcileIfSignedIn() }
+                    }
                 }
         }
         .modelContainer(modelContainer)

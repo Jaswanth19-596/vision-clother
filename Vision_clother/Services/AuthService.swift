@@ -41,12 +41,18 @@ final class AuthService: NSObject, ObservableObject {
     static let shared = AuthService()
 
     @Published private(set) var isSignedIn: Bool
+    /// Which account is signed in, not just whether one is — `Data/WardrobeSyncCoordinator.swift`
+    /// subscribes to changes here (not `isSignedIn`) to react to account
+    /// switches, not just sign-in/sign-out transitions.
+    @Published private(set) var uid: String?
 
     private override init() {
         isSignedIn = Auth.auth().currentUser != nil
+        uid = Auth.auth().currentUser?.uid
         super.init()
         Auth.auth().addStateDidChangeListener { [weak self] _, user in
             self?.isSignedIn = user != nil
+            self?.uid = user?.uid
         }
     }
 

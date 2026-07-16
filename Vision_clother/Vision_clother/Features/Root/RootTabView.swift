@@ -48,7 +48,7 @@ struct RootTabView: View {
     RootTabView()
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SwiftDataWardrobeRepository(modelContext: container.mainContext),
+            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),

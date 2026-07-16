@@ -34,7 +34,7 @@ struct StyleCheckView: View {
         .task {
             guard viewModel == nil else { return }
             viewModel = StyleCheckViewModel(
-                repository: SwiftDataWardrobeRepository(modelContext: modelContext),
+                repository: SyncingWardrobeRepository(modelContext: modelContext),
                 embeddingService: ServiceFactory.makeImageEmbeddingService()
             )
         }

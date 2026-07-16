@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-07-16 — Feature: Firestore + Cloud Storage Wardrobe Sync (Delta + Durable Outbox)
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Signing in with a different Google/phone account showed the exact same local closet every time. `AuthService`/`isSignedIn` only ever gated which network services `ServiceFactory` picked (real vs. mock) — it was never consulted by `WardrobeRepository`, which lived in one shared, ownerless local `ModelContainer`. The user asked for the full fix (real per-account cloud sync), and — once told this targets a real App Store release at production scale, not a personal single-device app — specifically asked for delta sync (not full snapshot push/pull), a durable local outbox/dirty-bit (not fire-and-forget writes), real per-record conflict resolution, and compressed/lazy photo transfer, rather than the cheaper personal-app shortcuts an initial pass had proposed.
+
+### Changes
+Firestore is the source of truth once an account has synced; local SwiftData stays a full on-device cache/mirror, wiped-and-reloaded on account switch (no per-record `ownerUID`). Every synced doc carries a Firestore-authoritative `updatedAt` (`FieldValue.serverTimestamp()`, merged in server-side, never trusted from a client field); steady-state pulls query only `updatedAt > lastPulledAt`; deletes are soft (`isDeleted` tombstones, since a hard delete is invisible to a `>` query). One new local-only table, `SyncMetadata` (`SchemaV9` — the only schema change), holds a JSON-encoded DTO snapshot per dirty entity; `SyncingWardrobeRepository` (decorates `WardrobeRepository`, same idiom as `CachedTryOnRenderService`) upserts a dirty row in the same local save as every mutation, and `SyncOutboxWorker` drains dirty rows with exponential backoff on every mutation and every foreground. Conflict resolution is per-record last-write-wins with the dirty side protected — a pull never overwrites a local row that's dirty and at least as new. First sign-in for an account pushes this device's existing local data up if the account has no cloud history yet (protects pre-auth data), or wipes-and-fully-pulls if it does (a second device/reinstall); every later reconcile is delta-only. Sign-out does not wipe local data (matches the existing "sign-in is optional" posture) — the wipe happens lazily on the next *different* account's sign-in. 9 of 11 `@Model` types sync (`WardrobeItemEmbedding`/`RecommendationImpressionEvent` stay local-only). Photos upload to Cloud Storage at upload time only — PNG (alpha-preserving, wardrobe cutouts) or JPEG (opaque, saved-combination renders) — downscaled to 1024px; pull applies metadata immediately and downloads missing photo bytes in an unawaited background pass. No backend involvement — the client talks to Firestore/Storage directly, gated by security rules keyed on `request.auth.uid`.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Models/SyncMetadata.swift` (new) | Local-only outbox/conflict-resolution table (`SchemaV9`) |
+| `Vision_clother/Models/SchemaMigrations.swift` | `SchemaV9` added (lightweight migration, new independent table) |
+| `Vision_clother/Data/Sync/FirestoreDTOs.swift` (new) | One `Codable` DTO per synced type, framework-agnostic (no `updatedAt`/`isDeleted` fields — those are sync metadata, handled at the Firestore call site) |
+| `Vision_clother/Services/WardrobeSyncService.swift` (new) | Protocol + `FirestoreWardrobeSyncService`/`MockWardrobeSyncService` — push (server-timestamp merge), delta/full pull, sync status, image upload/download |
+| `Vision_clother/Data/SyncingWardrobeRepository.swift` (new) | Decorates `WardrobeRepository`, marks `SyncMetadata` dirty + best-effort image upload on every mutation |
+| `Vision_clother/Data/SyncOutboxWorker.swift` (new) | Drains dirty `SyncMetadata` rows with exponential backoff |
+| `Vision_clother/Data/WardrobeSyncCoordinator.swift` (new) | Bootstrap (push-local-up / wipe-and-pull) + delta reconcile + account-switch wipe, driven by `AuthService.shared.$uid` |
+| `Vision_clother/Data/ImageStorage.swift` | Added `write(_:filename:)`, `wipeAll()`, `downscaledPNGForUpload`, `downscaledJPEGForUpload` |
+| `Vision_clother/Services/AuthService.swift` | Added `@Published uid: String?` |
+| `Vision_clother/Vision_clother/Services/ServiceFactory.swift` | Added `makeWardrobeSyncService()` |
+| `Vision_clother/Vision_clotherApp.swift` | Constructs `WardrobeSyncCoordinator`; `scenePhase` foreground hook calls `reconcileIfSignedIn()`; repository construction renamed to `SyncingWardrobeRepository` |
+| 18 call sites across `Features/` | Mechanical rename `SwiftDataWardrobeRepository(modelContext:)` → `SyncingWardrobeRepository(modelContext:)` |
+| `Vision_clother.xcodeproj/project.pbxproj` | `FirebaseStorage` SPM product linked (via the `xcodeproj` Ruby gem, same approach as prior Firebase package additions) |
+| `backend/storage.rules` (new), `backend/firestore.rules`, `backend/firebase.json`, `backend/firestore.indexes.json` (new) | Per-uid Storage rules; Firestore rules opened from deny-all to `users/{uid}/**` scoped to `request.auth.uid` (`rateLimits` stays admin-only); both deployed live |
+| `docs/decisions/resolved-v1.md`, `CLAUDE.md`, `Vision_clother/Data/CLAUDE.md`, `docs/ios/architecture.md` | Cloud Sync decision section; Core Invariant reworded (photos now leave the device via Cloud Storage; the recommendation LLM call itself still never sees images) |
+
 ## 2026-07-16 — Fix: Cap Concurrent In-Flight Jobs in `JobQueueStore`
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
