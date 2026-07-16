@@ -47,8 +47,30 @@ final class JobQueueStore {
 
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
 
+    /// Caps in-flight network jobs (upload's Vision-tagging call, try-on's
+    /// render call) so a bulk action (e.g. importing 50 photos at once)
+    /// can't fire dozens of concurrent requests against the paid
+    /// OpenRouter-backed API. Jobs beyond the cap sit in `pendingStarts` and
+    /// stay `.queued` until a running job frees a slot.
+    private let maxConcurrentJobs = 3
+    private var pendingStarts: [(id: UUID, start: () -> Void)] = []
+
     var activeJobCount: Int {
         jobs.filter { $0.status.isInFlight }.count
+    }
+
+    private func scheduleStart(_ jobID: UUID, _ start: @escaping () -> Void) {
+        guard runningTasks.count < maxConcurrentJobs else {
+            pendingStarts.append((jobID, start))
+            return
+        }
+        start()
+    }
+
+    private func startNextPendingIfAny() {
+        guard runningTasks.count < maxConcurrentJobs, !pendingStarts.isEmpty else { return }
+        let next = pendingStarts.removeFirst()
+        next.start()
     }
 
     init(
@@ -76,14 +98,14 @@ final class JobQueueStore {
         let job = Job(kind: .upload(payload), thumbnail: rawImageData)
         jobs.append(job)
         Task { await notificationService.requestAuthorizationIfNeeded() }
-        startUploadTask(job.id, payload: payload)
+        scheduleStart(job.id) { [weak self] in self?.startUploadTask(job.id, payload: payload) }
     }
 
     func retryUpload(_ jobID: Job.ID) {
         guard let job = jobs.first(where: { $0.id == jobID }),
               case .upload(let payload) = job.kind else { return }
         setStatus(jobID, .queued)
-        startUploadTask(jobID, payload: payload)
+        scheduleStart(jobID) { [weak self] in self?.startUploadTask(jobID, payload: payload) }
     }
 
     private func startUploadTask(_ jobID: UUID, payload: UploadPayload) {
@@ -101,31 +123,14 @@ final class JobQueueStore {
         setStatus(jobID, .processing("Enhancing photo…"))
         PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) raw=\(imageFingerprint(payload.rawImageData), privacy: .public) bytes=\(payload.rawImageData.count, privacy: .public)")
 
-        // Stage 1: Gemini (via OpenRouter) preprocesses the raw photo — can
-        // succeed on cases on-device Vision alone can't (a worn garment, a
-        // background similar to the item). Falls back to the raw photo on
-        // any failure so stage 2 still runs.
-        var workingImageData = payload.rawImageData
-        do {
-            workingImageData = try await imagePreprocessingService.isolateForeground(from: payload.rawImageData)
-        } catch {
-            workingImageData = payload.rawImageData
-        }
+        let workingImageData = await isolateStage1(payload.rawImageData)
         guard !Task.isCancelled else {
             finishJob(jobID, status: .failed("Cancelled"))
             return
         }
 
-        // Stage 2: on-device Vision produces the final transparent-background
-        // cutout from stage 1's output. Falls back to stage 1's output on
-        // failure, same graceful-degradation philosophy.
         setStatus(jobID, .processing("Isolating garment…"))
-        let imageToTag: Data
-        do {
-            imageToTag = try await backgroundIsolationService.isolateForeground(from: workingImageData)
-        } catch {
-            imageToTag = workingImageData
-        }
+        let imageToTag = await isolateStage2(workingImageData)
         guard !Task.isCancelled else {
             finishJob(jobID, status: .failed("Cancelled"))
             return
@@ -167,35 +172,34 @@ final class JobQueueStore {
 
     // MARK: - Prospective Purchase Evaluation
 
-    /// Mirrors `performUpload`'s stage-1/stage-2 isolate sequence (Gemini
-    /// preprocess -> on-device Vision cutout -> vision-LLM tagging), reusing
-    /// this store's already-injected services directly — not enqueued as a
-    /// tracked `Job`, and never saves anything. Used by
+    /// Shares `isolateStage1`/`isolateStage2` with `performUpload` — not
+    /// enqueued as a tracked `Job`, and never saves anything. Used by
     /// `DailyAssistantViewModel.checkProspectiveItem()` to tag a photo the
     /// user is only considering buying; the caller decides whether/when to
     /// persist the result (`WardrobeRepository.save`), which this method
-    /// never does. Kept as a separate, small method rather than refactoring
-    /// `performUpload` to share it — `performUpload` interleaves job-status
-    /// updates and cancellation checkpoints between each stage that this
-    /// one-shot caller has no equivalent for, and duplicating ~10 lines here
-    /// is lower-risk than restructuring an already-tested pipeline.
+    /// never does. Unlike `performUpload`, this one-shot caller has no
+    /// job-status updates or cancellation checkpoints to interleave between
+    /// stages.
     func isolateAndTag(rawImageData: Data) async throws -> (imageData: Data, metadata: GarmentMetadata) {
-        var workingImageData = rawImageData
-        do {
-            workingImageData = try await imagePreprocessingService.isolateForeground(from: rawImageData)
-        } catch {
-            workingImageData = rawImageData
-        }
-
-        let imageToTag: Data
-        do {
-            imageToTag = try await backgroundIsolationService.isolateForeground(from: workingImageData)
-        } catch {
-            imageToTag = workingImageData
-        }
-
+        let workingImageData = await isolateStage1(rawImageData)
+        let imageToTag = await isolateStage2(workingImageData)
         let metadata = try await visionMetadataService.extractMetadata(imageData: imageToTag)
         return (imageToTag, metadata)
+    }
+
+    /// Gemini (via OpenRouter) preprocesses the raw photo — can succeed on
+    /// cases on-device Vision alone can't (a worn garment, a background
+    /// similar to the item). Falls back to the raw photo on any failure so
+    /// stage 2 still runs.
+    private func isolateStage1(_ rawImageData: Data) async -> Data {
+        (try? await imagePreprocessingService.isolateForeground(from: rawImageData)) ?? rawImageData
+    }
+
+    /// On-device Vision produces the final transparent-background cutout
+    /// from stage 1's output. Falls back to stage 1's output on failure,
+    /// same graceful-degradation philosophy.
+    private func isolateStage2(_ workingImageData: Data) async -> Data {
+        (try? await backgroundIsolationService.isolateForeground(from: workingImageData)) ?? workingImageData
     }
 
     // MARK: - Try-on
@@ -205,7 +209,7 @@ final class JobQueueStore {
         let job = Job(kind: .tryOn(payload), thumbnail: baseImageData)
         jobs.append(job)
         Task { await notificationService.requestAuthorizationIfNeeded() }
-        startTryOnTask(job.id, payload: payload)
+        scheduleStart(job.id) { [weak self] in self?.startTryOnTask(job.id, payload: payload) }
     }
 
     /// Enqueues a fresh, independent job with the same inputs rather than
@@ -243,6 +247,7 @@ final class JobQueueStore {
             jobs[index].completedAt = .now
             runningTasks[jobID] = nil
             notificationService.notifyTryOnSucceeded()
+            startNextPendingIfAny()
         case .failed(let error):
             jobs[index].tryOnResultState = state
             jobs[index].status = .failed(error.errorDescription ?? "Something went wrong")
@@ -251,6 +256,7 @@ final class JobQueueStore {
             if error != .cancelled {
                 notificationService.notifyTryOnFailed(reason: error.errorDescription ?? "Something went wrong")
             }
+            startNextPendingIfAny()
         }
     }
 
@@ -302,6 +308,7 @@ final class JobQueueStore {
     /// `OpenRouterTryOnRenderService` short-circuits it. For uploads, this
     /// stops the pipeline at its next cancellation checkpoint.
     func cancelJob(_ jobID: Job.ID) {
+        pendingStarts.removeAll { $0.id == jobID }
         runningTasks[jobID]?.cancel()
         runningTasks[jobID] = nil
         finishJob(jobID, status: .failed("Cancelled"))
@@ -320,6 +327,7 @@ final class JobQueueStore {
             jobs[index].resultItemID = resultItemID
         }
         runningTasks[jobID] = nil
+        startNextPendingIfAny()
     }
 
     /// Buys a job a grace window to finish if the user briefly leaves the

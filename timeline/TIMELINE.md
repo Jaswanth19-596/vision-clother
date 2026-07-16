@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-07-16 — Fix: Cap Concurrent In-Flight Jobs in `JobQueueStore`
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+A security review flagged that `enqueueUpload`/`enqueueTryOn` each spawned an independent, uncapped background `Task` hitting the OpenRouter-backed API directly, with no maximum in-flight job count. Combined with the embedded API key, a bulk action (e.g. importing 50 photos) or deliberate abuse could fire dozens of concurrent requests against a paid third-party API with no circuit breaker.
+
+### Changes
+Added a `maxConcurrentJobs = 3` cap enforced via a `pendingStarts` FIFO queue: `scheduleStart(_:_:)` starts a job immediately if under the cap, otherwise queues its start closure (job stays `.queued`, already the existing status for this case). `startNextPendingIfAny()` drains the queue by one whenever a running job frees a slot — wired into `finishJob` (covers all upload terminal paths and explicit cancellation) and both terminal cases of `handleTryOnUpdate` (try-on succeeded/failed). `cancelJob` also removes a still-queued (not yet started) job from `pendingStarts` so cancelling before a slot opens doesn't later start it anyway.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Vision_clother/Features/JobQueue/JobQueueStore.swift` | Added `maxConcurrentJobs`/`pendingStarts`/`scheduleStart`/`startNextPendingIfAny`; `enqueueUpload`, `retryUpload`, `enqueueTryOn` now go through `scheduleStart` instead of starting their `Task` unconditionally; `finishJob` and `handleTryOnUpdate`'s terminal cases drain the pending queue; `cancelJob` also prunes `pendingStarts` |
+
+## 2026-07-16 — Refactor: Deduplicate Two-Stage Isolate Fallback in `JobQueueStore`
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+A code-review pass flagged that `JobQueueStore.performUpload` (the tracked-upload path) and `JobQueueStore.isolateAndTag` (the prospective-purchase path) duplicated the same two-stage isolate sequence — Gemini preprocess falling back to the raw photo, then on-device Vision falling back to stage 1's output — almost verbatim, with a code comment explicitly acknowledging the duplication as a deliberate lower-risk tradeoff over restructuring.
+
+### Changes
+Extracted the fallback sequencing (not the job-status/cancellation interleaving, which genuinely differs between the two call sites) into two small private helpers, `isolateStage1(_:)` and `isolateStage2(_:)`, each a one-line `try? ... ?? fallback`. `performUpload` still sets job status and checks `Task.isCancelled` between stages; `isolateAndTag` calls both helpers back-to-back with no interleaving, matching its one-shot, non-job-tracked nature.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Vision_clother/Features/JobQueue/JobQueueStore.swift` | Added `isolateStage1`/`isolateStage2` private helpers; `performUpload` and `isolateAndTag` both call them instead of duplicating the do/catch fallback logic |
+
 ## 2026-07-16 — Backend: Google Sign-In + Phone Auth Replace Sign in with Apple; Firestore Provisioned
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`), backend tests 12/12 passing

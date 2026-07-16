@@ -356,11 +356,18 @@ final class DailyAssistantViewModel {
     }
 
     private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
-        let weather = await PerfLog.time("weather") { await weatherProvider.currentWeather() }
-
         do {
-            let (inventory, history) = try await wardrobeSnapshot()
-            let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
+            // Weather, the wardrobe snapshot, and the profile don't depend on
+            // each other — only the catalog build (below) needs the
+            // snapshot's inventory/history, so fan all three out instead of
+            // stacking their round-trips sequentially.
+            async let weatherResult = PerfLog.time("weather") { await weatherProvider.currentWeather() }
+            async let snapshotResult = wardrobeSnapshot()
+            async let profileResult = PerfLog.time("profile") { await resolvedUserProfile() }
+
+            let (inventory, history) = try await snapshotResult
+            let weather = await weatherResult
+            let profile = await profileResult
 
             let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
             guard !catalog.isEmpty else {
@@ -490,19 +497,28 @@ final class DailyAssistantViewModel {
     /// an error, so it's returned as `.resolved` with an empty array rather
     /// than `.failure`.
     private func resolveProspectivePurchase(rawImageData: Data) async -> ProspectivePurchaseOutcome {
-        let weather = await PerfLog.time("weather") { await weatherProvider.currentWeather() }
-
         do {
-            let (imageData, metadata) = try await PerfLog.time("prospectivePurchase.isolateAndTag") {
+            // Weather, the photo isolate+tag call, and the wardrobe snapshot
+            // + profile are all independent of each other — only the catalog
+            // build (below) needs both the tagged prospective item and the
+            // snapshot's inventory/history, so fan all four out instead of
+            // stacking their round-trips sequentially.
+            async let weatherResult = PerfLog.time("weather") { await weatherProvider.currentWeather() }
+            async let taggedResult = PerfLog.time("prospectivePurchase.isolateAndTag") {
                 try await jobQueueStore.isolateAndTag(rawImageData: rawImageData)
             }
+            async let snapshotResult = wardrobeSnapshot()
+            async let profileResult = PerfLog.time("profile") { await resolvedUserProfile() }
+
+            let (imageData, metadata) = try await taggedResult
             guard !Task.isCancelled else { return .timedOut }
 
             let filename = try ImageStorage.save(imageData)
             let prospectiveItem = WardrobeItem.make(from: metadata, imageAssetName: filename)
 
-            let (inventory, history) = try await wardrobeSnapshot()
-            let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
+            let (inventory, history) = try await snapshotResult
+            let weather = await weatherResult
+            let profile = await profileResult
 
             let (catalog, index) = await PerfLog.time("catalogBuild") {
                 WardrobeCatalogBuilder.build(
