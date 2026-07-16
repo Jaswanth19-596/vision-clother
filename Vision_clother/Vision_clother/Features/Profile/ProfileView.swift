@@ -253,6 +253,7 @@ struct ProfileView: View {
         List {
             identitySection(viewModel: viewModel)
             swipeDiscoverySection
+            styleCheckSection
             tasteInWordsSection(viewModel: viewModel)
             colorAffinitySection(viewModel: viewModel)
             formalitySection(viewModel: viewModel)
@@ -389,6 +390,20 @@ struct ProfileView: View {
             }
         } footer: {
             Text("Swipe through outfit photos — liking and disliking looks helps us fine-tune your recommendations.")
+        }
+    }
+
+    // MARK: - Test Your Style (manual model-verification tool)
+
+    private var styleCheckSection: some View {
+        Section {
+            NavigationLink {
+                StyleCheckView()
+            } label: {
+                Label("Test Your Style", systemImage: "checkmark.seal")
+            }
+        } footer: {
+            Text("Upload a photo of any clothing item to see whether it matches what we've learned you like so far.")
         }
     }
 

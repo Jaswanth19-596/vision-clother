@@ -38,6 +38,14 @@ final class SavedCombination {
     /// replaced. `nil` for rows saved before this field existed (SchemaV3) —
     /// those never cache-hit, which is the conservative/correct default.
     var basePortraitFingerprint: String?
+    /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
+    /// 2026-07-15): the source `OutfitCombination.supplementaryAccessories`
+    /// ids/labels — a wholly separate additive pair of columns, not a second
+    /// `.accessory` entry in `itemIDsBySlot`/`labelsBySlot` above. Empty for
+    /// every row saved before this field existed and for Manual Pairing
+    /// saves (top+bottom only).
+    var supplementaryAccessoryItemIDs: [UUID] = []
+    var supplementaryAccessoryLabels: [String] = []
 
     init(
         id: UUID = UUID(),
@@ -46,7 +54,9 @@ final class SavedCombination {
         labelsBySlot: [Slot: String],
         savedAt: Date = .now,
         origin: String,
-        basePortraitFingerprint: String? = nil
+        basePortraitFingerprint: String? = nil,
+        supplementaryAccessoryItemIDs: [UUID] = [],
+        supplementaryAccessoryLabels: [String] = []
     ) {
         self.id = id
         self.imageAssetName = imageAssetName
@@ -55,10 +65,12 @@ final class SavedCombination {
         self.savedAt = savedAt
         self.origin = origin
         self.basePortraitFingerprint = basePortraitFingerprint
+        self.supplementaryAccessoryItemIDs = supplementaryAccessoryItemIDs
+        self.supplementaryAccessoryLabels = supplementaryAccessoryLabels
     }
 
     /// Slot-order label summary for list/detail row titles, e.g. "Top + Bottom".
     var displayTitle: String {
-        Slot.allCases.compactMap { labelsBySlot[$0] }.joined(separator: " + ")
+        (Slot.allCases.compactMap { labelsBySlot[$0] } + supplementaryAccessoryLabels).joined(separator: " + ")
     }
 }

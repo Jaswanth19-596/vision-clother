@@ -41,7 +41,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func strongLikesOnAColorRaiseItsAffinityAboveNeutral() {
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2)
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 
@@ -57,7 +57,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func strongDislikesOnAPatternLowerItsAffinityBelowNeutral() {
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 0.0, colorVibe: .neutral, pattern: .graphic, formalityBand: 2)
+            RatedAttributes(colorLike: 0.0, patternLike: 0.0, formalityFit: 0.0, colorVibe: .neutral, pattern: .graphic, formalityBand: 2)
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 
@@ -67,7 +67,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func affinityBonusStaysWithinBounds() {
         let allLoved = (0..<50).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .earthTones, pattern: .textured, formalityBand: 5)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .earthTones, pattern: .textured, formalityBand: 5)
         }
         let profile = AttributePreferenceProfile.build(from: allLoved)
         let item = makeItem(colorVibe: .earthTones, pattern: .textured, formalityScore: 5.0)
@@ -90,7 +90,9 @@ struct AttributePreferenceProfileTests {
         styleTags: [String] = [],
         silhouetteTag: String? = nil,
         formalityBand: Int = 2,
-        fabricWeight: FabricWeight = .light
+        fabricWeight: FabricWeight = .light,
+        pattern: GarmentPattern = .solid,
+        patternDissatisfaction: Double? = nil
     ) -> OutfitDimensionRatedAttributes {
         OutfitDimensionRatedAttributes(
             colorHarmony: colorHarmony,
@@ -102,7 +104,9 @@ struct AttributePreferenceProfileTests {
             styleTags: styleTags,
             silhouetteTag: silhouetteTag,
             formalityBand: formalityBand,
-            fabricWeight: fabricWeight
+            fabricWeight: fabricWeight,
+            pattern: pattern,
+            patternDissatisfaction: patternDissatisfaction
         )
     }
 
@@ -125,7 +129,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func itemLevelStyleIdentityRaisesStyleTagAffinityAboveNeutral() {
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
+            RatedAttributes(colorLike: 0.5, patternLike: 0.5, formalityFit: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 
@@ -140,7 +144,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func itemLevelAndOutfitLevelStyleSignalsShareTheSameAffinityChannel() {
         let itemRatings = [
-            RatedAttributes(value: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
+            RatedAttributes(colorLike: 0.5, patternLike: 0.5, formalityFit: 0.5, colorVibe: .neutral, pattern: .solid, formalityBand: 2, styleIdentity: 1.0, styleTags: ["minimalist"])
         ]
         let outfitRatings = [
             makeOutfitDimensionRating(styleMatch: 1.0, styleTags: ["minimalist"])
@@ -177,6 +181,19 @@ struct AttributePreferenceProfileTests {
         #expect(profile.affinityBonus(for: likedItem) > 0)
     }
 
+    @Test func wrongPatternChecklistFlagLowersPatternAffinityWithNoItemRatingInvolved() {
+        // "What would you change?" (Level 3): patternAffinity previously had
+        // no outfit-level entry point at all — only item-level
+        // `ItemRating.patternLike` fed it. This is that first entry point,
+        // driven purely by the checklist (no `RatedAttributes` involved).
+        let ratings = (0..<5).map { _ in
+            makeOutfitDimensionRating(pattern: .striped, patternDissatisfaction: 0.1)
+        }
+        let profile = AttributePreferenceProfile.build(from: [], outfitDimensionRatings: ratings)
+
+        #expect((profile.patternAffinity[.striped] ?? 0.5) < 0.5)
+    }
+
     @Test func colorHarmonyAndOccasionMatchFoldIntoExistingColorAndFormalityAffinity() {
         let ratings = (0..<5).map { _ in
             makeOutfitDimensionRating(colorHarmony: 1.0, occasionMatch: 1.0, colorVibe: .vibrant, formalityBand: 4)
@@ -198,10 +215,10 @@ struct AttributePreferenceProfileTests {
 
     @Test func staleRatingsContributeLessThanRecentOnesOfTheSameStrength() {
         let now = Date.now
-        let recentOnly = [RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now)]
+        let recentOnly = [RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now)]
         // 120 days ago — two 60-day half-lives, so this rating's weight
         // should have decayed to roughly a quarter of the recent one's.
-        let staleOnly = [RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now.addingTimeInterval(-120 * 86400))]
+        let staleOnly = [RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, recordedAt: now.addingTimeInterval(-120 * 86400))]
 
         let recentProfile = AttributePreferenceProfile.build(from: recentOnly, now: now)
         let staleProfile = AttributePreferenceProfile.build(from: staleOnly, now: now)
@@ -231,7 +248,7 @@ struct AttributePreferenceProfileTests {
         // attribute the closet already has many items of — the prior scales
         // with how entrenched that attribute already is.
         let ratings = (0..<3).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2)
         }
 
         let smallCloset = [makeItem(colorVibe: .vibrant)]
@@ -250,7 +267,7 @@ struct AttributePreferenceProfileTests {
     @Test func ghostElementsAreScoredThroughTheIdenticalPath() {
         // Domain/CLAUDE.md: no isGhostElement branch anywhere in scoring.
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .monochrome, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .monochrome, pattern: .solid, formalityBand: 2)
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 
@@ -273,10 +290,10 @@ struct AttributePreferenceProfileTests {
 
     @Test func colorAffinityIsIsolatedPerSlot() throws {
         let topRatings = (0..<5).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .top)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .top)
         }
         let bottomRatings = (0..<5).map { _ in
-            RatedAttributes(value: 0.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .bottom)
+            RatedAttributes(colorLike: 0.0, patternLike: 0.0, formalityFit: 0.0, colorVibe: .vibrant, pattern: .solid, formalityBand: 2, slot: .bottom)
         }
         let profile = AttributePreferenceProfile.build(from: topRatings + bottomRatings)
 
@@ -293,7 +310,7 @@ struct AttributePreferenceProfileTests {
 
     @Test func ratingsWithoutASlotDoNotContributeToColorAffinityBySlot() {
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: .earthTones, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, patternLike: 1.0, formalityFit: 1.0, colorVibe: .earthTones, pattern: .solid, formalityBand: 2)
         }
         let profile = AttributePreferenceProfile.build(from: ratings)
 

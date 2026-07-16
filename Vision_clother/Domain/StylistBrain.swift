@@ -71,7 +71,7 @@ enum StylistBrain {
                 2. Dress Code
                    Purpose: Match the scenario's required formality band — for every populated slot, including accent slots (bag, headwear, accessory), not only the required garments.
                    Priority: Overrides weather, ratings, color theory, fit, and personal preference below. Social etiquette and situational appropriateness (e.g. a funeral, interview, or gala) always outrank weather comfort and personal taste.
-                   Never: Recommend any item — including an accent item — whose formality differs from the scenario's range by more than \(FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta.formatted()) points (hard mismatch) or \(FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta.formatted()) points (soft mismatch); avoid both. Never add an accent slot to `desired_accent_slots` just because the scenario loosely resembles its usual trigger (e.g. treating "interview" as "errand" and forcing in a bag) — resolve accents by scenario type instead: business/interview/formal-event scenarios call for at most one subtle accessory and never headwear, and a bag only if a structured/formal option exists in the catalog; outdoor/sunny/casual scenarios call for headwear; errands/commute/travel scenarios call for a bag (casual is fine there). When no compliant option exists for a wanted accent slot, omit the slot rather than force a mismatch. For a formal suit jacket/blazer worn as outerwear, top_id must still be a compatible layer worn underneath it (e.g. a dress shirt), never left implied or empty.
+                   Never: Recommend any item — including an accent item — whose formality differs from the scenario's range by more than \(FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta.formatted()) points (hard mismatch) or \(FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta.formatted()) points (soft mismatch); avoid both. Never add an accent slot to `desired_accent_slots` just because the scenario loosely resembles its usual trigger (e.g. treating "interview" as "errand" and forcing in a bag) — resolve accents by scenario type instead: business/interview/formal-event scenarios call for at most one subtle accessory and never headwear, and a bag only if a structured/formal option exists in the catalog; outdoor/sunny/casual scenarios call for headwear; errands/commute/travel scenarios call for a bag (casual is fine there). When no compliant option exists for a wanted accent slot, omit the slot rather than force a mismatch. For a formal suit jacket/blazer worn as outerwear, top_id must still be a compatible layer worn underneath it (e.g. a dress shirt), never left implied or empty. Layered accessorizing (accessory_id plus supplementary_accessory_ids) is only ever appropriate for casual/going-out scenarios — business, interview, and formal-event scenarios must stay at one subtle accessory or none, same as the single-accessory rule above.
                 """
             case .weatherContext:
                 return """
@@ -257,13 +257,27 @@ enum StylistBrain {
                 }
             }
 
-            // 3. Output format
+            // 3. Prospective Purchase Evaluation (2026-07-15): always present
+            // in the prompt (cheap, and a no-op on every ordinary request) —
+            // only takes effect when the catalog actually contains a
+            // flagged entry.
+            prompt += """
+
+            PROSPECTIVE PURCHASE EVALUATION:
+            - If exactly one catalog entry has "is_prospective_purchase": true, the user is deciding whether to buy that specific item — it is not yet part of their closet. Every outfit you return this turn must include that item's id, either in its own slot or in supplementary_accessory_ids if it's a secondary accessory-type piece. Never return an outfit that omits it.
+            - Judge it exactly as you would judge a real wardrobe item against every tier above — dress code, weather, preferences, visual cohesion. The goal is an honest verdict on whether it's a good addition to this specific wardrobe, not a forced compliment. If it genuinely doesn't pair with anything the user owns, return as many honest outfits as you can (even zero) rather than stretching a mismatch to hit the usual outfit count, and say plainly in rationale.summary why it doesn't work.
+            - Ignore this entire section if no catalog entry has "is_prospective_purchase": true — it does not apply to ordinary recommendation requests.
+
+            """
+
+            // 4. Output format
             prompt += """
 
             OUTPUT FORMAT:
             - Every outfit must include top_id, bottom_id, and footwear_id. outerwear_id, headwear_id, accessory_id, and bag_id are each optional — leave null unless the scenario/weather calls for them (see Tier 2 above for exactly when an accent slot is warranted).
             - These four optional keys must always be present in the JSON output, but a present key is not a request to fill it: null is the correct and expected value for most outfits in most of these slots. Never treat "the key exists in the schema" as a reason to search the catalog for something plausible to put there — that is exactly how a bag ends up in an interview outfit. Decide per Tier 2 first; only populate the key if that decision says yes.
-            - accessory_id represents a single signature piece (belt, scarf, tie, watch, or sunglasses) — one per outfit, not several simultaneously.
+            - accessory_id represents a single signature piece (belt, scarf, tie, watch, or sunglasses).
+            - supplementary_accessory_ids is always present (an array, possibly empty) but almost always empty: 0-\(FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories) more accent items worn *alongside* accessory_id, only for casual/going-out scenarios that genuinely call for layered accessorizing (e.g. a belt plus a watch). Business, interview, and formal-event scenarios must leave this empty — one subtle accessory (or none) is the ceiling there. Never duplicate accessory_id or repeat an id within this array.
             - resolved_constraints: state your actual resolved formality_range, weather_layering_required, color_palette_vibe, season_suitability, and desired_accent_slots — this must reflect your real reasoning, not a placeholder. Null when intent_clear is false.
             - rationale.summary: one short sentence, 100 characters or fewer, stating why this outfit is correct. Do not write multiple sentences or a paragraph.
             - rationale.confidence: an integer from 0 to 100 — your calibrated confidence that this is a strong match. Lower it when a tier required a compromise, the scenario was ambiguous, or you substituted for a missing ideal item; don't default to a high number out of habit.

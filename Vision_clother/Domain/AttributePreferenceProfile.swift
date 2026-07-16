@@ -21,10 +21,19 @@ import Foundation
 
 /// One `ItemRating`, already joined to the attributes of the item it rated —
 /// prepared by the caller (`Data/WardrobeRepository.swift`) so this module
-/// never touches SwiftData or `WardrobeItem` lookups itself.
+/// never touches SwiftData or `WardrobeItem` lookups itself. Each field below
+/// is a dedicated per-attribute answer (`ItemRating.colorLike`/`patternLike`/
+/// `formalityFit`/etc., normalized to `[0,1]`) rather than one blended score
+/// reused for every affinity — see docs/decisions/stylist-intelligence-engine.md.
 struct RatedAttributes {
-    /// `ItemRating.normalizedValue`, already in `[0,1]`.
-    let value: Double
+    /// `ItemRating.colorLike` — feeds `colorVibeAffinity[colorVibe]`.
+    let colorLike: Double
+    /// `ItemRating.patternLike` — feeds `patternAffinity[pattern]`. `nil`
+    /// when the Pattern question was skipped (solid-pattern item), in which
+    /// case this rating simply doesn't contribute to `patternAffinity`.
+    let patternLike: Double?
+    /// `ItemRating.formalityFit` — feeds `formalityAffinity[formalityBand]`.
+    let formalityFit: Double
     let colorVibe: ColorVibe
     let pattern: GarmentPattern
     /// `Int(formalityScore.rounded())`, banding the continuous formality
@@ -49,16 +58,38 @@ struct RatedAttributes {
     /// only cares about the flat `colorVibeAffinity`) keep compiling; a `nil`
     /// slot simply doesn't contribute to the per-slot breakdown.
     let slot: Slot?
+    /// `WardrobeItem.silhouette` for the rated item, paired with
+    /// `silhouetteFit` below — feeds `silhouetteAffinity`. `nil` for items
+    /// with no silhouette tag (most of the closet, currently), same as the
+    /// outfit-level `Fit & Silhouette` question's `silhouetteTag`.
+    let silhouetteTag: String?
+    /// `ItemRating.fit.centeredness` — item-level companion to the
+    /// outfit-level `Fit & Silhouette` question, feeding the same
+    /// `silhouetteAffinity` map. `nil` whenever `silhouetteTag` is `nil`
+    /// (nothing to key the affinity by), so it never contributes alone.
+    let silhouetteFit: Double?
+    /// `WardrobeItem.fabricWeight` for the rated item — feeds
+    /// `fabricWeightAffinity`, alongside the outfit-level Weather
+    /// Suitability + Practicality average.
+    let fabricWeight: FabricWeight
+    /// `ItemRating.comfort` ("how did the fabric feel?"), normalized to
+    /// `[0,1]` — the item-level signal for `fabricWeightAffinity`.
+    let fabricComfort: Double
 
     /// Explicit init (rather than relying on the synthesized memberwise
     /// init's default-value support) — with trailing defaulted parameters,
     /// SourceKit/xcodebuild inference for this struct's implicit memberwise
     /// init proved unreliable at call sites.
     init(
-        value: Double, colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int,
-        styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now, slot: Slot? = nil
+        colorLike: Double, patternLike: Double? = nil, formalityFit: Double,
+        colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int,
+        styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now, slot: Slot? = nil,
+        silhouetteTag: String? = nil, silhouetteFit: Double? = nil,
+        fabricWeight: FabricWeight = .medium, fabricComfort: Double = 0.5
     ) {
-        self.value = value
+        self.colorLike = colorLike
+        self.patternLike = patternLike
+        self.formalityFit = formalityFit
         self.colorVibe = colorVibe
         self.pattern = pattern
         self.formalityBand = formalityBand
@@ -66,6 +97,10 @@ struct RatedAttributes {
         self.styleTags = styleTags
         self.recordedAt = recordedAt
         self.slot = slot
+        self.silhouetteTag = silhouetteTag
+        self.silhouetteFit = silhouetteFit
+        self.fabricWeight = fabricWeight
+        self.fabricComfort = fabricComfort
     }
 }
 
@@ -87,6 +122,12 @@ struct OutfitDimensionRatedAttributes {
     let silhouette: Double
     /// Mean of Weather Suitability and Practicality — see file header.
     let weatherFit: Double
+    /// "What would you change?" checklist (Level 3, Stylist Intelligence
+    /// Engine ADR) — `nil` unless "Wrong pattern" was flagged, in which case
+    /// this is the *only* outfit-level signal that feeds `patternAffinity`
+    /// (the Level 2 question set has no dedicated Pattern star question;
+    /// only item-level `ItemRating.patternLike` fed this map before).
+    let patternDissatisfaction: Double?
 
     let colorVibe: ColorVibe
     let styleTags: [String]
@@ -95,6 +136,9 @@ struct OutfitDimensionRatedAttributes {
     let silhouetteTag: String?
     let formalityBand: Int
     let fabricWeight: FabricWeight
+    /// The rated item's actual pattern — always known, pairs with
+    /// `patternDissatisfaction` above to key `patternAffinity`.
+    let pattern: GarmentPattern
     /// `OutfitFeedback.recordedAt` — feeds `build(from:)`'s exponential
     /// time-decay weighting, same as `RatedAttributes.recordedAt`.
     let recordedAt: Date
@@ -105,18 +149,21 @@ struct OutfitDimensionRatedAttributes {
     init(
         colorHarmony: Double, occasionMatch: Double, styleMatch: Double, silhouette: Double, weatherFit: Double,
         colorVibe: ColorVibe, styleTags: [String], silhouetteTag: String?, formalityBand: Int,
-        fabricWeight: FabricWeight, recordedAt: Date = .now, slot: Slot? = nil
+        fabricWeight: FabricWeight, pattern: GarmentPattern = .solid, patternDissatisfaction: Double? = nil,
+        recordedAt: Date = .now, slot: Slot? = nil
     ) {
         self.colorHarmony = colorHarmony
         self.occasionMatch = occasionMatch
         self.styleMatch = styleMatch
         self.silhouette = silhouette
         self.weatherFit = weatherFit
+        self.patternDissatisfaction = patternDissatisfaction
         self.colorVibe = colorVibe
         self.styleTags = styleTags
         self.silhouetteTag = silhouetteTag
         self.formalityBand = formalityBand
         self.fabricWeight = fabricWeight
+        self.pattern = pattern
         self.recordedAt = recordedAt
         self.slot = slot
     }
@@ -263,20 +310,30 @@ struct AttributePreferenceProfile {
         for rating in ratings {
             let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
 
-            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.value * weight
+            colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorLike * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
-            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.value, weight: weight, into: &colorSumsBySlot)
+            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.colorLike, weight: weight, into: &colorSumsBySlot)
 
-            patternSums[rating.pattern, default: (0, 0)].sum += rating.value * weight
-            patternSums[rating.pattern, default: (0, 0)].count += weight
+            if let patternLike = rating.patternLike {
+                patternSums[rating.pattern, default: (0, 0)].sum += patternLike * weight
+                patternSums[rating.pattern, default: (0, 0)].count += weight
+            }
 
-            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.value * weight
+            formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.formalityFit * weight
             formalitySums[rating.formalityBand, default: (0, 0)].count += weight
 
             for tag in rating.styleTags {
                 styleTagSums[tag, default: (0, 0)].sum += rating.styleIdentity * weight
                 styleTagSums[tag, default: (0, 0)].count += weight
             }
+
+            if let silhouetteTag = rating.silhouetteTag, let silhouetteFit = rating.silhouetteFit {
+                silhouetteSums[silhouetteTag, default: (0, 0)].sum += silhouetteFit * weight
+                silhouetteSums[silhouetteTag, default: (0, 0)].count += weight
+            }
+
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.fabricComfort * weight
+            fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
         }
 
         for rating in outfitDimensionRatings {
@@ -288,6 +345,11 @@ struct AttributePreferenceProfile {
 
             formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch * weight
             formalitySums[rating.formalityBand, default: (0, 0)].count += weight
+
+            if let patternDissatisfaction = rating.patternDissatisfaction {
+                patternSums[rating.pattern, default: (0, 0)].sum += patternDissatisfaction * weight
+                patternSums[rating.pattern, default: (0, 0)].count += weight
+            }
 
             for tag in rating.styleTags {
                 styleTagSums[tag, default: (0, 0)].sum += rating.styleMatch * weight

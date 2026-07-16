@@ -25,14 +25,15 @@ struct Vision_clotherApp: App {
     private let notificationDelegate = NotificationDelegate()
 
     init() {
+        let schema = Schema(SchemaV8.models)
         let container: ModelContainer
         do {
             container = try ModelContainer(
-                for: Schema(SchemaV4.models),
+                for: schema,
                 migrationPlan: SavedCombinationMigrationPlan.self
             )
         } catch {
-            fatalError("Failed to create ModelContainer: \(error)")
+            container = Self.recreatingContainerAfterStoreReset(schema: schema, originalError: error)
         }
         modelContainer = container
 
@@ -62,5 +63,29 @@ struct Vision_clotherApp: App {
                 .environment(jobQueueStore)
         }
         .modelContainer(modelContainer)
+    }
+
+    /// Last-resort recovery for a `ModelContainer` init failure that no
+    /// schema-migration-plan edit can fix — e.g. a store whose on-disk
+    /// version/checksum metadata was stamped mid-iteration (a live `@Model`
+    /// type's shape changed while its `VersionedSchema` still claimed an
+    /// already-shipped version number) and now matches no known stage,
+    /// surfacing as SwiftData's "unknown model version" error. That
+    /// provenance is corrupt, not recoverable, so the only way forward is a
+    /// fresh store; this trades a hard app-breaking crash for a local-data
+    /// reset in that one failure path. Any other, non-store cause (e.g. a
+    /// genuinely malformed schema) still fails the same way after retrying,
+    /// which fatalErrors below with both errors for context.
+    private static func recreatingContainerAfterStoreReset(schema: Schema, originalError: Error) -> ModelContainer {
+        let storeURL = ModelConfiguration().url
+        let fileManager = FileManager.default
+        for suffix in ["", "-shm", "-wal"] {
+            try? fileManager.removeItem(atPath: storeURL.path + suffix)
+        }
+        do {
+            return try ModelContainer(for: schema, migrationPlan: SavedCombinationMigrationPlan.self)
+        } catch {
+            fatalError("Failed to create ModelContainer even after resetting the store. Original error: \(originalError). Retry error: \(error)")
+        }
     }
 }

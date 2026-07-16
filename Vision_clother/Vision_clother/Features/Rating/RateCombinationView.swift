@@ -206,6 +206,16 @@ private struct RateCombinationQuestionsView: View {
                 StarRatingRow(rating: $viewModel.practicality)
             }
 
+            Section("What Would You Change?") {
+                Text("Select anything that didn't work — optional.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ChangeReasonChecklist(
+                    selection: viewModel.selectedChangeReasons,
+                    onToggle: viewModel.toggleChangeReason
+                )
+            }
+
             if !viewModel.items.isEmpty {
                 Section("Favorite Piece") {
                     Text("Which piece did you like most?")
@@ -286,6 +296,33 @@ private struct WearAgainTriStateRow: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .padding(.vertical, 4)
+    }
+}
+
+/// "What would you change?" checklist (Level 3, Stylist Intelligence Engine
+/// ADR) — a plain multi-select list of toggleable rows, one per
+/// `OutfitChangeReason`. `.tooFormal`/`.tooCasual` are mutually exclusive;
+/// `onToggle` (`RateCombinationViewModel.toggleChangeReason`) enforces that.
+private struct ChangeReasonChecklist: View {
+    let selection: Set<OutfitChangeReason>
+    let onToggle: (OutfitChangeReason) -> Void
+
+    var body: some View {
+        ForEach(OutfitChangeReason.allCases) { reason in
+            Button {
+                onToggle(reason)
+            } label: {
+                HStack {
+                    Text(reason.label)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if selection.contains(reason) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.tint)
+                    }
+                }
+            }
+        }
     }
 }
 

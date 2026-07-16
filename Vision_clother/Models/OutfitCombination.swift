@@ -23,8 +23,19 @@ struct OutfitCombination: Identifiable {
     /// this combination was picked. `nil` for outfits produced by the fully
     /// deterministic fallback engine.
     var structuredRationale: StructuredRationale? = nil
+    /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
+    /// 2026-07-15): 0-`FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories`
+    /// additional accent items worn alongside `accessory` — a wholly
+    /// separate list, not a second `.accessory` dictionary entry. Every
+    /// other slot stays singular; this is the one deliberate exception.
+    var supplementaryAccessories: [WardrobeItem] = []
 
-    init(itemsBySlot: [Slot: WardrobeItem], score: Double, structuredRationale: StructuredRationale? = nil) {
+    init(
+        itemsBySlot: [Slot: WardrobeItem],
+        score: Double,
+        structuredRationale: StructuredRationale? = nil,
+        supplementaryAccessories: [WardrobeItem] = []
+    ) {
         assert(
             Slot.allCases.filter(\.isRequired).allSatisfy { itemsBySlot[$0] != nil },
             "OutfitCombination missing a required slot"
@@ -32,6 +43,7 @@ struct OutfitCombination: Identifiable {
         self.itemsBySlot = itemsBySlot
         self.score = score
         self.structuredRationale = structuredRationale
+        self.supplementaryAccessories = supplementaryAccessories
     }
 
     // Convenience accessors for the always-required slots and the original
@@ -49,7 +61,7 @@ struct OutfitCombination: Identifiable {
     var bag: WardrobeItem? { itemsBySlot[.bag] }
 
     var items: [WardrobeItem] {
-        Slot.allCases.compactMap { itemsBySlot[$0] }
+        Slot.allCases.compactMap { itemsBySlot[$0] } + supplementaryAccessories
     }
 
     /// Ghost elements are scored identically to real items (see

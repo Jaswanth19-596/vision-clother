@@ -12,6 +12,13 @@
 //  `FeedbackHistory.itemFeedback` channel (see Data/WardrobeRepository.swift)
 //  and its per-attribute values into `Domain/AttributePreferenceProfile.swift`.
 //
+//  Question set redesigned (2026-07-15) so every question maps to a specific
+//  garment attribute the scoring engine can act on, instead of blending
+//  everything (including questions with no scoring hook at all, like the
+//  former Versatility/Frequency/Quality Perception) into one mushy score
+//  that got reused as the signal for color/pattern/formality alike. See
+//  docs/decisions/stylist-intelligence-engine.md.
+//
 
 import Foundation
 import SwiftData
@@ -44,82 +51,69 @@ enum FitRating: Int, Codable, CaseIterable, Identifiable {
         1.0 - Double(abs(rawValue)) / 2.0
     }
 
-    /// "Liked" scoring formula for `ItemRating`'s Level 1 (Fit/Comfort/
-    /// Confidence/Wear-again) + Level 2 (Versatility/Frequency/Style
-    /// Identity/Quality Perception) question set — the item-level mirror of
-    /// `OutfitFeedback.normalizedRating` (Stylist Intelligence Engine Phase 1
-    /// addendum, item granularity). Sole consumer is `ItemRating.normalizedValue`.
+    /// "Liked" scoring formula for `ItemRating`'s attribute-targeted question
+    /// set — the item-level mirror of `OutfitFeedback.normalizedRating`.
+    /// `patternLike` is optional because `Features/Rating/RateItemView.swift`
+    /// skips the Pattern question for solid-pattern items (nothing to ask);
+    /// when absent, the average is taken over the remaining 6 dimensions
+    /// instead of 7 rather than assuming a neutral answer.
     static func normalizedRating(
         fit: FitRating,
         comfort: Int,
-        confidence: Int,
-        wearAgain: Bool,
-        versatility: Int,
-        frequency: Int,
+        colorLike: Int,
+        patternLike: Int?,
+        formalityFit: Int,
         styleIdentity: Int,
-        qualityPerception: Int
+        wearAgain: Bool
     ) -> Double {
         let comfortNorm = Double(comfort - 1) / 4.0
-        let confidenceNorm = Double(confidence - 1) / 4.0
-        let wearAgainNorm = wearAgain ? 1.0 : 0.0
-        let versatilityNorm = Double(versatility - 1) / 4.0
-        let frequencyNorm = Double(frequency - 1) / 4.0
+        let colorLikeNorm = Double(colorLike - 1) / 4.0
+        let formalityFitNorm = Double(formalityFit - 1) / 4.0
         let styleIdentityNorm = Double(styleIdentity - 1) / 4.0
-        let qualityPerceptionNorm = Double(qualityPerception - 1) / 4.0
-        return (
-            fit.centeredness + comfortNorm + confidenceNorm + wearAgainNorm
-            + versatilityNorm + frequencyNorm + styleIdentityNorm + qualityPerceptionNorm
-        ) / 8.0
-    }
-
-    /// Fallback for `ItemRating` rows recorded before the Level 2 Fashion
-    /// Evaluation questions existed (`versatility`/`frequency`/`styleIdentity`/
-    /// `qualityPerception` are `nil`) — the original Level 1-only
-    /// (Fit/Comfort/Confidence/Wear-again) formula, so legacy rows keep
-    /// contributing a meaningful "liked" signal to `impliesLiked` and
-    /// `Domain/AttributePreferenceProfile` instead of crashing or being
-    /// silently dropped. Sole consumer is `ItemRating.normalizedValue`.
-    static func legacyNormalizedRating(fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool) -> Double {
-        let comfortNorm = Double(comfort - 1) / 4.0
-        let confidenceNorm = Double(confidence - 1) / 4.0
         let wearAgainNorm = wearAgain ? 1.0 : 0.0
-        return (fit.centeredness + comfortNorm + confidenceNorm + wearAgainNorm) / 4.0
+
+        var sum = fit.centeredness + comfortNorm + colorLikeNorm + formalityFitNorm + styleIdentityNorm + wearAgainNorm
+        var count = 6.0
+        if let patternLike {
+            sum += Double(patternLike - 1) / 4.0
+            count += 1
+        }
+        return sum / count
     }
 }
 
-/// One rating event for a single garment — Level 1 (fit, comfort,
-/// confidence, wear-again) plus Level 2 Fashion Evaluation (versatility,
-/// predicted wear frequency, style identity, quality perception — Stylist
-/// Intelligence Engine Phase 1 addendum, item granularity), gathered from
-/// `Features/Rating/RateItemView.swift`. Event-sourced like the other
-/// feedback tables (Models/FeedbackEvent.swift) so re-rating a garment over
-/// time accumulates history rather than overwriting it.
+/// One rating event for a single garment, gathered from
+/// `Features/Rating/RateItemView.swift`: Fit, Comfort (fabric feel), Color
+/// ("do you like this color on you"), Pattern (skipped for solids),
+/// Formality Fit ("did this feel right for how formal/casual you needed
+/// it"), Style Identity ("does this feel like you"), and Wear Again.
+/// Event-sourced like the other feedback tables (Models/FeedbackEvent.swift)
+/// so re-rating a garment over time accumulates history rather than
+/// overwriting it.
 @Model
 final class ItemRating {
     @Attribute(.unique) var id: UUID
     var itemID: UUID
     /// Raw `FitRating.rawValue` — stored as `Int` for SwiftData compatibility.
     var fitRaw: Int
-    /// 1...5, fabric comfort / feel.
+    /// 1...5, fabric comfort / feel — also the item-level signal for
+    /// `Domain/AttributePreferenceProfile.swift`'s `fabricWeightAffinity`.
     var comfort: Int
-    /// 1...5, how confident/good the user felt wearing it.
-    var confidence: Int
+    /// 1...5, "do you like this color on you?" — feeds `colorVibeAffinity`
+    /// for `WardrobeItem.colorProfile.category`, replacing the old blended
+    /// `value` that had no dedicated color question at all.
+    var colorLike: Int
+    /// 1...5, "how do you feel about this pattern?" — feeds `patternAffinity`
+    /// for `WardrobeItem.pattern`. `nil` when the item's pattern is `.solid`
+    /// (`RateItemView` skips the question; nothing meaningful to ask).
+    var patternLike: Int?
+    /// 1...5, "did this feel right for how formal/casual you needed it?" —
+    /// feeds `formalityAffinity` for the item's formality band.
+    var formalityFit: Int
+    /// 1...5, "does this feel like you?" — feeds `styleTagAffinity`, the
+    /// same map the outfit-level Personal Style Match question feeds.
+    var styleIdentity: Int
     var wearAgain: Bool
-    /// 1...5, how versatile/restylable the user judges this piece to be.
-    /// Optional so existing persisted rows (recorded before this question
-    /// existed) decode as `nil` under SwiftData's automatic lightweight
-    /// migration — no schema version bump needed. `nil` on legacy rows
-    /// falls back to the pre-Level-2 formula (see `normalizedValue`).
-    var versatility: Int? = nil
-    /// 1...5, predicted future wear frequency. Optional — see `versatility`.
-    var frequency: Int? = nil
-    /// 1...5, "does this feel like you" — feeds
-    /// `Domain/AttributePreferenceProfile.swift`'s `styleTagAffinity`,
-    /// the same map the outfit-level Personal Style Match question feeds.
-    /// Optional — see `versatility`.
-    var styleIdentity: Int? = nil
-    /// 1...5, perceived craftsmanship/quality. Optional — see `versatility`.
-    var qualityPerception: Int? = nil
     var recordedAt: Date
 
     init(
@@ -127,24 +121,22 @@ final class ItemRating {
         itemID: UUID,
         fit: FitRating,
         comfort: Int,
-        confidence: Int,
-        wearAgain: Bool,
-        versatility: Int,
-        frequency: Int,
+        colorLike: Int,
+        patternLike: Int?,
+        formalityFit: Int,
         styleIdentity: Int,
-        qualityPerception: Int,
+        wearAgain: Bool,
         recordedAt: Date = .now
     ) {
         self.id = id
         self.itemID = itemID
         self.fitRaw = fit.rawValue
         self.comfort = comfort
-        self.confidence = confidence
-        self.wearAgain = wearAgain
-        self.versatility = versatility
-        self.frequency = frequency
+        self.colorLike = colorLike
+        self.patternLike = patternLike
+        self.formalityFit = formalityFit
         self.styleIdentity = styleIdentity
-        self.qualityPerception = qualityPerception
+        self.wearAgain = wearAgain
         self.recordedAt = recordedAt
     }
 
@@ -152,23 +144,22 @@ final class ItemRating {
         FitRating(rawValue: fitRaw) ?? .justRight
     }
 
-    /// Mean of all 8 Level 1 + Level 2 questions normalized to `[0,1]`, or —
-    /// for legacy rows recorded before Level 2 existed — the Level 1-only
-    /// fallback (`FitRating.legacyNormalizedRating`). Used both as the
-    /// "liked" threshold input (see `impliesLiked`) and as the per-rating
-    /// value fed into `Domain/AttributePreferenceProfile`.
+    /// Mean of every answered question, normalized to `[0,1]`. Used both as
+    /// the "liked" threshold input (see `impliesLiked`) and as the per-rating
+    /// value fed into `Domain/AttributePreferenceProfile`'s overall-liked
+    /// channel (distinct from the dedicated per-attribute fields above, which
+    /// each feed their own affinity map directly).
     var normalizedValue: Double {
-        guard let versatility, let frequency, let styleIdentity, let qualityPerception else {
-            return FitRating.legacyNormalizedRating(fit: fit, comfort: comfort, confidence: confidence, wearAgain: wearAgain)
-        }
-        return FitRating.normalizedRating(
-            fit: fit, comfort: comfort, confidence: confidence, wearAgain: wearAgain,
-            versatility: versatility, frequency: frequency, styleIdentity: styleIdentity, qualityPerception: qualityPerception
+        FitRating.normalizedRating(
+            fit: fit, comfort: comfort, colorLike: colorLike, patternLike: patternLike,
+            formalityFit: formalityFit, styleIdentity: styleIdentity, wearAgain: wearAgain
         )
     }
 
     /// Threshold that folds this rich rating into the existing binary
-    /// item-preference channel (`ItemFeedback.likedFit` / `FeedbackHistory.itemFeedback`).
+    /// item-preference channel (`ItemFeedback.likedFit` / `FeedbackHistory.itemFeedback`)
+    /// and into the Swipe-to-Learn visual centroids as an implicit swipe
+    /// (`Data/WardrobeRepository.swift`'s `applyImplicitSwipe`).
     var impliesLiked: Bool {
         normalizedValue >= 0.6
     }

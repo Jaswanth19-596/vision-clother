@@ -2,6 +2,103 @@
 
 ---
 
+## 2026-07-15 — Feature: Multi-Accessory Outfits
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Closes deferred item #1 from `docs/decisions/stylist-intelligence-engine.md`: an outfit could only ever carry one accent item, so "bag + belt + jewelry" couldn't be recommended simultaneously.
+
+### Root Cause
+Cross-slot accessorizing (bag + headwear + accessory) already worked — `Slot` already had three independent accent cases. The real gap was the single `.accessory` slot being an explicit catch-all ("one per outfit, not several simultaneously" — `StylistBrain.swift`/`OutfitRecommendationService.swift`), so belt and jewelry collided for the one slot.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Domain/FashionKnowledgeConstants.swift` | New `maxSupplementaryAccessories = 2` |
+| `Models/OutfitRecommendationResponse.swift` | `RecommendedOutfitWire.supplementaryAccessoryIDs: [String]`, decoded/encoded via the existing dynamic-key container |
+| `Services/OutfitRecommendationService.swift` | JSON schema gained `supplementary_accessory_ids` (array, capped, required key/optional-empty) |
+| `Domain/OutfitRecommendationValidator.swift` | New explicit resolution step alongside (not inside) the existing per-slot loop; extends the duplicate-id check; truncates over-cap rather than rejecting |
+| `Models/OutfitCombination.swift` | New `supplementaryAccessories: [WardrobeItem]`, folded into `items` |
+| `Domain/StylistBrain.swift` | Prompt rewritten: business/interview/formal must leave it empty; casual/going-out may use up to the cap |
+| `Models/SavedCombination.swift`, `SchemaMigrations.swift`, `Vision_clotherApp.swift` | New `supplementaryAccessoryItemIDs`/`Labels`; new `SchemaV8`, additive `.lightweight` migration |
+| `Features/JobQueue/JobQueueStore.swift`, `Features/Combinations/CombinationsViewModel.swift` | Both `SavedCombination` build/resolve integration points carry the new fields |
+| `Features/DailyAssistant/OutfitCardView.swift`, `DailyAssistantViewModel.swift` | One card row per supplementary accessory; included in the LLM replay summary |
+
+## 2026-07-15 — Feature: "What Would You Change?" Checklist (Level 3 Outfit Feedback)
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Closes deferred item #2 from `docs/decisions/stylist-intelligence-engine.md`: Level 1/2 dimension-based outfit feedback shipped, but the "what specifically was wrong" structured edit checklist (Level 3) was scoped and never built.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Models/FeedbackEvent.swift` | New `OutfitChangeReason` enum (7 cases); `OutfitFeedback.changeReasonsRaw: [String]` |
+| `Domain/AttributePreferenceProfile.swift` | `OutfitDimensionRatedAttributes` gained `pattern`/`patternDissatisfaction`; `build(from:)` folds it into `patternAffinity` — a new outfit-level entry point for that map |
+| `Data/WardrobeRepository.swift` | `OutfitRatingSubmission.changeReasons`; `fetchFeedbackHistory()` clamps the flagged dimension(s) to `min(existing, 0.1)` per rated outfit |
+| `Features/Rating/RateCombinationViewModel.swift`, `RateCombinationView.swift` | New checklist section + `toggleChangeReason` (tooFormal/tooCasual mutually exclusive) |
+| `Models/SchemaMigrations.swift`, `Vision_clotherApp.swift` | New `SchemaV7` — additive `[String]` column, `.lightweight` migration |
+
+## 2026-07-15 — Feature: Impression/Selection Event Capture
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Closes deferred item #3 from `docs/decisions/stylist-intelligence-engine.md`: the app logs ML drift (`[AI-Stylist-ML]`) but never captured which of several shown candidate outfits the user actually picked/ignored — the highest-value signal for tuning the ranker.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Models/RecommendationImpressionEvent.swift` (new) | Event-sourced `@Model` — one row per candidate shown (`roundID`, `rank`, denormalized `itemIDsBySlot`, `shownAt`), `selectedAt` filled in later |
+| `Data/WardrobeRepository.swift` | New `recordImpressions(roundID:outfits:)` / `recordSelection(outfitID:)`, both best-effort, logged under `[AI-Stylist-ML]` |
+| `Features/DailyAssistant/DailyAssistantViewModel.swift` | `sendTurn`'s success branch calls `recordImpressions`; `startTryOn` calls `recordSelection` |
+| `Models/SchemaMigrations.swift`, `Vision_clotherApp.swift` | New `SchemaV6` — purely additive new table, `.lightweight` migration |
+
+Not wired into any ranker yet — this phase only makes the data exist, same posture as `OutfitRecommendationValidator.RejectionReason`.
+
+## 2026-07-15 — Bug Fix: "How does it look on me?" → "Render failed: Invalid image data-url"
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Tapping "How does it look on me?" on a Daily Assistant recommendation failed with an opaque render-API error instead of rendering the try-on image.
+
+### Root Cause
+`DailyAssistantView.placeholderBaseImageData` fell back to empty `Data()` whenever the user hadn't captured a base portrait yet (`UserPortraitStorage.load() == nil`). That empty data base64-encoded to an empty `data:image/png;base64,` URL, which OpenRouter rejected with `"Invalid image data-url"`, surfaced as `TryOnError.renderFailed`. Not a regression — a known, previously-commented gap. `ManualPairingView`/`ManualPairingViewModel` already guard this exact precondition elsewhere in the app.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Features/DailyAssistant/DailyAssistantView.swift` | `onStartTryOn` now checks `UserPortraitStorage.exists` before enqueuing the try-on job; shows an alert ("Add a photo of yourself on your Profile tab to try on outfits.") instead of sending empty image data |
+
+## 2026-07-15 — Feature: Item Rating question redesign + Swipe-to-Learn implicit swipe bridge
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Two related asks: (1) the per-item rating form's questions (Confidence, Versatility, Predicted Wear Frequency, Quality Perception) read as generic/out-of-scope, and (2) close the loop between the new rating flow and the Swipe-to-Learn visual taste system so ratings — not just the discovery deck — keep the k-means centroids fresh.
+
+### Root cause (question redesign)
+`Domain/AttributePreferenceProfile.swift`'s `RatedAttributes` carried one blended `value` (`ItemRating.normalizedValue`, an average across all 8 old questions) that was reused as the signal for three unrelated affinities — color, pattern, and formality — despite no dedicated color or pattern question existing anywhere. Versatility/Frequency/Quality Perception fed nothing else; they only diluted the blend.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Models/ItemRating.swift` | Replaced Confidence/Versatility/Frequency/Quality Perception with `colorLike`, `patternLike` (optional, skipped for solid-pattern items), `formalityFit`; rewrote `FitRating.normalizedRating`; clean-break schema (no shipped users) |
+| `Domain/AttributePreferenceProfile.swift` | `RatedAttributes` gained dedicated `colorLike`/`patternLike`/`formalityFit`/`silhouetteFit`/`fabricComfort` fields (replacing the blended `value`); `build()`'s accumulation loop feeds each into its matching affinity map directly |
+| `Domain/VisualPreferenceProfile.swift` | `VisualClusterUpdater.update` gained an optional `learningRate: Float?` (default `nil` = unchanged `1/weight` step); added `implicitLearningRate = 0.05` for rating-derived nudges |
+| `Data/WardrobeRepository.swift` | `recordItemRating` signature updated; new `applyImplicitSwipe`/`loadOrCreateVisualPreferenceState` helpers fold a rating's liked/disliked signal into the same centroids `recordSwipe` maintains, using the gentle learning rate; best-effort, no `SwipeEvent` written |
+| `Features/Rating/RateItemViewModel.swift`, `RateItemView.swift` | New question set: Fit, Comfort, Color, Pattern (conditional), Formality Fit, Style Identity, Wear Again |
+
+See `docs/decisions/stylist-intelligence-engine.md` for full rationale, including why `dislikePenaltyWeight = 1.2` / `maxBonusMagnitude = 0.3` were left untouched.
+
 ## 2026-07-14 — Feature: Swipe-to-Learn Visual Taste + Embedding-Ranked Catalog Retrieval
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)

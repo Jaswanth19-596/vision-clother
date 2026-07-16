@@ -60,6 +60,71 @@ struct DailyAssistantViewModelTests {
         #expect(viewModel.extractionState == .idle)
     }
 
+    // MARK: - Impression/Selection Event Capture
+
+    @Test func successfulRoundRecordsAnImpressionPerCandidateInRankOrder() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [top, bottom, footwear]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("Strongest pick.")
+            ),
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("Weaker pick.")
+            ),
+        ]))
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.prompt = "Casual Friday"
+
+        await viewModel.requestOutfitIdeas()
+
+        #expect(repository.recordedImpressions.count == 1)
+        let recorded = try #require(repository.recordedImpressions.first)
+        #expect(recorded.outfits.map(\.id) == viewModel.candidates.map(\.id))
+        #expect(repository.recordedSelections.isEmpty)
+    }
+
+    @Test func startingTryOnRecordsASelectionForThatOutfit() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [top, bottom, footwear]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.result = .success(OutfitRecommendationResponse(outfits: [
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("The pick.")
+            ),
+        ]))
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.prompt = "Casual Friday"
+        await viewModel.requestOutfitIdeas()
+
+        let outfit = try #require(viewModel.candidates.first)
+        viewModel.startTryOn(baseImageData: Data(), outfit: outfit)
+
+        #expect(repository.recordedSelections == [outfit.id])
+    }
+
     @Test func emptyCatalogReturnsFailure() async throws {
         // No items in the repository → empty catalog → .failure, not a crash.
         let repository = InMemoryWardrobeRepository()
@@ -562,6 +627,208 @@ struct DailyAssistantViewModelTests {
         #expect(viewModel.rounds.count == 2)
         #expect(viewModel.rounds.last?.userText == "No bag please")
     }
+
+    // MARK: - Prospective Purchase Evaluation (2026-07-15)
+
+    @Test func purchaseCheckTagsThePhotoAndFlagsItInTheCatalogSentToTheLLM() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [bottom, footwear]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.resultBuilder = { catalog in
+            guard let prospective = catalog.first(where: { $0.isProspectivePurchase }) else {
+                return OutfitRecommendationResponse(outfits: [])
+            }
+            let wire = RecommendedOutfitWire(
+                itemIDsBySlot: [.top: prospective.id, .bottom: bottom.id.uuidString, .footwear: footwear.id.uuidString],
+                rationale: StructuredRationaleWire(summary: "Works well with what you own.", confidence: 80)
+            )
+            return OutfitRecommendationResponse(outfits: [wire])
+        }
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+
+        await viewModel.checkProspectiveItem()
+
+        #expect(viewModel.extractionState == .idle)
+        #expect(viewModel.rounds.count == 1)
+        #expect(viewModel.attachedProspectiveImageData == nil)
+        #expect(viewModel.isProspectivePurchaseMode == false)
+
+        guard case .purchaseCheck(let item, let outfits, _) = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected a .purchaseCheck outcome")
+            return
+        }
+        #expect(outfits.count == 1)
+        #expect(outfits.first?.items.contains { $0.id == item.id } == true)
+        // Matches MockVisionMetadataExtractionService's canned metadata.
+        #expect(item.slot == .top)
+
+        let sentCatalog = try #require(recommendationService.receivedCatalogs.last)
+        #expect(sentCatalog.filter(\.isProspectivePurchase).count == 1)
+        #expect(sentCatalog.first(where: { $0.isProspectivePurchase })?.id == item.id.uuidString)
+    }
+
+    @Test func outfitsThatOmitTheProspectiveItemAreFilteredOutEvenIfTheLLMReturnsThem() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let unrelatedTop = makeItem(slot: .top)
+        repository.savedItems = [bottom, footwear, unrelatedTop]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.resultBuilder = { catalog in
+            guard let prospective = catalog.first(where: { $0.isProspectivePurchase }) else {
+                return OutfitRecommendationResponse(outfits: [])
+            }
+            let includesTheNewItem = RecommendedOutfitWire(
+                itemIDsBySlot: [.top: prospective.id, .bottom: bottom.id.uuidString, .footwear: footwear.id.uuidString],
+                rationale: StructuredRationaleWire(summary: "Includes the new item.", confidence: 80)
+            )
+            let omitsTheNewItem = RecommendedOutfitWire(
+                itemIDsBySlot: [.top: unrelatedTop.id.uuidString, .bottom: bottom.id.uuidString, .footwear: footwear.id.uuidString],
+                rationale: StructuredRationaleWire(summary: "Omits the new item.", confidence: 80)
+            )
+            return OutfitRecommendationResponse(outfits: [includesTheNewItem, omitsTheNewItem])
+        }
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+
+        await viewModel.checkProspectiveItem()
+
+        guard case .purchaseCheck(let item, let outfits, _) = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected a .purchaseCheck outcome")
+            return
+        }
+        #expect(outfits.count == 1)
+        #expect(outfits.first?.items.contains { $0.id == item.id } == true)
+    }
+
+    @Test func noValidOutfitsSurfacesAsANoMatchVerdictNotAFailure() async throws {
+        // Empty closet — nothing to pair a top with, so no valid outfit can
+        // ever be built. This is a legitimate "doesn't pair" answer for this
+        // mode, not the generic "wardrobe is empty" error the free-text flow
+        // would show.
+        let repository = InMemoryWardrobeRepository()
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.resultBuilder = { _ in
+            OutfitRecommendationResponse(outfits: [], followUpText: "Nothing in your closet pairs with a piece this formal.")
+        }
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+
+        await viewModel.checkProspectiveItem()
+
+        #expect(viewModel.extractionState == .idle)
+        guard case .purchaseCheck(_, let outfits, let note) = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected a .purchaseCheck outcome")
+            return
+        }
+        #expect(outfits.isEmpty)
+        #expect(note == "Nothing in your closet pairs with a piece this formal.")
+    }
+
+    @Test func addProspectiveItemToClosetPersistsTheExactTaggedItem() async throws {
+        let repository = InMemoryWardrobeRepository()
+        repository.savedItems = [makeItem(slot: .bottom), makeItem(slot: .footwear)]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.resultBuilder = { _ in OutfitRecommendationResponse(outfits: []) }
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+        await viewModel.checkProspectiveItem()
+
+        guard case .purchaseCheck(let item, _, _) = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected a .purchaseCheck outcome")
+            return
+        }
+
+        let saved = viewModel.addProspectiveItemToCloset(item)
+
+        #expect(saved)
+        #expect(repository.savedItems.contains { $0.id == item.id })
+    }
+
+    @Test func discardProspectiveItemDeletesItsTemporaryPhotoFile() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.resultBuilder = { _ in OutfitRecommendationResponse(outfits: []) }
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+        await viewModel.checkProspectiveItem()
+
+        guard case .purchaseCheck(let item, _, _) = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected a .purchaseCheck outcome")
+            return
+        }
+        let filename = try #require(item.imageAssetName)
+        #expect(ImageStorage.loadData(for: filename) != nil)
+
+        viewModel.discardProspectiveItem(item)
+
+        #expect(ImageStorage.loadData(for: filename) == nil)
+        #expect(!repository.savedItems.contains { $0.id == item.id })
+    }
+
+    @Test func retryLastTurnRetriesAFailedPurchaseCheckNotAStaleFreeTextTurn() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        repository.savedItems = [bottom, footwear]
+
+        let recommendationService = ControllableOutfitRecommendationService()
+        recommendationService.result = .failure(RecommendationFailure())
+
+        let viewModel = DailyAssistantViewModel(
+            repository: repository,
+            jobQueueStore: makeJobQueueStore(repository: repository),
+            recommendationService: recommendationService
+        )
+        viewModel.attachedProspectiveImageData = Data([0x01])
+        await viewModel.checkProspectiveItem()
+
+        guard case .failed = viewModel.extractionState else {
+            Issue.record("Expected .failed when the recommendation service throws")
+            return
+        }
+
+        recommendationService.result = .success(OutfitRecommendationResponse(outfits: []))
+        await viewModel.retryLastTurn()
+
+        #expect(viewModel.extractionState == .idle)
+        #expect(viewModel.rounds.count == 1)
+        guard case .purchaseCheck = viewModel.rounds.first?.outcome else {
+            Issue.record("Expected retry to resolve as a .purchaseCheck round, not the free-text flow")
+            return
+        }
+    }
 }
 
 // MARK: - Test helpers
@@ -613,7 +880,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, colorLike: Int, patternLike: Int?, formalityFit: Int, styleIdentity: Int, wearAgain: Bool) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
     func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
@@ -636,11 +903,20 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
             avoidColors: wire.avoidColors
         )
     }
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {}
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? { nil }
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
     func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }
     func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {}
+
+    private(set) var recordedImpressions: [(roundID: UUID, outfits: [OutfitCombination])] = []
+    private(set) var recordedSelections: [UUID] = []
+    func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws {
+        recordedImpressions.append((roundID, outfits))
+    }
+    func recordSelection(outfitID: UUID) throws {
+        recordedSelections.append(outfitID)
+    }
 }
 
 /// Returns a fixed `OutfitRecommendationResponse` (or throws, if configured)
@@ -652,9 +928,16 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
 private final class ControllableOutfitRecommendationService: OutfitRecommendationService {
     var result: Result<OutfitRecommendationResponse, Error> = .success(OutfitRecommendationResponse(outfits: []))
     var results: [Result<OutfitRecommendationResponse, Error>] = []
+    /// When set, builds the response dynamically from the actual catalog
+    /// this call received instead of returning a fixed `result`/`results`
+    /// script — needed for Prospective Purchase Evaluation tests, where the
+    /// evaluated item's id is generated fresh inside the view model
+    /// (`WardrobeItem.make`) and can't be hardcoded ahead of time.
+    var resultBuilder: (([CatalogEntry]) -> OutfitRecommendationResponse)?
     private(set) var callCount = 0
     private(set) var receivedConversationHistories: [[ConversationTurn]] = []
     private(set) var receivedIsFinalTurnFlags: [Bool] = []
+    private(set) var receivedCatalogs: [[CatalogEntry]] = []
 
     func recommendOutfits(
         conversationHistory: [ConversationTurn],
@@ -666,6 +949,11 @@ private final class ControllableOutfitRecommendationService: OutfitRecommendatio
     ) async throws -> OutfitRecommendationResponse {
         receivedConversationHistories.append(conversationHistory)
         receivedIsFinalTurnFlags.append(isFinalTurn)
+        receivedCatalogs.append(catalog)
+        if let resultBuilder {
+            callCount += 1
+            return resultBuilder(catalog)
+        }
         let scriptedIndex = min(callCount, max(results.count - 1, 0))
         callCount += 1
         if !results.isEmpty {

@@ -25,5 +25,13 @@ enum FashionKnowledgeConstants {
         static let majorFormalityMismatchDelta: Double = 2.0
         /// Softer delta — still noticeable, not disqualifying.
         static let minorFormalityMismatchDelta: Double = 1.0
+        /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
+        /// 2026-07-15): the max number of *supplementary* accessories an
+        /// outfit may carry alongside the primary `accessory_id` signature
+        /// piece — e.g. a belt (primary) plus a watch or necklace
+        /// (supplementary). Read by both the JSON schema's `maxItems`
+        /// (`Services/OutfitRecommendationService.swift`) and the
+        /// validator's cap (`Domain/OutfitRecommendationValidator.swift`).
+        static let maxSupplementaryAccessories = 2
     }
 }

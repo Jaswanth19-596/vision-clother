@@ -285,11 +285,25 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                                 ],
                                 "required": ["summary", "confidence"],
                                 "additionalProperties": false
-                            ]
+                            ],
+                            // Multi-Accessory Outfits (Stylist Intelligence
+                            // Engine ADR, closed 2026-07-15): worn *alongside*
+                            // accessory_id, not instead of it — a second,
+                            // more casual accent piece (e.g. a watch or
+                            // necklace next to a belt). Empty array (not
+                            // null) is the "nothing extra" value, which a
+                            // JSON array already expresses natively — no
+                            // required-but-nullable hack needed here.
+                            "supplementary_accessory_ids": [
+                                "type": "array",
+                                "items": ["type": "string"],
+                                "maxItems": FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories,
+                                "description": "0-\(FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories) additional accent items (e.g. a watch, necklace, or scarf) worn together with accessory_id, only for casual/going-out scenarios that call for layered accessorizing. Never duplicate accessory_id or each other. Always an empty array for business, interview, or formal scenarios, and whenever one accessory is already enough.",
+                            ],
                         ],
                         uniquingKeysWith: { _, new in new }
                     ),
-                    "required": itemIDSchemaProperties.required + ["rationale"],
+                    "required": itemIDSchemaProperties.required + ["rationale", "supplementary_accessory_ids"],
                     "additionalProperties": false,
                 ],
             ],
@@ -412,8 +426,13 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         weather: WeatherContext?,
         history: FeedbackHistory
     ) async throws -> OutfitRecommendationResponse {
+        // Prospective Purchase Evaluation (2026-07-15): prefer the flagged
+        // entry for its own slot over an arbitrary first match, so the
+        // keyless Simulator path exercises `mustIncludeItemID` meaningfully
+        // instead of always landing on the "no match" state.
         func firstID(for slot: Slot) -> String? {
-            catalog.first { $0.slot == slot }?.id
+            let slotEntries = catalog.filter { $0.slot == slot }
+            return slotEntries.first { $0.isProspectivePurchase }?.id ?? slotEntries.first?.id
         }
 
         guard let topID = firstID(for: .top),

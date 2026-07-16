@@ -254,6 +254,208 @@ struct OutfitRecommendationValidatorTests {
         #expect(result.rejections == [.duplicateID])
     }
 
+    // MARK: - Multi-Accessory Outfits (Stylist Intelligence Engine ADR)
+
+    private func makeWireWithAccessory(
+        top: String, bottom: String, footwear: String,
+        accessory: String? = nil, supplementaryAccessories: [String] = [],
+        rationale: StructuredRationaleWire
+    ) -> RecommendedOutfitWire {
+        var itemIDsBySlot: [Slot: String] = [.top: top, .bottom: bottom, .footwear: footwear]
+        itemIDsBySlot[.accessory] = accessory
+        return RecommendedOutfitWire(
+            itemIDsBySlot: itemIDsBySlot,
+            supplementaryAccessoryIDs: supplementaryAccessories,
+            rationale: rationale
+        )
+    }
+
+    @Test func supplementaryAccessoriesUpToTheCapResolveAlongsideThePrimaryAccessory() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let belt = makeItem(slot: .accessory)
+        let watch = makeItem(slot: .accessory)
+        let necklace = makeItem(slot: .accessory)
+        let index = makeIndex([top, bottom, footwear, belt, watch, necklace])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                accessory: belt.id.uuidString,
+                supplementaryAccessories: [watch.id.uuidString, necklace.id.uuidString],
+                rationale: makeRationale("Layered accessories.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index)
+        #expect(validated.count == 1)
+        #expect(validated.first?.accessory?.id == belt.id)
+        #expect(Set(validated.first?.supplementaryAccessories.map(\.id) ?? []) == [watch.id, necklace.id])
+    }
+
+    @Test func supplementaryAccessoriesBeyondTheCapAreTruncatedNotRejected() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let extras = (0..<(FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories + 1)).map { _ in makeItem(slot: .accessory) }
+        let index = makeIndex([top, bottom, footwear] + extras)
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                supplementaryAccessories: extras.map(\.id.uuidString),
+                rationale: makeRationale("Too many accessories.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index)
+        #expect(validated.first?.supplementaryAccessories.count == FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories)
+    }
+
+    @Test func unknownSupplementaryAccessoryIDRejectsTheWholeOutfit() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                supplementaryAccessories: [UUID().uuidString],
+                rationale: makeRationale("Hallucinated supplementary accessory.")
+            ),
+        ])
+
+        #expect(OutfitRecommendationValidator.validate(response, index: index).isEmpty)
+    }
+
+    @Test func supplementaryAccessoryDuplicatingThePrimaryAccessoryIsRejected() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let belt = makeItem(slot: .accessory)
+        let index = makeIndex([top, bottom, footwear, belt])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                accessory: belt.id.uuidString,
+                supplementaryAccessories: [belt.id.uuidString], // same id as the primary accessory
+                rationale: makeRationale("Duplicate accessory.")
+            ),
+        ])
+
+        #expect(OutfitRecommendationValidator.validate(response, index: index).isEmpty)
+    }
+
+    @Test func wrongSlotSupplementaryAccessoryIsRejected() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let bag = makeItem(slot: .bag)
+        let index = makeIndex([top, bottom, footwear, bag])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                supplementaryAccessories: [bag.id.uuidString], // a bag, not an accessory
+                rationale: makeRationale("Wrong slot supplementary item.")
+            ),
+        ])
+
+        #expect(OutfitRecommendationValidator.validate(response, index: index).isEmpty)
+    }
+
+    @Test func emptySupplementaryAccessoriesResolveToAnEmptyArray() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("No accessories.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index)
+        #expect(validated.first?.supplementaryAccessories.isEmpty == true)
+    }
+
+    // MARK: - Prospective Purchase Evaluation (2026-07-15)
+
+    @Test func mustIncludeItemIDDropsOutfitsThatOmitTheFlaggedItem() {
+        let top = makeItem(slot: .top)
+        let otherTop = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, otherTop, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWire(
+                top: otherTop.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("Omits the prospective item.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index, mustIncludeItemID: top.id)
+        #expect(validated.isEmpty)
+    }
+
+    @Test func mustIncludeItemIDKeepsOutfitsThatIncludeTheFlaggedItem() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("Includes the prospective item.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index, mustIncludeItemID: top.id)
+        #expect(validated.count == 1)
+    }
+
+    @Test func mustIncludeItemIDAlsoMatchesASupplementaryAccessory() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let watch = makeItem(slot: .accessory)
+        let index = makeIndex([top, bottom, footwear, watch])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWireWithAccessory(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                supplementaryAccessories: [watch.id.uuidString],
+                rationale: makeRationale("The prospective item is a supplementary accessory.")
+            ),
+        ])
+
+        let validated = OutfitRecommendationValidator.validate(response, index: index, mustIncludeItemID: watch.id)
+        #expect(validated.count == 1)
+    }
+
+    @Test func mustIncludeItemIDDefaultsToNilAndHasNoEffectOnOrdinaryRecommendations() {
+        let top = makeItem(slot: .top)
+        let bottom = makeItem(slot: .bottom)
+        let footwear = makeItem(slot: .footwear)
+        let index = makeIndex([top, bottom, footwear])
+
+        let response = OutfitRecommendationResponse(outfits: [
+            makeWire(
+                top: top.id.uuidString, bottom: bottom.id.uuidString, footwear: footwear.id.uuidString,
+                rationale: makeRationale("Ordinary recommendation, no prospective item involved.")
+            ),
+        ])
+
+        #expect(OutfitRecommendationValidator.validate(response, index: index).count == 1)
+    }
+
     @Test func validateVerboseAgreesWithValidateForSurvivors() {
         let top = makeItem(slot: .top)
         let bottom = makeItem(slot: .bottom)

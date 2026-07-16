@@ -69,7 +69,7 @@ struct OutfitRecommendationEngineTests {
 
         var history = FeedbackHistory()
         let ratings = (0..<5).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: lovedColor, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, formalityFit: 1.0, colorVibe: lovedColor, pattern: .solid, formalityBand: 2)
         }
         history.attributeProfile = AttributePreferenceProfile.build(from: ratings)
 
@@ -147,7 +147,7 @@ struct OutfitRecommendationEngineTests {
 
         var learnedLikesHistory = FeedbackHistory()
         let strongLikes = (0..<10).map { _ in
-            RatedAttributes(value: 1.0, colorVibe: avoidedVibe, pattern: .solid, formalityBand: 2)
+            RatedAttributes(colorLike: 1.0, formalityFit: 1.0, colorVibe: avoidedVibe, pattern: .solid, formalityBand: 2)
         }
         learnedLikesHistory.attributeProfile = AttributePreferenceProfile.build(from: strongLikes)
 

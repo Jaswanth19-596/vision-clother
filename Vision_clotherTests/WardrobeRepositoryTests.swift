@@ -18,6 +18,7 @@ struct WardrobeRepositoryTests {
         let container = try ModelContainer(
             for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self,
             ItemRating.self, UserStyleProfile.self, SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         return SwiftDataWardrobeRepository(modelContext: ModelContext(container), embeddingService: MockImageEmbeddingService())
@@ -43,6 +44,27 @@ struct WardrobeRepositoryTests {
 
         let fetched = try repository.fetchSavedCombinations()
         #expect(fetched.map(\.imageAssetName) == ["newer.png", "older.png"])
+    }
+
+    @Test func supplementaryAccessoryFieldsRoundTripThroughSaveCombination() throws {
+        let repository = try makeRepository()
+        let watchID = UUID()
+        let necklaceID = UUID()
+        let combination = SavedCombination(
+            imageAssetName: "outfit.png",
+            itemIDsBySlot: [.top: UUID(), .bottom: UUID(), .accessory: UUID()],
+            labelsBySlot: [.top: "top", .bottom: "bottom", .accessory: "belt"],
+            origin: "assistant",
+            supplementaryAccessoryItemIDs: [watchID, necklaceID],
+            supplementaryAccessoryLabels: ["watch", "necklace"]
+        )
+
+        try repository.saveCombination(combination)
+
+        let fetched = try repository.fetchSavedCombinations().first
+        #expect(fetched?.supplementaryAccessoryItemIDs == [watchID, necklaceID])
+        #expect(fetched?.supplementaryAccessoryLabels == ["watch", "necklace"])
+        #expect(fetched?.displayTitle == "top + bottom + belt + watch + necklace")
     }
 
     @Test func deleteCombinationRemovesItAndItsImageFile() throws {
@@ -75,20 +97,19 @@ struct WardrobeRepositoryTests {
         let itemID = UUID()
 
         try repository.recordItemRating(
-            itemID: itemID, fit: .slightlyLoose, comfort: 4, confidence: 5, wearAgain: true,
-            versatility: 5, frequency: 2, styleIdentity: 4, qualityPerception: 3
+            itemID: itemID, fit: .slightlyLoose, comfort: 4, colorLike: 5, patternLike: 2,
+            formalityFit: 4, styleIdentity: 4, wearAgain: true
         )
 
         let ratings = try repository.fetchItemRatings(for: itemID)
         #expect(ratings.count == 1)
         #expect(ratings.first?.fit == .slightlyLoose)
         #expect(ratings.first?.comfort == 4)
-        #expect(ratings.first?.confidence == 5)
-        #expect(ratings.first?.wearAgain == true)
-        #expect(ratings.first?.versatility == 5)
-        #expect(ratings.first?.frequency == 2)
+        #expect(ratings.first?.colorLike == 5)
+        #expect(ratings.first?.patternLike == 2)
+        #expect(ratings.first?.formalityFit == 4)
         #expect(ratings.first?.styleIdentity == 4)
-        #expect(ratings.first?.qualityPerception == 3)
+        #expect(ratings.first?.wearAgain == true)
     }
 
     @Test func fetchFeedbackHistoryFoldsRatingsIntoItemPreferenceAndAttributeProfile() async throws {
@@ -99,8 +120,8 @@ struct WardrobeRepositoryTests {
         // A strongly positive rating should read as "liked" in itemFeedback
         // and contribute a positive vibrant-color affinity.
         try repository.recordItemRating(
-            itemID: item.id, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true,
-            versatility: 5, frequency: 5, styleIdentity: 5, qualityPerception: 5
+            itemID: item.id, fit: .justRight, comfort: 5, colorLike: 5, patternLike: 5,
+            formalityFit: 5, styleIdentity: 5, wearAgain: true
         )
 
         let history = try await repository.fetchFeedbackHistory()
@@ -130,14 +151,60 @@ struct WardrobeRepositoryTests {
         // contribute a positive affinity for the item's style tag — the
         // same channel the outfit-level Personal Style Match question feeds.
         try repository.recordItemRating(
-            itemID: item.id, fit: .justRight, comfort: 3, confidence: 3, wearAgain: true,
-            versatility: 3, frequency: 3, styleIdentity: 5, qualityPerception: 3
+            itemID: item.id, fit: .justRight, comfort: 3, colorLike: 3, patternLike: 3,
+            formalityFit: 3, styleIdentity: 5, wearAgain: true
         )
 
         let history = try await repository.fetchFeedbackHistory()
 
         #expect(history.attributeProfile.styleTagAffinity["minimalist"] != nil)
         #expect((history.attributeProfile.styleTagAffinity["minimalist"] ?? 0) > 0.5)
+    }
+
+    // MARK: - Item Rating -> Swipe-to-Learn implicit swipe bridge
+
+    @Test func recordItemRatingWithAHighScoreNudgesLikedCentroidsWhenEmbeddingIsCached() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [1, 0, 0], sourceFingerprint: "fp")
+
+        try repository.recordItemRating(
+            itemID: itemID, fit: .justRight, comfort: 5, colorLike: 5, patternLike: 5,
+            formalityFit: 5, styleIdentity: 5, wearAgain: true
+        )
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.likedCentroids.count == 1)
+        #expect(state?.dislikedCentroids.isEmpty == true)
+    }
+
+    @Test func recordItemRatingWithALowScoreNudgesDislikedCentroidsWhenEmbeddingIsCached() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [1, 0, 0], sourceFingerprint: "fp")
+
+        try repository.recordItemRating(
+            itemID: itemID, fit: .tooLoose, comfort: 1, colorLike: 1, patternLike: 1,
+            formalityFit: 1, styleIdentity: 1, wearAgain: false
+        )
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.dislikedCentroids.count == 1)
+        #expect(state?.likedCentroids.isEmpty == true)
+    }
+
+    @Test func recordItemRatingDoesNotTouchVisualStateWhenNoEmbeddingIsCached() throws {
+        let repository = try makeRepository()
+        let itemID = UUID()
+
+        try repository.recordItemRating(
+            itemID: itemID, fit: .justRight, comfort: 5, colorLike: 5, patternLike: 5,
+            formalityFit: 5, styleIdentity: 5, wearAgain: true
+        )
+
+        // No embedding was ever cached for this item — the implicit swipe
+        // is a no-op, so no VisualPreferenceState row should be created.
+        #expect(try repository.fetchVisualPreferenceState() == nil)
     }
 
     // MARK: - User Style Profile (PRD §3.8)
@@ -192,8 +259,8 @@ struct WardrobeRepositoryTests {
         let orphanID = UUID()
 
         try repository.recordItemRating(
-            itemID: orphanID, fit: .justRight, comfort: 5, confidence: 5, wearAgain: true,
-            versatility: 3, frequency: 3, styleIdentity: 3, qualityPerception: 3
+            itemID: orphanID, fit: .justRight, comfort: 5, colorLike: 5, patternLike: 3,
+            formalityFit: 3, styleIdentity: 3, wearAgain: true
         )
 
         // No crash and no attribute contribution — the item no longer
@@ -216,13 +283,14 @@ struct WardrobeRepositoryTests {
         weatherSuitability: Int = 5,
         practicality: Int = 5,
         favoriteItemID: UUID? = nil,
-        weakestItemID: UUID? = nil
+        weakestItemID: UUID? = nil,
+        changeReasons: Set<OutfitChangeReason> = []
     ) -> OutfitRatingSubmission {
         OutfitRatingSubmission(
             overallSatisfaction: overallSatisfaction, wearAgain: wearAgain, confidence: confidence, comfort: comfort,
             occasionMatch: occasionMatch, styleMatch: styleMatch, colorHarmony: colorHarmony, silhouette: silhouette,
             weatherSuitability: weatherSuitability, practicality: practicality,
-            favoriteItemID: favoriteItemID, weakestItemID: weakestItemID
+            favoriteItemID: favoriteItemID, weakestItemID: weakestItemID, changeReasons: changeReasons
         )
     }
 
@@ -278,6 +346,68 @@ struct WardrobeRepositoryTests {
 
         let history = try await repository.fetchFeedbackHistory()
         #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0) > 0.5)
+    }
+
+    // MARK: - "What would you change?" checklist (Level 3)
+
+    @Test func changeReasonsRoundTripThroughRecordOutfitRating() throws {
+        let repository = try makeRepository()
+        let combination = makeCombination(assetName: "outfit.png", savedAt: .now)
+        try repository.saveCombination(combination)
+
+        try repository.recordOutfitRating(
+            outfitID: combination.id,
+            submission: makeSubmission(changeReasons: [.tooFormal, .wrongColor])
+        )
+
+        let fetched = try repository.fetchOutfitFeedback(for: combination.id)
+        #expect(Set(fetched.first?.changeReasons ?? []) == [.tooFormal, .wrongColor])
+    }
+
+    @Test func aFlaggedChangeReasonClampsItsDimensionEvenWithAHighStarRating() async throws {
+        // A flagged reason is a deliberate signal on top of, not a
+        // replacement for, the Level 2 star — even a high `colorHarmony`
+        // star should still yield a below-neutral `colorVibeAffinity` once
+        // "Wrong colors" is flagged.
+        let repository = try makeRepository()
+        let top = makeWardrobeItem(colorVibe: .vibrant)
+        try repository.save(top)
+        let combination = SavedCombination(
+            imageAssetName: "outfit.png",
+            itemIDsBySlot: [.top: top.id, .bottom: UUID()],
+            labelsBySlot: [.top: "top", .bottom: "bottom"],
+            origin: "pairing"
+        )
+        try repository.saveCombination(combination)
+
+        try repository.recordOutfitRating(
+            outfitID: combination.id,
+            submission: makeSubmission(colorHarmony: 5, changeReasons: [.wrongColor])
+        )
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect((history.attributeProfile.colorVibeAffinity[.vibrant] ?? 0.5) < 0.5)
+    }
+
+    @Test func wrongPatternFlagPopulatesPatternAffinityWithNoDedicatedStarQuestion() async throws {
+        let repository = try makeRepository()
+        let top = makeWardrobeItem(pattern: .striped)
+        try repository.save(top)
+        let combination = SavedCombination(
+            imageAssetName: "outfit.png",
+            itemIDsBySlot: [.top: top.id, .bottom: UUID()],
+            labelsBySlot: [.top: "top", .bottom: "bottom"],
+            origin: "pairing"
+        )
+        try repository.saveCombination(combination)
+
+        try repository.recordOutfitRating(
+            outfitID: combination.id,
+            submission: makeSubmission(changeReasons: [.wrongPattern])
+        )
+
+        let history = try await repository.fetchFeedbackHistory()
+        #expect((history.attributeProfile.patternAffinity[.striped] ?? 0.5) < 0.5)
     }
 
     @Test func dislikedSavedCombinationPopulatesOutfitNegativeSignalByExactItemSet() async throws {
@@ -351,6 +481,34 @@ struct WardrobeRepositoryTests {
         #expect(state?.likedCentroids.count == 1)
         #expect(state?.likedCentroids.first?.weight == 1)
         #expect(state?.dislikedCentroids.isEmpty == true)
+    }
+
+    @Test func recordSwipeReturnsNilWhileSeedingFreshCentroids() throws {
+        let repository = try makeRepository()
+        // `VisualClusterUpdater.maxClusters` is 3 — each of the first three
+        // liked swipes seeds a new centroid rather than nudging an existing
+        // one, so there's no prior vector to diff a drift against.
+        let drift1 = try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+        let drift2 = try repository.recordSwipe(sourcePhotoID: "p2", imageURLString: "https://example.com/p2.jpg", liked: true, embedding: [0, 1, 0])
+        let drift3 = try repository.recordSwipe(sourcePhotoID: "p3", imageURLString: "https://example.com/p3.jpg", liked: true, embedding: [0, 0, 1])
+
+        #expect(drift1 == nil)
+        #expect(drift2 == nil)
+        #expect(drift3 == nil)
+    }
+
+    @Test func recordSwipeReturnsANonNilDriftOnceNudgingAnExistingCentroid() throws {
+        let repository = try makeRepository()
+        try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+        try repository.recordSwipe(sourcePhotoID: "p2", imageURLString: "https://example.com/p2.jpg", liked: true, embedding: [0, 1, 0])
+        try repository.recordSwipe(sourcePhotoID: "p3", imageURLString: "https://example.com/p3.jpg", liked: true, embedding: [0, 0, 1])
+
+        // A fourth liked swipe nudges the nearest of the three seeded
+        // centroids instead of seeding a fourth — real, measurable drift.
+        let drift4 = try repository.recordSwipe(sourcePhotoID: "p4", imageURLString: "https://example.com/p4.jpg", liked: true, embedding: [0.9, 0.1, 0])
+
+        #expect(drift4 != nil)
+        #expect((drift4 ?? 0) > 0)
     }
 
     @Test func recordSwipeAccumulatesAcrossMultipleCalls() throws {
@@ -448,5 +606,123 @@ struct WardrobeRepositoryTests {
 
         let history = try await repository.fetchFeedbackHistory()
         #expect(history.visualProfile.likedCentroids.count == 1)
+    }
+
+    // MARK: - Calibration (totalSwipes / calibrationProgress / isTrained)
+
+    @Test func recordSwipeIncrementsTotalSwipesAndCalibrationProgress() throws {
+        let repository = try makeRepository()
+        try repository.recordSwipe(sourcePhotoID: "p1", imageURLString: "https://example.com/p1.jpg", liked: true, embedding: [1, 0, 0])
+        try repository.recordSwipe(sourcePhotoID: "p2", imageURLString: "https://example.com/p2.jpg", liked: false, embedding: [0, 1, 0])
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.totalSwipes == 2)
+        #expect(abs((state?.calibrationProgress ?? 0) - 0.1) < 0.0001)
+        #expect(state?.isTrained == false)
+    }
+
+    @Test func isTrainedBecomesTrueAtTwentyExplicitSwipes() throws {
+        let repository = try makeRepository()
+        for i in 0..<20 {
+            try repository.recordSwipe(
+                sourcePhotoID: "p\(i)", imageURLString: "https://example.com/p\(i).jpg",
+                liked: i % 2 == 0, embedding: [Float(i % 3 == 0 ? 1 : 0), Float(i % 3 == 1 ? 1 : 0), Float(i % 3 == 2 ? 1 : 0)]
+            )
+        }
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.totalSwipes == 20)
+        #expect(state?.calibrationProgress == 1.0)
+        #expect(state?.isTrained == true)
+    }
+
+    @Test func implicitSwipesFromItemRatingsDoNotCountTowardTotalSwipes() throws {
+        // Calibration progress is driven by explicit deck swipes only —
+        // ratings nudge the same centroids via `applyImplicitSwipe`, but
+        // shouldn't move the gamified calibration meter (see
+        // `VisualPreferenceState.totalSwipes`'s doc comment).
+        let repository = try makeRepository()
+        let itemID = UUID()
+        try repository.saveWardrobeItemEmbedding(itemID: itemID, vector: [1, 0, 0], sourceFingerprint: "fp")
+
+        try repository.recordItemRating(
+            itemID: itemID, fit: .justRight, comfort: 5, colorLike: 5, patternLike: 5,
+            formalityFit: 5, styleIdentity: 5, wearAgain: true
+        )
+
+        let state = try repository.fetchVisualPreferenceState()
+        #expect(state?.likedCentroids.count == 1)
+        #expect(state?.totalSwipes == 0)
+    }
+
+    // MARK: - Impression/Selection Event Capture
+
+    private func makeItem(slot: Slot) -> WardrobeItem {
+        WardrobeItem(
+            slot: slot,
+            formalityScore: 2.0,
+            colorProfile: ColorProfile(primaryHex: "#000000", secondaryHex: nil, category: .neutral),
+            pattern: .solid,
+            seasonality: [.summer],
+            fabricWeight: .light,
+            imageAssetName: "\(UUID().uuidString).png"
+        )
+    }
+
+    private func makeOutfit() -> OutfitCombination {
+        OutfitCombination(
+            itemsBySlot: [.top: makeItem(slot: .top), .bottom: makeItem(slot: .bottom), .footwear: makeItem(slot: .footwear)],
+            score: 1.0
+        )
+    }
+
+    private func makeRepositoryWithContext() throws -> (SwiftDataWardrobeRepository, ModelContext) {
+        let container = try ModelContainer(
+            for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self,
+            ItemRating.self, UserStyleProfile.self, RecommendationImpressionEvent.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        return (SwiftDataWardrobeRepository(modelContext: context), context)
+    }
+
+    @Test func recordImpressionsPersistsOneRowPerOutfitInRankOrder() throws {
+        let (repository, context) = try makeRepositoryWithContext()
+        let outfits = [makeOutfit(), makeOutfit(), makeOutfit()]
+        let roundID = UUID()
+
+        try repository.recordImpressions(roundID: roundID, outfits: outfits)
+
+        let stored = try context.fetch(FetchDescriptor<RecommendationImpressionEvent>(
+            sortBy: [SortDescriptor(\.rank, order: .forward)]
+        ))
+        #expect(stored.map(\.id) == outfits.map(\.id))
+        #expect(stored.map(\.rank) == [0, 1, 2])
+        #expect(stored.allSatisfy { $0.roundID == roundID })
+        #expect(stored.allSatisfy { $0.selectedAt == nil })
+    }
+
+    @Test func recordSelectionSetsSelectedAtOnlyForTheMatchingImpression() throws {
+        let (repository, context) = try makeRepositoryWithContext()
+        let outfits = [makeOutfit(), makeOutfit()]
+        try repository.recordImpressions(roundID: UUID(), outfits: outfits)
+
+        try repository.recordSelection(outfitID: outfits[1].id)
+
+        let stored = try context.fetch(FetchDescriptor<RecommendationImpressionEvent>())
+        let selected = stored.first { $0.id == outfits[1].id }
+        let ignored = stored.first { $0.id == outfits[0].id }
+        #expect(selected?.selectedAt != nil)
+        #expect(ignored?.selectedAt == nil)
+    }
+
+    @Test func recordSelectionForAnUnknownOutfitIsANoOp() throws {
+        let (repository, context) = try makeRepositoryWithContext()
+        try repository.recordImpressions(roundID: UUID(), outfits: [makeOutfit()])
+
+        try repository.recordSelection(outfitID: UUID())
+
+        let stored = try context.fetch(FetchDescriptor<RecommendationImpressionEvent>())
+        #expect(stored.allSatisfy { $0.selectedAt == nil })
     }
 }

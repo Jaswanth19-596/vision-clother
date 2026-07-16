@@ -3,10 +3,10 @@
 //  Vision_clother
 //
 //  Item Rating & Preference Learning: collects a multi-question rating for
-//  one garment — Level 1 (fit, comfort, confidence, wear-again) plus Level 2
-//  Fashion Evaluation (versatility, predicted wear frequency, style
-//  identity, quality perception — Stylist Intelligence Engine Phase 1
-//  addendum, item granularity) — and persists it via
+//  one garment — Fit, Comfort, Color, Pattern, Formality Fit, Style Identity,
+//  Wear Again, each mapped to a specific attribute affinity in
+//  Domain/AttributePreferenceProfile.swift rather than one blended score
+//  (see docs/decisions/stylist-intelligence-engine.md) — and persists it via
 //  `WardrobeRepository.recordItemRating`. Mirrors `AddItemViewModel`'s
 //  save-state shape (Features/CLAUDE.md: explicit state enums, not bare
 //  `async throws`).
@@ -32,12 +32,11 @@ enum RatingSaveState: Equatable {
 protocol RatingQuestionsViewModel: AnyObject, Observable {
     var fit: FitRating { get set }
     var comfort: Int { get set }
-    var confidence: Int { get set }
-    var wearAgain: Bool { get set }
-    var versatility: Int { get set }
-    var frequency: Int { get set }
+    var colorLike: Int { get set }
+    var patternLike: Int { get set }
+    var formalityFit: Int { get set }
     var styleIdentity: Int { get set }
-    var qualityPerception: Int { get set }
+    var wearAgain: Bool { get set }
     var state: RatingSaveState { get }
     func submit() async
 }
@@ -49,12 +48,14 @@ final class RateItemViewModel: RatingQuestionsViewModel {
 
     var fit: FitRating = .justRight
     var comfort: Int = 3
-    var confidence: Int = 3
-    var wearAgain: Bool = true
-    var versatility: Int = 3
-    var frequency: Int = 3
+    var colorLike: Int = 3
+    /// Bound by the Pattern question's `StarRatingRow` when shown; ignored
+    /// (submitted as `nil`) for solid-pattern items, which never show that
+    /// section — see `submit()`.
+    var patternLike: Int = 3
+    var formalityFit: Int = 3
     var styleIdentity: Int = 3
-    var qualityPerception: Int = 3
+    var wearAgain: Bool = true
 
     private(set) var state: RatingSaveState = .idle
 
@@ -72,12 +73,11 @@ final class RateItemViewModel: RatingQuestionsViewModel {
                 itemID: item.id,
                 fit: fit,
                 comfort: comfort,
-                confidence: confidence,
-                wearAgain: wearAgain,
-                versatility: versatility,
-                frequency: frequency,
+                colorLike: colorLike,
+                patternLike: item.pattern == .solid ? nil : patternLike,
+                formalityFit: formalityFit,
                 styleIdentity: styleIdentity,
-                qualityPerception: qualityPerception
+                wearAgain: wearAgain
             )
             state = .saved
         } catch {

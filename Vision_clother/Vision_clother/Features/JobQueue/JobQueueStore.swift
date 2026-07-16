@@ -165,6 +165,39 @@ final class JobQueueStore {
         }
     }
 
+    // MARK: - Prospective Purchase Evaluation
+
+    /// Mirrors `performUpload`'s stage-1/stage-2 isolate sequence (Gemini
+    /// preprocess -> on-device Vision cutout -> vision-LLM tagging), reusing
+    /// this store's already-injected services directly — not enqueued as a
+    /// tracked `Job`, and never saves anything. Used by
+    /// `DailyAssistantViewModel.checkProspectiveItem()` to tag a photo the
+    /// user is only considering buying; the caller decides whether/when to
+    /// persist the result (`WardrobeRepository.save`), which this method
+    /// never does. Kept as a separate, small method rather than refactoring
+    /// `performUpload` to share it — `performUpload` interleaves job-status
+    /// updates and cancellation checkpoints between each stage that this
+    /// one-shot caller has no equivalent for, and duplicating ~10 lines here
+    /// is lower-risk than restructuring an already-tested pipeline.
+    func isolateAndTag(rawImageData: Data) async throws -> (imageData: Data, metadata: GarmentMetadata) {
+        var workingImageData = rawImageData
+        do {
+            workingImageData = try await imagePreprocessingService.isolateForeground(from: rawImageData)
+        } catch {
+            workingImageData = rawImageData
+        }
+
+        let imageToTag: Data
+        do {
+            imageToTag = try await backgroundIsolationService.isolateForeground(from: workingImageData)
+        } catch {
+            imageToTag = workingImageData
+        }
+
+        let metadata = try await visionMetadataService.extractMetadata(imageData: imageToTag)
+        return (imageToTag, metadata)
+    }
+
     // MARK: - Try-on
 
     func enqueueTryOn(baseImageData: Data, outfit: OutfitCombination) {
@@ -249,7 +282,9 @@ final class JobQueueStore {
                 itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id),
                 labelsBySlot: outfit.itemsBySlot.mapValues(\.displayLabel),
                 origin: "assistant",
-                basePortraitFingerprint: ImageStorage.fingerprint(payload.baseImageData)
+                basePortraitFingerprint: ImageStorage.fingerprint(payload.baseImageData),
+                supplementaryAccessoryItemIDs: outfit.supplementaryAccessories.map(\.id),
+                supplementaryAccessoryLabels: outfit.supplementaryAccessories.map(\.displayLabel)
             )
             try? repository.saveCombination(combination)
             try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)

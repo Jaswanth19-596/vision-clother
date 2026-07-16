@@ -104,6 +104,15 @@ struct RecommendedOutfitWire: Equatable {
     /// appear here; required-slot presence is enforced by
     /// `OutfitRecommendationValidator`, not by this type.
     var itemIDsBySlot: [Slot: String]
+    /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
+    /// 2026-07-15): 0-`FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories`
+    /// additional accent items worn alongside the primary `accessory_id`
+    /// signature piece (e.g. a belt plus a watch). A wholly separate field
+    /// from `itemIDsBySlot`, not a second `.accessory` dictionary entry —
+    /// every other slot stays singular; this is the one deliberate,
+    /// additive exception. Empty (not nil) when there's nothing extra,
+    /// mirroring `OutfitRecommendationResponse.suggestedChips`'s convention.
+    var supplementaryAccessoryIDs: [String] = []
     var rationale: StructuredRationaleWire
 }
 
@@ -131,6 +140,13 @@ extension RecommendedOutfitWire: Codable {
             )
         }
         rationale = try container.decode(StructuredRationaleWire.self, forKey: rationaleKey)
+
+        guard let supplementaryAccessoryIDsKey = DynamicCodingKeys(stringValue: "supplementary_accessory_ids") else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "invalid supplementary_accessory_ids key")
+            )
+        }
+        supplementaryAccessoryIDs = try container.decodeIfPresent([String].self, forKey: supplementaryAccessoryIDsKey) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -145,6 +161,14 @@ extension RecommendedOutfitWire: Codable {
             )
         }
         try container.encode(rationale, forKey: rationaleKey)
+
+        guard let supplementaryAccessoryIDsKey = DynamicCodingKeys(stringValue: "supplementary_accessory_ids") else {
+            throw EncodingError.invalidValue(
+                supplementaryAccessoryIDs,
+                EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "invalid supplementary_accessory_ids key")
+            )
+        }
+        try container.encode(supplementaryAccessoryIDs, forKey: supplementaryAccessoryIDsKey)
     }
 }
 

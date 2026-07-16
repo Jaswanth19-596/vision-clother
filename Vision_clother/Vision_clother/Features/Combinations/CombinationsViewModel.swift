@@ -42,6 +42,8 @@ final class CombinationsViewModel {
     func resolveItems(for combination: SavedCombination) -> [WardrobeItem] {
         guard let inventory = try? repository.fetchInventory() else { return [] }
         let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
-        return combination.itemIDsBySlot.values.compactMap { itemsByID[$0] }
+        let slotItems = combination.itemIDsBySlot.values.compactMap { itemsByID[$0] }
+        let supplementaryAccessories = combination.supplementaryAccessoryItemIDs.compactMap { itemsByID[$0] }
+        return slotItems + supplementaryAccessories
     }
 }

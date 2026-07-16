@@ -27,6 +27,18 @@ enum VisualClusterUpdater {
     /// hyperparameter tuning for a v1 feature.
     static let maxClusters = 3
 
+    /// Fixed, small step used when a centroid update comes from an
+    /// *implicit* swipe (`Data/WardrobeRepository.swift`'s `applyImplicitSwipe`,
+    /// triggered by a highly- or poorly-rated item rating) rather than an
+    /// explicit swipe gesture on the discovery deck. A rating is a more
+    /// passive, ambient signal than a deliberate left/right swipe and arrives
+    /// far more often once a user stops swiping, so it nudges gently instead
+    /// of taking the same `1/weight` incremental-mean step an explicit swipe
+    /// gets (which is largest on a centroid's early points and decays as it
+    /// matures — already the right shape for "a deliberate action nudges
+    /// harder").
+    static let implicitLearningRate: Float = 0.05
+
     /// Normalizes to unit length so cosine similarity reduces to a plain dot
     /// product everywhere downstream. A near-zero vector (degenerate input)
     /// is returned unchanged rather than divided by ~0, avoiding NaN
@@ -63,12 +75,20 @@ enum VisualClusterUpdater {
     /// nudges the nearest existing centroid toward the new point
     /// (`c += (1/weight) * (x - c)`, an incremental running mean for that
     /// cluster) and re-normalizes so cosine scoring stays meaningful.
-    static func update(_ centroids: inout [VisualCentroid], with vector: [Float]) {
-        guard !vector.isEmpty else { return }
+    ///
+    /// Returns the nudged centroid's relative drift as a percentage
+    /// (`‖c_new - c_old‖ * 100`, both unit-length so this is bounded to
+    /// roughly `0...200`) — `nil` when this call seeded a fresh centroid
+    /// (no prior vector to diff against) or hit the dimension-mismatch
+    /// reseed path below. Callers (`Data/WardrobeRepository.swift`) log this
+    /// under the `[AI-Stylist-ML]` tag; it has no effect on the math itself.
+    @discardableResult
+    static func update(_ centroids: inout [VisualCentroid], with vector: [Float], learningRate: Float? = nil) -> Double? {
+        guard !vector.isEmpty else { return nil }
 
         if centroids.count < maxClusters {
             centroids.append(VisualCentroid(vector: vector, weight: 1))
-            return
+            return nil
         }
 
         var bestIndex = 0
@@ -82,9 +102,14 @@ enum VisualClusterUpdater {
         }
 
         var nearest = centroids[bestIndex]
+        let oldVector = nearest.vector
         nearest.weight += 1
-        let step = Float(1.0 / nearest.weight)
+        // `learningRate` overrides the default incremental-mean step for
+        // gentler, fixed-size implicit updates (see `implicitLearningRate`
+        // above) — explicit swipes keep the existing `1/weight` behavior.
+        let step = learningRate ?? Float(1.0 / nearest.weight)
         var updated = nearest.vector
+        var dimensionMismatch = false
         if updated.count == vector.count {
             for i in 0..<updated.count {
                 let delta: Float = step * (vector[i] - updated[i])
@@ -93,11 +118,29 @@ enum VisualClusterUpdater {
         } else {
             // Dimension mismatch (e.g. the embedding model was swapped
             // mid-history) — reseed rather than crash or silently corrupt
-            // the centroid.
+            // the centroid. Drift is meaningless here (not a nudge), so
+            // callers get `nil` rather than a huge, misleading percentage.
             updated = vector
+            dimensionMismatch = true
         }
         nearest.vector = Self.l2Normalized(updated)
         centroids[bestIndex] = nearest
+
+        guard !dimensionMismatch else { return nil }
+        return driftPercentage(from: oldVector, to: nearest.vector)
+    }
+
+    /// `‖new - old‖ * 100` — both vectors are unit-length, so this is a
+    /// bounded, NaN-safe relative-change measure (Domain/CLAUDE.md) rather
+    /// than a raw, unbounded distance.
+    private static func driftPercentage(from old: [Float], to new: [Float]) -> Double {
+        guard old.count == new.count, !old.isEmpty else { return 0 }
+        var sumSquares: Float = 0
+        for i in 0..<old.count {
+            let delta = new[i] - old[i]
+            sumSquares += delta * delta
+        }
+        return Double(sqrt(sumSquares)) * 100.0
     }
 }
 
@@ -128,8 +171,21 @@ struct VisualPreferenceProfile {
     /// as real items (Domain/CLAUDE.md) — they simply never have an
     /// embedding to score against.
     func affinityBonus(forEmbedding embedding: [Float]?) -> Double {
-        guard let embedding, !embedding.isEmpty else { return 0 }
-        guard !likedCentroids.isEmpty || !dislikedCentroids.isEmpty else { return 0 }
+        matchDetail(forEmbedding: embedding)?.bonus ?? 0
+    }
+
+    /// Same computation as `affinityBonus`, but also exposes the raw
+    /// liked/disliked cosine-similarity components it was derived from — the
+    /// re-rank path only needs the final bonus, but a human sanity-checking
+    /// whether the model is actually learning (`Features/Profile/StyleCheckViewModel.swift`)
+    /// needs to see the underlying numbers move, not just the clamped
+    /// output. `nil` under the same conditions `affinityBonus` would return a
+    /// bare 0 for: no/empty embedding, or an untrained profile with no
+    /// centroids on either side yet — both are "nothing to report," not a
+    /// real zero score.
+    func matchDetail(forEmbedding embedding: [Float]?) -> VisualMatchDetail? {
+        guard let embedding, !embedding.isEmpty else { return nil }
+        guard !likedCentroids.isEmpty || !dislikedCentroids.isEmpty else { return nil }
 
         let likedMax = likedCentroids
             .map { VisualClusterUpdater.cosineSimilarity($0.vector, embedding) }
@@ -142,7 +198,8 @@ struct VisualPreferenceProfile {
         // Cosine similarity is already bounded to [-1, 1]; scale directly
         // into the bonus's magnitude rather than clamping a much larger raw
         // value.
-        return (raw * Self.maxBonusMagnitude).clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
+        let bonus = (raw * Self.maxBonusMagnitude).clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
+        return VisualMatchDetail(likedSimilarity: likedMax, dislikedSimilarity: dislikedMax, bonus: bonus)
     }
 
     /// Offline reconstruction from a flat list of liked/disliked embeddings —
@@ -162,4 +219,16 @@ struct VisualPreferenceProfile {
         }
         return profile
     }
+}
+
+/// Raw components behind one `VisualPreferenceProfile.matchDetail` call —
+/// `likedSimilarity`/`dislikedSimilarity` are cosine similarities in
+/// `[-1, 1]` against the closest centroid on each side, `bonus` is the same
+/// clamped value `affinityBonus` returns. Exists so a caller that wants to
+/// show the model's actual math (rather than only the final re-rank bonus)
+/// doesn't have to recompute cosine similarity itself.
+struct VisualMatchDetail: Equatable {
+    let likedSimilarity: Double
+    let dislikedSimilarity: Double
+    let bonus: Double
 }

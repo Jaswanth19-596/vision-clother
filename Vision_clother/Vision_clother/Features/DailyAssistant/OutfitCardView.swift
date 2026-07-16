@@ -13,6 +13,13 @@ import UIKit
 
 struct OutfitCardView: View {
     let outfit: OutfitCombination
+    /// Prospective Purchase Evaluation (2026-07-15): the id of the item the
+    /// user is considering buying, if this card came from a purchase-check
+    /// round — `nil` for every ordinary recommendation card. Drives the
+    /// "Considering this?" badge and disables the tap-to-detail gesture,
+    /// since that item was never saved to the closet and has no
+    /// `ItemDetailView` to show (`repository.delete()` would misfire on it).
+    var prospectiveItemID: UUID? = nil
 
     /// Tapping a slot opens the full item detail (`ItemDetailView`, reused
     /// from the Closet feature) for that exact garment.
@@ -50,6 +57,9 @@ struct OutfitCardView: View {
                 }
                 if let accessory = outfit.accessory {
                     slotRow(title: "Accessory", item: accessory)
+                }
+                ForEach(Array(outfit.supplementaryAccessories.enumerated()), id: \.element.id) { index, accessory in
+                    slotRow(title: outfit.supplementaryAccessories.count > 1 ? "Accessory \(index + 2)" : "Additional Accessory", item: accessory)
                 }
                 if let bag = outfit.bag {
                     slotRow(title: "Bag", item: bag)
@@ -92,13 +102,21 @@ struct OutfitCardView: View {
                     .foregroundStyle(.secondary)
                 Text(item.displayLabel)
                     .font(.subheadline)
+                if item.id == prospectiveItemID {
+                    Label("Considering this?", systemImage: "tag")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !item.isGhostElement else { return }
+            // The prospective item was never saved to the closet — it has
+            // no `ItemDetailView` to show, and that view's Delete action
+            // would misfire on an item outside the ModelContext.
+            guard !item.isGhostElement, item.id != prospectiveItemID else { return }
             detailItem = item
         }
     }

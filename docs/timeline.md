@@ -2,6 +2,52 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-15 — Feature: Multi-Accessory Outfits
+
+**Status:** Implemented (build verified; test target not run this pass per user instruction).
+
+Closes the last of three deferred items in `docs/decisions/stylist-intelligence-engine.md`: an outfit could only ever carry one accent item. Investigation found cross-slot accessorizing (bag + headwear + accessory) already worked — `Slot` already has three independent accent cases — the actual gap was the single `.accessory` slot being an explicit catch-all ("belt, scarf, tie, watch, or sunglasses... one per outfit, not several simultaneously"), so "belt + jewelry" collided. Fix: the primary `.accessory` slot is untouched (zero risk to existing behavior/tests); a small, bounded **supplementary accessories** list (max 2, `FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories`) was added as a wholly separate, additive field at every layer — not a rewrite of the `[Slot: WardrobeItem]` dictionary every other slot uses.
+
+Threaded through: `RecommendedOutfitWire.supplementaryAccessoryIDs` (wire, via the same dynamic-key `Codable` container under a fixed `supplementary_accessory_ids` key), the JSON schema (new array property, `maxItems` capped), `OutfitRecommendationValidator` (one explicit resolution step alongside, not inside, the existing per-slot loop — extends the duplicate-id check, caps/truncates rather than rejecting on overflow), `OutfitCombination.supplementaryAccessories` (folded into `items`), `StylistBrain`'s prompt (business/interview/formal must leave it empty; casual/going-out may use up to the cap), `SavedCombination.supplementaryAccessoryItemIDs`/`Labels` (new `SchemaV8`, additive), `OutfitCardView` (one row per supplementary accessory), and `JobQueueStore.saveCombination`/`CombinationsViewModel.resolveItems` (both integration points that build/resolve a `SavedCombination`).
+
+## 2026-07-15 — Feature: "What Would You Change?" Checklist (Level 3 Outfit Feedback)
+
+**Status:** Implemented (build verified; test target not run this pass per user instruction).
+
+Closes the second of three deferred items in `docs/decisions/stylist-intelligence-engine.md`: Level 1/2 dimension-based outfit feedback shipped, but the structured "what specifically was wrong" checklist was scoped and never built. No prior spec existed anywhere in the repo for the actual checklist options, so this defines seven fresh, each mapped 1:1 onto an existing (or newly-fed) affinity dimension in `Domain/AttributePreferenceProfile.swift`: Too Formal/Too Casual → `formalityAffinity` (mutually exclusive), Wrong Colors → `colorVibeAffinity`, Wrong Pattern → `patternAffinity` (a new outfit-level entry point — previously only item-level `ItemRating.patternLike` fed this map), Not My Style → `styleTagAffinity`, Didn't Fit Right → `silhouetteAffinity`, Wrong For The Weather → `fabricWeightAffinity`. A flagged reason clamps that dimension's contribution to a strongly negative value (`min(existing, 0.1)`) regardless of the Level 2 star given — a deliberate signal layered on top of, not a replacement for, the star.
+
+New `Models/FeedbackEvent.swift`'s `OutfitChangeReason` enum + `OutfitFeedback.changeReasonsRaw`; `OutfitDimensionRatedAttributes` gained `pattern`/`patternDissatisfaction`; `Data/WardrobeRepository.swift`'s `fetchFeedbackHistory()` applies the clamp per flagged reason when building the per-item dimension join. UI: a new "What Would You Change?" checklist section in `Features/Rating/RateCombinationView.swift`, backed by `RateCombinationViewModel.toggleChangeReason`. New `SchemaV7` (additive `[String]` column, `.lightweight` migration).
+
+## 2026-07-15 — Feature: Impression/Selection Event Capture
+
+**Status:** Implemented (build verified; test target not run this pass per user instruction).
+
+Closes the first of three deferred items in `docs/decisions/stylist-intelligence-engine.md`'s Deferred section: the app logged ML drift (`[AI-Stylist-ML]`) but never recorded which of several shown candidate outfits the user actually acted on vs. ignored. A new event-sourced `Models/RecommendationImpressionEvent.swift` (mirrors `SwipeEvent`'s shape) gets one row per candidate the moment `DailyAssistantViewModel.sendTurn` resolves a successful round (`rank` = position in the LLM's strongest-to-weakest sort, `id` = the in-memory `OutfitCombination.id`); `startTryOn` — the concrete "pick" gesture among the shown candidates — marks that row's `selectedAt`. `Data/WardrobeRepository.swift` gained `recordImpressions`/`recordSelection`, both best-effort (`try?`) and logged under the existing `[AI-Stylist-ML]` tag. New `SchemaV6` (purely additive new table, `.lightweight` migration). Not wired into any ranker this phase — same posture as `OutfitRecommendationValidator.RejectionReason`, this just makes the data exist for a future investigation.
+
+## 2026-07-15 — Fixed: "How does it look on me?" failed with "Render failed: Invalid image data-url"
+
+**Status:** Fixed.
+
+Tapping "How does it look on me?" on a Daily Assistant recommendation failed downstream at the OpenRouter render API with an opaque `"Invalid image data-url"` error whenever the user hadn't captured a portrait photo yet (via the Profile tab). Root cause: `DailyAssistantView.swift`'s `placeholderBaseImageData` fell back to empty `Data()` when `UserPortraitStorage.load()` returned `nil`, which base64-encoded to an empty `data:image/png;base64,` string that OpenRouter rejected — a known, previously-commented gap, not a regression. `ManualPairingView`/`ManualPairingViewModel` already guard this identical precondition (`UserPortraitStorage.exists` → "Add a photo of yourself first."); Daily Assistant's try-on button never got the equivalent check. Added the same guard at the button-tap call site: `onStartTryOn` now checks `UserPortraitStorage.exists` before enqueuing the job and shows an alert ("Add a photo of yourself on your Profile tab to try on outfits.") instead of ever sending empty image data. `xcodebuild` clean build passes.
+
+## 2026-07-15 — Swipe-to-Learn calibration meter + `[AI-Stylist-ML]` verification logging
+
+**Status:** Implemented.
+
+A `/new_feature` request asked for the on-device Vision-embedding/k-means visual-taste pipeline to be built from scratch, with an exact formula spec. Investigation (see `docs/decisions/stylist-intelligence-engine.md`'s new 2026-07-15 entry) found the entire pipeline already shipped in the two entries below, matching the spec's numbers almost exactly. Confirmed with the user to keep the existing, documented cosine-similarity/incremental-mean math unchanged rather than rewrite it to match two spec details that diverged (Euclidean nearest-centroid, fixed η=0.10) — and to skip an Accelerate/vDSP rewrite of the already-tested pure-Swift vector math.
+
+What was genuinely new: `VisualClusterUpdater.update` (`Domain/VisualPreferenceProfile.swift`) now returns each nudge's drift percentage; `VisualPreferenceState` (`Models/SwipeDiscovery.swift`) gained `totalSwipes`, `calibrationProgress` (linear 0...1 over 20 explicit swipes), and `isTrained`; `Data/WardrobeRepository.swift` increments `totalSwipes` and logs drift/calibration-complete under a new `[AI-Stylist-ML]` tag (`Domain/MLLog.swift`), and `Domain/WardrobeCatalogBuilder.swift`'s `rank(_:history:)` logs each item's visual affinity bonus while ranking. The swipe-deck screen (`Features/SwipeDiscovery/`) now shows a minimalist Activity-ring-style "Stylist Calibration" meter (`CalibrationRingView.swift`, new) that animates toward a checkmark badge at 100% rather than exposing a raw percentage/log readout.
+
+## 2026-07-15 — Item Rating question redesign + Swipe-to-Learn implicit swipe bridge
+
+**Status:** Implemented.
+
+User feedback: the per-item rating form's questions (Confidence, Versatility, Predicted Wear Frequency, Quality Perception) read as generic and out of scope. Root cause traced to `Domain/AttributePreferenceProfile.swift`: every answer was averaged into one blended `ItemRating.normalizedValue`, then that single number was reused as the signal for color/pattern/formality affinity alike — with no dedicated color or pattern question ever asked, despite `colorVibeAffinity`/`patternAffinity` maps already existing.
+
+`Models/ItemRating.swift`'s question set is now Fit, Comfort, Color ("do you like this color on you?"), Pattern (skipped for solid-pattern items), Formality Fit ("did this feel right for how formal/casual you needed it?"), Style Identity, Wear Again — each mapped 1:1 to its own affinity in `RatedAttributes` instead of one blended value. `fit.centeredness` and `comfort` now also feed item-level `silhouetteAffinity`/`fabricWeightAffinity`, closing a gap where those two dimensions previously had no item-level signal at all. Clean-break schema change (no shipped users).
+
+Second change, requested alongside the rating redesign: item ratings now feed the Swipe-to-Learn visual taste system (`Features/SwipeDiscovery/`). A highly-rated item is treated as an implicit "swipe right" on its cached photo embedding (a poorly-rated one an implicit "swipe left"), nudging the same k-means centroids the discovery deck writes — via a new `Data/WardrobeRepository.swift`'s `applyImplicitSwipe`, called from `recordItemRating`. `VisualClusterUpdater.update` gained an optional `learningRate` parameter so implicit (rating-derived) nudges use a gentler fixed step (`implicitLearningRate = 0.05`) than the existing explicit-swipe incremental-mean step, which is unchanged. Implicit swipes are best-effort (no-op if the item has no cached embedding yet) and don't write a `SwipeEvent` — see `docs/decisions/stylist-intelligence-engine.md` for the full design.
+
 ## 2026-07-14 — Fix: Try-On Button Allows Duplicate Queue Submissions
 
 **Status:** ✅ Shipped — Build Succeeded

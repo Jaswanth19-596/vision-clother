@@ -93,6 +93,54 @@ struct OutfitRecommendationResponseDecodingTests {
         #expect(decoded.outfits.first?.itemIDsBySlot[.outerwear] == "4")
     }
 
+    // MARK: - Multi-Accessory Outfits (Stylist Intelligence Engine ADR)
+
+    @Test func omittedSupplementaryAccessoryIDsDecodesAsEmpty() throws {
+        // Every fixture predating this feature omits `supplementary_accessory_ids`
+        // entirely — must still decode as "nothing extra."
+        let json = """
+        {
+          "outfits": [
+            {
+              "top_id": "1", "bottom_id": "2", "footwear_id": "3",
+              "rationale": { "summary": "A clean look.", "confidence": 90 }
+            }
+          ]
+        }
+        """
+        let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
+        #expect(decoded.outfits.first?.supplementaryAccessoryIDs == [])
+    }
+
+    @Test func decodesSupplementaryAccessoryIDsWhenPresent() throws {
+        let json = """
+        {
+          "outfits": [
+            {
+              "top_id": "1", "bottom_id": "2", "footwear_id": "3",
+              "supplementary_accessory_ids": ["watch-id", "necklace-id"],
+              "rationale": { "summary": "Layered accessories.", "confidence": 88 }
+            }
+          ]
+        }
+        """
+        let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))
+        #expect(decoded.outfits.first?.supplementaryAccessoryIDs == ["watch-id", "necklace-id"])
+    }
+
+    @Test func encodesAndDecodesRoundTripWithSupplementaryAccessoryIDs() throws {
+        let original = RecommendedOutfitWire(
+            itemIDsBySlot: [.top: "1", .bottom: "2", .footwear: "3"],
+            supplementaryAccessoryIDs: ["a", "b"],
+            rationale: StructuredRationaleWire(summary: "Test.", confidence: 80)
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(RecommendedOutfitWire.self, from: data)
+
+        #expect(decoded == original)
+    }
+
     @Test func emptyOutfitsArrayDecodes() throws {
         let json = #"{ "outfits": [] }"#
         let decoded = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: Data(json.utf8))

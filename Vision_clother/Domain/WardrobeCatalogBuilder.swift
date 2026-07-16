@@ -17,6 +17,7 @@
 //
 
 import Foundation
+import os
 
 /// Compact, snake_case-keyed catalog entry — the *only* per-item shape sent
 /// to the recommendation LLM. Never includes image data.
@@ -50,6 +51,15 @@ struct CatalogEntry: Codable, Equatable {
     /// *after* the LLM had already picked it.
     var userRating: Int?
 
+    /// Prospective Purchase Evaluation (2026-07-15): true for the single
+    /// catalog entry (if any) representing an item the user is considering
+    /// buying — not yet saved to their closet. `StylistBrain`'s prompt
+    /// instructs the model to build every outfit around this item, and
+    /// `Domain/OutfitRecommendationValidator.swift`'s `mustIncludeItemID`
+    /// deterministically enforces it. `false` for every ordinary catalog
+    /// entry (the vast majority of calls to `build` never set this at all).
+    var isProspectivePurchase: Bool = false
+
     enum CodingKeys: String, CodingKey {
         case id
         case slot
@@ -68,6 +78,7 @@ struct CatalogEntry: Codable, Equatable {
         case material
         case texture
         case userRating = "user_rating"
+        case isProspectivePurchase = "is_prospective_purchase"
     }
 }
 
@@ -88,12 +99,22 @@ enum WardrobeCatalogBuilder {
     ///   `fallbackConstraints`, when provided) and then slot-balanced —
     ///   evenly capped per slot rather than dropping later slots entirely —
     ///   so every required slot still has candidates.
+    /// - Prospective Purchase Evaluation: when `prospectiveItemID` matches an
+    ///   item in `inventory`, that item's catalog entry is flagged
+    ///   (`isProspectivePurchase`) and is guaranteed to survive both the
+    ///   constraints prefilter and the `maxItems` cap — the whole point of
+    ///   this catalog build is to evaluate that specific item, so it can
+    ///   never be the one thing silently dropped for space. `inventory`
+    ///   itself may include an item that was never `repository.save`d (e.g.
+    ///   a photo the user is only considering buying); this builder has no
+    ///   opinion on persistence, it just needs the id to match.
     static func build(
         from inventory: [WardrobeItem],
         constraints: StyleConstraints? = nil,
         maxItems: Int = defaultMaxItems,
         descriptionCharLimit: Int = defaultDescriptionCharLimit,
-        history: FeedbackHistory? = nil
+        history: FeedbackHistory? = nil,
+        prospectiveItemID: UUID? = nil
     ) -> (entries: [CatalogEntry], index: [String: WardrobeItem]) {
         var candidates = inventory.filter { !$0.isGhostElement }
 
@@ -109,8 +130,18 @@ enum WardrobeCatalogBuilder {
             }
         }
 
+        let prospectiveItem = prospectiveItemID.flatMap { id in inventory.first { $0.id == id } }
+        if let prospectiveItem, !candidates.contains(where: { $0.id == prospectiveItem.id }) {
+            candidates.append(prospectiveItem)
+        }
+
         if candidates.count > maxItems {
-            candidates = slotBalancedSample(candidates, maxItems: maxItems, history: history)
+            if let prospectiveItem {
+                let rest = candidates.filter { $0.id != prospectiveItem.id }
+                candidates = [prospectiveItem] + slotBalancedSample(rest, maxItems: maxItems - 1, history: history)
+            } else {
+                candidates = slotBalancedSample(candidates, maxItems: maxItems, history: history)
+            }
         }
 
         var index: [String: WardrobeItem] = [:]
@@ -136,7 +167,8 @@ enum WardrobeCatalogBuilder {
                 silhouette: item.silhouette,
                 material: item.material,
                 texture: item.texture,
-                userRating: history.map { ItemRatingScoring.score(for: item.id, history: $0) }
+                userRating: history.map { ItemRatingScoring.score(for: item.id, history: $0) },
+                isProspectivePurchase: item.id == prospectiveItemID
             )
         }
 
@@ -172,6 +204,19 @@ enum WardrobeCatalogBuilder {
     /// once real taste data exists, never reorders in its absence.
     private static func rank(_ items: [WardrobeItem], history: FeedbackHistory?) -> [WardrobeItem] {
         guard let history else { return items }
+
+        // Verification/logging (see docs/decisions/stylist-intelligence-engine.md):
+        // only worth emitting once real taste data exists — a cold-start
+        // profile scores every item 0, which would just be noise.
+        let isTrainedProfile = !history.visualProfile.likedCentroids.isEmpty
+            || !history.visualProfile.dislikedCentroids.isEmpty
+        if isTrainedProfile {
+            for item in items {
+                let bonus = history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[item.id])
+                MLLog.logger.debug("[AI-Stylist-ML] visual affinity: item=\(item.id, privacy: .public) slot=\(item.slot.rawValue, privacy: .public) bonus=\(bonus, format: .fixed(precision: 3), privacy: .public)")
+            }
+        }
+
         return items.sorted { a, b in
             let scoreA = history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[a.id])
             let scoreB = history.visualProfile.affinityBonus(forEmbedding: history.itemEmbeddings[b.id])

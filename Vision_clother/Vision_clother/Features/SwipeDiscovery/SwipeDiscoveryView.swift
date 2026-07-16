@@ -42,6 +42,9 @@ struct SwipeDiscoveryView: View {
     @ViewBuilder
     private func content(viewModel: SwipeDiscoveryViewModel) -> some View {
         VStack(spacing: VCSpacing.lg) {
+            CalibrationProgressBadge(progress: viewModel.calibrationProgress, isTrained: viewModel.isTrained)
+                .padding(.horizontal, VCSpacing.lg)
+
             Text("Like or dislike a few looks — we'll use it to fine-tune your recommendations.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -56,6 +59,10 @@ struct SwipeDiscoveryView: View {
 
             cardStack(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .top) {
+                    DriftFeedbackPill(amount: viewModel.lastDriftAmount, isVisible: viewModel.showDriftFeedback)
+                        .padding(.top, VCSpacing.sm)
+                }
 
             controls(viewModel: viewModel)
         }

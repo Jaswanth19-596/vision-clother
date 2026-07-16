@@ -14,6 +14,7 @@
 
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 struct DailyAssistantView: View {
     @Environment(\.modelContext) private var modelContext
@@ -27,6 +28,17 @@ struct DailyAssistantView: View {
     /// Ticks once per submit tap — drives the send/get-outfit-ideas
     /// critical-action haptic without firing on unrelated state changes.
     @State private var sendTick = 0
+    /// Shown instead of enqueuing a try-on when no base portrait has been
+    /// captured yet — without this, `placeholderBaseImageData` falls back to
+    /// empty `Data()` and the render request fails downstream with an opaque
+    /// "Invalid image data-url" error from the render API.
+    @State private var isMissingPortraitAlertPresented = false
+
+    // Prospective Purchase Evaluation (2026-07-15) — "Buying something new?"
+    // photo attach state, live only while `viewModel.isProspectivePurchaseMode`
+    // is on and no photo has been attached yet.
+    @State private var isProspectiveCameraPresented = false
+    @State private var prospectivePhotoPickerItem: PhotosPickerItem?
 
     var body: some View {
         NavigationStack {
@@ -63,6 +75,28 @@ struct DailyAssistantView: View {
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )
+        }
+        .alert("Add a photo first", isPresented: $isMissingPortraitAlertPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Add a photo of yourself on your Profile tab to try on outfits.")
+        }
+        .fullScreenCover(isPresented: $isProspectiveCameraPresented) {
+            CameraCaptureView { data in
+                isProspectiveCameraPresented = false
+                guard let data else { return }
+                viewModel?.attachedProspectiveImageData = data
+            }
+            .ignoresSafeArea()
+        }
+        .onChange(of: prospectivePhotoPickerItem) { _, newItem in
+            guard let newItem else { return }
+            Task {
+                if let data = try? await newItem.loadTransferable(type: Data.self) {
+                    viewModel?.attachedProspectiveImageData = data
+                }
+                prospectivePhotoPickerItem = nil
+            }
         }
     }
 
@@ -158,8 +192,39 @@ struct DailyAssistantView: View {
                             }
                         },
                         onStartTryOn: { outfit in
+                            guard UserPortraitStorage.exists else {
+                                isMissingPortraitAlertPresented = true
+                                return
+                            }
                             viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
                         }
+                    )
+                }
+
+            case .purchaseCheck(let item, let outfits, let note):
+                assistantRow {
+                    PurchaseCheckRoundView(
+                        item: item,
+                        outfits: outfits,
+                        note: note,
+                        isExpanded: isLatest || expandedRoundIDs.contains(round.id),
+                        isLatest: isLatest,
+                        onToggleExpanded: {
+                            if expandedRoundIDs.contains(round.id) {
+                                expandedRoundIDs.remove(round.id)
+                            } else {
+                                expandedRoundIDs.insert(round.id)
+                            }
+                        },
+                        onStartTryOn: { outfit in
+                            guard UserPortraitStorage.exists else {
+                                isMissingPortraitAlertPresented = true
+                                return
+                            }
+                            viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
+                        },
+                        onAddToCloset: { viewModel.addProspectiveItemToCloset(item) },
+                        onDiscard: { viewModel.discardProspectiveItem(item) }
                     )
                 }
             }
@@ -228,29 +293,95 @@ struct DailyAssistantView: View {
                 .frame(height: 0.5)
 
             VStack(alignment: .leading, spacing: 8) {
-                TextField(
-                    "What are you dressing for today?",
-                    text: Binding(get: { viewModel.prompt }, set: { viewModel.prompt = $0 }),
-                    axis: .vertical
+                Toggle(
+                    "Buying something new?",
+                    isOn: Binding(
+                        get: { viewModel.isProspectivePurchaseMode },
+                        set: { newValue in
+                            viewModel.isProspectivePurchaseMode = newValue
+                            if !newValue { viewModel.attachedProspectiveImageData = nil }
+                        }
+                    )
                 )
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...3)
-                .focused($isPromptFocused)
-                .submitLabel(.search)
-                .onSubmit { submit(viewModel: viewModel) }
+                .font(.subheadline)
+                .disabled(viewModel.extractionState == .loading)
 
-                Button(viewModel.rounds.isEmpty ? "Get Outfit Ideas" : "Send") {
-                    submit(viewModel: viewModel)
-                    sendTick += 1
+                if viewModel.isProspectivePurchaseMode {
+                    prospectivePurchaseInput(viewModel: viewModel)
+                } else {
+                    TextField(
+                        "What are you dressing for today?",
+                        text: Binding(get: { viewModel.prompt }, set: { viewModel.prompt = $0 }),
+                        axis: .vertical
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...3)
+                    .focused($isPromptFocused)
+                    .submitLabel(.search)
+                    .onSubmit { submit(viewModel: viewModel) }
+
+                    Button(viewModel.rounds.isEmpty ? "Get Outfit Ideas" : "Send") {
+                        submit(viewModel: viewModel)
+                        sendTick += 1
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(.horizontal)
             .padding(.top, 10)
             .padding(.bottom, 6)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
+    }
+
+    /// Replaces the free-text prompt entirely while "Buying something new?"
+    /// is on — Prospective Purchase Evaluation is a fixed, no-scenario-text
+    /// evaluation (see `DailyAssistantViewModel.checkProspectiveItem`), so
+    /// the only input this needs is the photo itself.
+    @ViewBuilder
+    private func prospectivePurchaseInput(viewModel: DailyAssistantViewModel) -> some View {
+        if let imageData = viewModel.attachedProspectiveImageData, let uiImage = UIImage(data: imageData) {
+            HStack(spacing: 12) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 44, height: 44)
+                    .clipShape(VCRadius.shape(VCRadius.swatch))
+
+                Button("Choose a different photo") {
+                    viewModel.attachedProspectiveImageData = nil
+                }
+                .font(.footnote)
+                .buttonStyle(SecondaryButtonStyle())
+
+                Spacer()
+            }
+
+            Button("Check This Item") {
+                Task { await viewModel.checkProspectiveItem() }
+                sendTick += 1
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .frame(maxWidth: .infinity)
+            .disabled(viewModel.extractionState == .loading)
+        } else {
+            HStack(spacing: 12) {
+                Button {
+                    isProspectiveCameraPresented = true
+                } label: {
+                    Label("Take Photo", systemImage: "camera")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+
+                PhotosPicker(selection: $prospectivePhotoPickerItem, matching: .images) {
+                    Label("Choose Photo", systemImage: "photo.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
     }
 
     /// Routes the prompt field's submit/button through whichever entry
@@ -400,6 +531,162 @@ private struct OutfitsRoundView: View {
             }
         }
         .premiumCard(material: isLatest ? .thinMaterial : .ultraThinMaterial, shadow: nil)
+    }
+}
+
+/// Prospective Purchase Evaluation (2026-07-15): renders the result of
+/// `DailyAssistantViewModel.checkProspectiveItem()` — either the "doesn't
+/// pair well" verdict (`outfits.isEmpty`) or a carousel of outfits built
+/// around `item`, always followed by Add to Closet / Not Buying This
+/// actions scoped to that exact item. A self-contained sibling of
+/// `OutfitsRoundView` rather than a parameterized variant of it — the two
+/// diverge enough (verdict state, per-item actions) that sharing would mean
+/// threading optional callbacks through a view with its own well-established
+/// contract, for a feature this bounded in scope.
+private struct PurchaseCheckRoundView: View {
+    let item: WardrobeItem
+    let outfits: [OutfitCombination]
+    let note: String?
+    let isExpanded: Bool
+    let isLatest: Bool
+    let onToggleExpanded: () -> Void
+    let onStartTryOn: (OutfitCombination) -> Void
+    let onAddToCloset: () -> Bool
+    let onDiscard: () -> Void
+
+    @State private var selectedOutfitID: OutfitCombination.ID?
+    @State private var queuedOutfitIDs: Set<OutfitCombination.ID> = []
+    @State private var isAdded = false
+    @State private var isDiscarded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !isLatest {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        onToggleExpanded()
+                    }
+                }) {
+                    Label(
+                        isExpanded ? "Hide" : summaryText,
+                        systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                    )
+                    .font(.subheadline)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+
+            if isExpanded {
+                if outfits.isEmpty {
+                    noMatchContent
+                } else {
+                    matchedContent
+                }
+
+                if !isDiscarded {
+                    actionRow
+                } else {
+                    Label("Discarded", systemImage: "trash")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .premiumCard(material: isLatest ? .thinMaterial : .ultraThinMaterial, shadow: nil)
+    }
+
+    private var summaryText: String {
+        outfits.isEmpty ? "Doesn't pair well — tap to view" : "Pairs with \(outfits.count) outfit\(outfits.count == 1 ? "" : "s") — tap to view"
+    }
+
+    private var noMatchContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("This doesn't pair well with your current wardrobe", systemImage: "xmark.circle")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let note, !note.isEmpty {
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var matchedContent: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(outfits) { outfit in
+                        OutfitCardView(outfit: outfit, prospectiveItemID: item.id)
+                            .containerRelativeFrame(.horizontal)
+                            .id(outfit.id)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollIndicators(.never)
+            .frame(height: 460)
+            .onScrollTargetVisibilityChange(idType: OutfitCombination.ID.self) { visible in
+                selectedOutfitID = visible.first ?? outfits.first?.id
+            }
+            .onAppear { selectedOutfitID = outfits.first?.id }
+
+            if outfits.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(outfits) { outfit in
+                        Circle()
+                            .fill(outfit.id == selectedOutfitID ? Color.accentColor : Color.secondary.opacity(0.35))
+                            .frame(width: outfit.id == selectedOutfitID ? 8 : 6, height: outfit.id == selectedOutfitID ? 8 : 6)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selectedOutfitID)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            if let selected = outfits.first(where: { $0.id == selectedOutfitID }) {
+                let alreadyQueued = queuedOutfitIDs.contains(selected.id)
+                Button {
+                    onStartTryOn(selected)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        queuedOutfitIDs.insert(selected.id)
+                    }
+                } label: {
+                    if alreadyQueued {
+                        Label("Added to queue", systemImage: "checkmark")
+                    } else {
+                        Text("How does it look on me?")
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(alreadyQueued)
+                .animation(.easeInOut(duration: 0.2), value: alreadyQueued)
+            }
+        }
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                withAnimation { isAdded = onAddToCloset() }
+            } label: {
+                if isAdded {
+                    Label("Added to Closet", systemImage: "checkmark")
+                } else {
+                    Label("Add to Closet", systemImage: "plus")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isAdded)
+
+            Button("Not Buying This") {
+                onDiscard()
+                withAnimation { isDiscarded = true }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(isAdded)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

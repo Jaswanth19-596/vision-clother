@@ -54,6 +54,24 @@ final class SwipeDiscoveryViewModel {
     /// advanced past that card by the time this can happen.
     private(set) var lastSwipeError: String?
 
+    /// Gamified calibration meter (`VisualPreferenceState.calibrationProgress`)
+    /// for the card screen's progress ring — 0 before the first swipe (no
+    /// `VisualPreferenceState` row exists yet), refreshed after every
+    /// persisted swipe so the ring animates live as the user swipes.
+    private(set) var calibrationProgress: Double = 0
+    private(set) var isTrained: Bool = false
+
+    /// Live, per-swipe centroid drift (`VisualClusterUpdater.update`'s return
+    /// value, as a fraction — e.g. `0.034` for 3.4%), surfaced as a transient
+    /// toast so the user sees the model's math actually move on every swipe,
+    /// rather than inferring "it's learning" from `calibrationProgress`'s
+    /// swipe-count ring alone. `nil` when the most recent swipe seeded a
+    /// fresh centroid instead of nudging one (no drift to report) — those
+    /// swipes don't trigger the toast.
+    private(set) var lastDriftAmount: Double = 0
+    private(set) var showDriftFeedback: Bool = false
+    private var driftFeedbackDismissTask: Task<Void, Never>?
+
     /// Once the deck runs low, top up rather than making the user hit a
     /// hard "no more photos" wall mid-session.
     private let refillThreshold = 5
@@ -82,8 +100,19 @@ final class SwipeDiscoveryViewModel {
     var visibleStack: [StockPhoto] { Array(deck.prefix(3)) }
 
     func loadDeckIfNeeded() async {
+        refreshCalibrationState()
         guard deck.isEmpty, loadState != .loading else { return }
         await loadDeck()
+    }
+
+    /// Reads the current `VisualPreferenceState` and republishes its
+    /// calibration meter — best-effort, matching this feature's existing
+    /// "a taste-profile hiccup shouldn't block the swipe UI" posture
+    /// (`persistSwipe`'s `lastSwipeError` handling below).
+    private func refreshCalibrationState() {
+        guard let state = try? repository.fetchVisualPreferenceState() else { return }
+        calibrationProgress = state.calibrationProgress
+        isTrained = state.isTrained
     }
 
     private func loadDeck() async {
@@ -122,14 +151,32 @@ final class SwipeDiscoveryViewModel {
             }
             let (data, _) = try await session.data(from: url)
             let embedding = try await embeddingService.embedding(for: data)
-            try repository.recordSwipe(
+            let drift = try repository.recordSwipe(
                 sourcePhotoID: photo.id,
                 imageURLString: photo.imageURLString,
                 liked: liked,
                 embedding: embedding
             )
+            refreshCalibrationState()
+            if let drift {
+                presentDriftFeedback(drift / 100.0)
+            }
         } catch {
             lastSwipeError = "Couldn't save that swipe — it won't count toward your taste profile."
+        }
+    }
+
+    /// Shows the live drift toast for ~1.5s, then auto-dismisses — cancels
+    /// any still-pending dismiss from a prior swipe first so a fast series of
+    /// swipes doesn't fight itself with overlapping auto-hide timers.
+    private func presentDriftFeedback(_ amount: Double) {
+        driftFeedbackDismissTask?.cancel()
+        lastDriftAmount = amount
+        showDriftFeedback = true
+        driftFeedbackDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            self?.showDriftFeedback = false
         }
     }
 }

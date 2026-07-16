@@ -102,4 +102,50 @@ struct VisualClusterUpdaterTests {
         VisualClusterUpdater.update(&centroids, with: [])
         #expect(centroids.isEmpty)
     }
+
+    // MARK: - Drift percentage (verification/logging)
+
+    @Test func seedingUpdatesReturnNilDriftSinceThereIsNoPriorCentroidToCompare() {
+        var centroids: [VisualCentroid] = []
+        for i in 0..<VisualClusterUpdater.maxClusters {
+            var vector = [Float](repeating: 0, count: 3)
+            vector[i] = 1
+            let drift = VisualClusterUpdater.update(&centroids, with: vector)
+            #expect(drift == nil)
+        }
+    }
+
+    @Test func nudgingAnExistingCentroidReturnsANonNegativeDriftPercentage() throws {
+        var centroids: [VisualCentroid] = []
+        for i in 0..<VisualClusterUpdater.maxClusters {
+            var vector = [Float](repeating: 0, count: VisualClusterUpdater.maxClusters)
+            vector[i] = 1
+            VisualClusterUpdater.update(&centroids, with: vector)
+        }
+
+        var nearDuplicate = [Float](repeating: 0, count: VisualClusterUpdater.maxClusters)
+        nearDuplicate[0] = 1
+        let drift = try #require(VisualClusterUpdater.update(&centroids, with: nearDuplicate))
+
+        #expect(drift >= 0)
+        #expect(!drift.isNaN)
+    }
+
+    @Test func identicalRepeatedSwipesToTheSameCentroidEventuallyConvergeToNearZeroDrift() {
+        var centroids: [VisualCentroid] = []
+        for i in 0..<VisualClusterUpdater.maxClusters {
+            var vector = [Float](repeating: 0, count: VisualClusterUpdater.maxClusters)
+            vector[i] = 1
+            VisualClusterUpdater.update(&centroids, with: vector)
+        }
+
+        var lastDrift: Double = .infinity
+        for _ in 0..<20 {
+            var vector = [Float](repeating: 0, count: VisualClusterUpdater.maxClusters)
+            vector[0] = 1
+            lastDrift = VisualClusterUpdater.update(&centroids, with: vector) ?? .infinity
+        }
+
+        #expect(lastDrift < 1.0)
+    }
 }

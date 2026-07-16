@@ -31,19 +31,35 @@ enum OutfitRecommendationValidator {
         case ghostElement(slot: Slot)
     }
 
+    /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
+    /// 2026-07-15): the LLM occasionally sends more supplementary
+    /// accessories than the schema's `maxItems` permits (a schema violation
+    /// on the model's part, not something to hard-reject the whole outfit
+    /// over) — extras beyond the cap are silently dropped rather than
+    /// failing the outfit.
+    private static let maxSupplementaryAccessories = FashionKnowledgeConstants.DressCode.maxSupplementaryAccessories
+
     /// Validates and re-scores every outfit in `response`, dropping any that
     /// fail a hard check. An empty result signals the caller to fall back to
     /// `Domain/OutfitRecommendationEngine.generateCandidates`.
+    ///
+    /// - Parameter mustIncludeItemID: Prospective Purchase Evaluation
+    ///   (2026-07-15) — when set, any surviving outfit that doesn't actually
+    ///   reference this id (in any slot or as a supplementary accessory) is
+    ///   dropped too. `nil` (the default) is every ordinary recommendation
+    ///   call, which has no such requirement.
     static func validate(
         _ response: OutfitRecommendationResponse,
         index: [String: WardrobeItem],
         constraints: StyleConstraints? = nil,
         profile: UserStyleProfile? = nil,
         weather: WeatherContext? = nil,
-        history: FeedbackHistory = FeedbackHistory()
+        history: FeedbackHistory = FeedbackHistory(),
+        mustIncludeItemID: UUID? = nil
     ) -> [OutfitCombination] {
         validateVerbose(
-            response, index: index, constraints: constraints, profile: profile, weather: weather, history: history
+            response, index: index, constraints: constraints, profile: profile, weather: weather, history: history,
+            mustIncludeItemID: mustIncludeItemID
         ).valid
     }
 
@@ -55,7 +71,8 @@ enum OutfitRecommendationValidator {
         constraints: StyleConstraints? = nil,
         profile: UserStyleProfile? = nil,
         weather: WeatherContext? = nil,
-        history: FeedbackHistory = FeedbackHistory()
+        history: FeedbackHistory = FeedbackHistory(),
+        mustIncludeItemID: UUID? = nil
     ) -> (valid: [OutfitCombination], rejections: [RejectionReason]) {
         var combinations: [OutfitCombination] = []
         var rejections: [RejectionReason] = []
@@ -66,6 +83,16 @@ enum OutfitRecommendationValidator {
                 combinations.append(combo)
             case .failure(let reason):
                 rejections.append(reason)
+            }
+        }
+
+        // Prospective Purchase Evaluation: a hard structural drop, applied
+        // before scoring — an outfit that omits the one item this whole
+        // request exists to evaluate is useless output regardless of how
+        // well it would otherwise score.
+        if let mustIncludeItemID {
+            combinations = combinations.filter { combo in
+                combo.items.contains { $0.id == mustIncludeItemID }
             }
         }
 
@@ -106,7 +133,21 @@ enum OutfitRecommendationValidator {
             }
         }
 
-        let usedIDs = itemsBySlot.values.map(\.id)
+        // Multi-Accessory Outfits: a separate, explicit step alongside the
+        // generic per-slot loop above (not woven into it) — every other
+        // slot stays singular, this is the one deliberate additive
+        // exception (Domain/CLAUDE.md's guardrail against ad hoc per-slot
+        // special-casing is about the generic Slot.allCases loop itself,
+        // which is unchanged here).
+        var supplementaryAccessories: [WardrobeItem] = []
+        for idString in wire.supplementaryAccessoryIDs.prefix(maxSupplementaryAccessories) {
+            switch item(for: idString, expectedSlot: .accessory, index: index) {
+            case .failure(let reason): return .failure(reason)
+            case .success(let resolved): supplementaryAccessories.append(resolved)
+            }
+        }
+
+        let usedIDs = itemsBySlot.values.map(\.id) + supplementaryAccessories.map(\.id)
         guard Set(usedIDs).count == usedIDs.count else { return .failure(.duplicateID) }
 
         let structured = StructuredRationale(
@@ -117,7 +158,12 @@ enum OutfitRecommendationValidator {
         // Score is a placeholder here — `validate`/`validateVerbose`
         // always overwrite it via `OutfitRecommendationEngine.outfitScore`
         // before returning, so this initial value never reaches a caller.
-        return .success(OutfitCombination(itemsBySlot: itemsBySlot, score: 0, structuredRationale: structured))
+        return .success(OutfitCombination(
+            itemsBySlot: itemsBySlot,
+            score: 0,
+            structuredRationale: structured,
+            supplementaryAccessories: supplementaryAccessories
+        ))
     }
 
     private static func item(for idString: String, expectedSlot: Slot, index: [String: WardrobeItem]) -> Result<WardrobeItem, RejectionReason> {

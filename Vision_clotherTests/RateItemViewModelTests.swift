@@ -32,12 +32,11 @@ struct RateItemViewModelTests {
         let viewModel = RateItemViewModel(item: item, repository: repository)
         viewModel.fit = .slightlyTight
         viewModel.comfort = 2
-        viewModel.confidence = 4
-        viewModel.wearAgain = false
-        viewModel.versatility = 5
-        viewModel.frequency = 1
+        viewModel.colorLike = 4
+        viewModel.patternLike = 1
+        viewModel.formalityFit = 4
         viewModel.styleIdentity = 4
-        viewModel.qualityPerception = 2
+        viewModel.wearAgain = false
 
         await viewModel.submit()
 
@@ -47,12 +46,32 @@ struct RateItemViewModelTests {
         #expect(recorded?.itemID == item.id)
         #expect(recorded?.fit == .slightlyTight)
         #expect(recorded?.comfort == 2)
-        #expect(recorded?.confidence == 4)
-        #expect(recorded?.wearAgain == false)
-        #expect(recorded?.versatility == 5)
-        #expect(recorded?.frequency == 1)
+        #expect(recorded?.colorLike == 4)
+        // `makeItem()` uses `.solid`, so the Pattern question is skipped —
+        // `patternLike` must be submitted as `nil` regardless of the bound
+        // control's leftover value.
+        #expect(recorded?.patternLike == nil)
+        #expect(recorded?.formalityFit == 4)
         #expect(recorded?.styleIdentity == 4)
-        #expect(recorded?.qualityPerception == 2)
+        #expect(recorded?.wearAgain == false)
+    }
+
+    @Test func submitSubmitsPatternLikeForANonSolidItem() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let item = WardrobeItem(
+            slot: .top,
+            formalityScore: 2.0,
+            colorProfile: ColorProfile(primaryHex: "#FFFFFF", secondaryHex: nil, category: .neutral),
+            pattern: .striped,
+            seasonality: Season.allCases,
+            fabricWeight: .light
+        )
+        let viewModel = RateItemViewModel(item: item, repository: repository)
+        viewModel.patternLike = 5
+
+        await viewModel.submit()
+
+        #expect(repository.recordedRatings.first?.patternLike == 5)
     }
 
     @Test func submitFailureSurfacesAsFailedWithoutCrashing() async throws {
@@ -73,12 +92,11 @@ struct RateItemViewModelTests {
 
         #expect(viewModel.fit == .justRight)
         #expect(viewModel.comfort == 3)
-        #expect(viewModel.confidence == 3)
-        #expect(viewModel.wearAgain == true)
-        #expect(viewModel.versatility == 3)
-        #expect(viewModel.frequency == 3)
+        #expect(viewModel.colorLike == 3)
+        #expect(viewModel.patternLike == 3)
+        #expect(viewModel.formalityFit == 3)
         #expect(viewModel.styleIdentity == 3)
-        #expect(viewModel.qualityPerception == 3)
+        #expect(viewModel.wearAgain == true)
         #expect(viewModel.state == .idle)
     }
 }
@@ -91,7 +109,7 @@ private struct RecordRatingError: Error {}
 private final class InMemoryWardrobeRepository: WardrobeRepository {
     var savedItems: [WardrobeItem] = []
     var shouldThrowOnRecordRating = false
-    private(set) var recordedRatings: [(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int)] = []
+    private(set) var recordedRatings: [(itemID: UUID, fit: FitRating, comfort: Int, colorLike: Int, patternLike: Int?, formalityFit: Int, styleIdentity: Int, wearAgain: Bool)] = []
 
     func fetchInventory() throws -> [WardrobeItem] { savedItems }
     func save(_ item: WardrobeItem) throws { savedItems.append(item) }
@@ -103,9 +121,9 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
 
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, colorLike: Int, patternLike: Int?, formalityFit: Int, styleIdentity: Int, wearAgain: Bool) throws {
         if shouldThrowOnRecordRating { throw RecordRatingError() }
-        recordedRatings.append((itemID, fit, comfort, confidence, wearAgain, versatility, frequency, styleIdentity, qualityPerception))
+        recordedRatings.append((itemID, fit, comfort, colorLike, patternLike, formalityFit, styleIdentity, wearAgain))
     }
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
     func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
@@ -117,7 +135,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
 
     func fetchUserProfile() throws -> UserStyleProfile? { nil }
     func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {}
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? { nil }
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
     func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }

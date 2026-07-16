@@ -26,6 +26,16 @@ final class DailyAssistantViewModel {
     /// the UI always resolves.
     private static let requestTimeoutNanoseconds: UInt64 = 15_000_000_000
 
+    /// Prospective Purchase Evaluation (2026-07-15): a longer budget than
+    /// `requestTimeoutNanoseconds` since this path chains isolate + vision
+    /// tagging (two extra network-ish legs) in front of the same
+    /// weather/profile/recommendation stretch — matches
+    /// `FalTryOnRenderService`'s precedent of a wider budget for a
+    /// multi-step pipeline.
+    private static let prospectivePurchaseTimeoutNanoseconds: UInt64 = 45_000_000_000
+
+    private static let prospectivePurchaseScenarioText = "The user is deciding whether to buy the item flagged as their prospective purchase in the wardrobe catalog. Build the best, most versatile, everyday-appropriate outfits using their real wardrobe, built around that item."
+
     /// Clarification Loop (Stylist Intelligence Engine ADR, Phase 2): the
     /// maximum number of clarifying follow-ups the recommendation call may
     /// ask before it's forced to decide (see `StylistBrain`'s FINAL TURN
@@ -75,6 +85,15 @@ final class DailyAssistantViewModel {
         enum Outcome {
             case clarification(followUpText: String, chips: [String])
             case outfits([OutfitCombination])
+            /// Prospective Purchase Evaluation (2026-07-15): the result of
+            /// `checkProspectiveItem()`, distinct from an ordinary `.outfits`
+            /// round because it always carries the specific item being
+            /// evaluated — needed both to render its thumbnail in the
+            /// "doesn't pair well" case (`outfits.isEmpty`) and to back the
+            /// Add to Closet / Not Buying This actions regardless of match
+            /// outcome. `note` is the model's own `follow_up_text` when it
+            /// chose to explain a no-match verdict, `nil` otherwise.
+            case purchaseCheck(item: WardrobeItem, outfits: [OutfitCombination], note: String?)
         }
 
         let id = UUID()
@@ -104,6 +123,23 @@ final class DailyAssistantViewModel {
     /// (`assistantSummaryText(for:)`), not the prose the UI shows.
     private var conversationHistory: [ConversationTurn] = []
     private var clarificationTurnCount: Int = 0
+
+    /// Prospective Purchase Evaluation (2026-07-15): bound to the "Buying
+    /// something new?" toggle in `DailyAssistantView`. Independent of
+    /// `conversationHistory`/`clarificationTurnCount` — this mode is a fixed,
+    /// one-shot evaluation with no scenario text and no clarification loop,
+    /// so it never touches the free-text conversational state.
+    var isProspectivePurchaseMode: Bool = false
+    /// The photo the user just attached, staged until `checkProspectiveItem()`
+    /// consumes it. Cleared as soon as that call starts (mirrors `prompt`
+    /// being cleared synchronously before `requestOutfitIdeas()`'s own
+    /// `async` work begins).
+    var attachedProspectiveImageData: Data?
+    /// Kept only so `retryLastTurn()` can tell which flow actually produced
+    /// the current `.failed` state and retry the right thing — cleared at
+    /// the top of `sendTurn` so a later free-text failure can't be mistaken
+    /// for a stale purchase-check retry.
+    private var lastProspectiveRawImageData: Data?
 
     private let repository: WardrobeRepository
     private let jobQueueStore: JobQueueStore
@@ -184,6 +220,13 @@ final class DailyAssistantViewModel {
     /// it's popped here before re-sending to avoid a duplicate.
     func retryLastTurn() async {
         guard case .failed = extractionState else { return }
+        // Prospective Purchase Evaluation: that flow never touches
+        // `conversationHistory`, so it needs its own retry branch — checked
+        // first since it's the more recently-set of the two.
+        if let rawImageData = lastProspectiveRawImageData {
+            await performProspectivePurchaseCheck(rawImageData: rawImageData)
+            return
+        }
         guard let lastUserText = conversationHistory.last(where: { $0.role == .user })?.text else {
             await requestOutfitIdeas()
             return
@@ -202,10 +245,16 @@ final class DailyAssistantViewModel {
         clarificationTurnCount = 0
         extractionState = .idle
         rounds = []
+        isProspectivePurchaseMode = false
+        attachedProspectiveImageData = nil
+        lastProspectiveRawImageData = nil
     }
 
     private func sendTurn(userText: String) async {
         conversationHistory.append(ConversationTurn(role: .user, text: userText))
+        // A normal free-text turn is starting — any earlier purchase-check
+        // failure is no longer "the most recent thing that could be retried".
+        lastProspectiveRawImageData = nil
 
         extractionState = .loading
 
@@ -238,9 +287,14 @@ final class DailyAssistantViewModel {
 
         switch outcome {
         case .success(let resolved):
-            rounds.append(ConversationRound(userText: userText, outcome: .outfits(resolved)))
+            let round = ConversationRound(userText: userText, outcome: .outfits(resolved))
+            rounds.append(round)
             conversationHistory.append(ConversationTurn(role: .assistant, text: Self.assistantSummaryText(for: resolved)))
             extractionState = .idle
+            // Impression/Selection Event Capture (Stylist Intelligence Engine
+            // ADR): best-effort — a logging/audit trail, never a gate on the
+            // conversation flow.
+            try? repository.recordImpressions(roundID: round.id, outfits: resolved)
         case .clarification(let followUpText, let chips):
             rounds.append(ConversationRound(userText: userText, outcome: .clarification(followUpText: followUpText, chips: chips)))
             conversationHistory.append(ConversationTurn(role: .assistant, text: followUpText))
@@ -262,10 +316,11 @@ final class DailyAssistantViewModel {
     /// the first one") — against what it actually gave last time.
     private static func assistantSummaryText(for outfits: [OutfitCombination]) -> String {
         outfits.enumerated().map { index, outfit in
-            let slots = Slot.allCases.compactMap { slot -> String? in
+            var slots = Slot.allCases.compactMap { slot -> String? in
                 guard let item = outfit.itemsBySlot[slot] else { return nil }
                 return "\(slot.rawValue): \(item.displayLabel)"
             }
+            slots += outfit.supplementaryAccessories.map { "supplementary_accessory: \($0.displayLabel)" }
             return "Outfit \(index + 1) — \(slots.joined(separator: ", "))"
         }.joined(separator: "\n")
     }
@@ -334,6 +389,152 @@ final class DailyAssistantViewModel {
         }
     }
 
+    // MARK: - Prospective Purchase Evaluation
+
+    private enum ProspectivePurchaseOutcome {
+        case resolved(item: WardrobeItem, outfits: [OutfitCombination], note: String?)
+        case failure(String)
+        case timedOut
+    }
+
+    /// Entry point for the "Buying something new?" toggle — tags the
+    /// attached photo and asks the recommendation LLM to build the best
+    /// outfits around it, using the user's real wardrobe. Deliberately
+    /// independent of the free-text conversational flow: no scenario text,
+    /// no clarification loop, and it never touches `conversationHistory`.
+    func checkProspectiveItem() async {
+        guard let rawImageData = attachedProspectiveImageData else { return }
+        attachedProspectiveImageData = nil
+        isProspectivePurchaseMode = false
+        await performProspectivePurchaseCheck(rawImageData: rawImageData)
+    }
+
+    /// Shared by `checkProspectiveItem()` and `retryLastTurn()`'s
+    /// purchase-check branch — kept separate from `checkProspectiveItem()`
+    /// itself since a retry must not re-read/clear `attachedProspectiveImageData`
+    /// (the user may have already started attaching a different photo).
+    private func performProspectivePurchaseCheck(rawImageData: Data) async {
+        lastProspectiveRawImageData = rawImageData
+        extractionState = .loading
+
+        let requestID = UUID()
+        currentRequestID = requestID
+
+        let workTask = Task {
+            await PerfLog.time("resolveProspectivePurchase.total") {
+                await self.resolveProspectivePurchase(rawImageData: rawImageData)
+            }
+        }
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: Self.prospectivePurchaseTimeoutNanoseconds)
+            workTask.cancel()
+        }
+
+        let outcome = await workTask.value
+        timeoutTask.cancel()
+
+        guard currentRequestID == requestID else { return }
+
+        switch outcome {
+        case .resolved(let item, let outfits, let note):
+            let round = ConversationRound(userText: "Is this a good buy?", outcome: .purchaseCheck(item: item, outfits: outfits, note: note))
+            rounds.append(round)
+            extractionState = .idle
+            if !outfits.isEmpty {
+                // Impression/Selection Event Capture: same best-effort
+                // logging every ordinary recommendation round gets.
+                try? repository.recordImpressions(roundID: round.id, outfits: outfits)
+            }
+        case .failure(let message):
+            extractionState = .failed(message)
+        case .timedOut:
+            extractionState = .failed("This is taking too long. Check your connection and try again.")
+        }
+    }
+
+    /// Isolates + tags the photo (reusing `JobQueueStore`'s existing
+    /// services, not enqueued as a tracked `Job`), builds a transient
+    /// `WardrobeItem` that is never saved unless the user later taps Add to
+    /// Closet, and asks the recommendation LLM to build outfits forced
+    /// around it (`mustIncludeItemID`). An empty `outfits` result is a
+    /// legitimate answer — "this doesn't pair with anything you own" — not
+    /// an error, so it's returned as `.resolved` with an empty array rather
+    /// than `.failure`.
+    private func resolveProspectivePurchase(rawImageData: Data) async -> ProspectivePurchaseOutcome {
+        let weather = await PerfLog.time("weather") { await weatherProvider.currentWeather() }
+
+        do {
+            let (imageData, metadata) = try await PerfLog.time("prospectivePurchase.isolateAndTag") {
+                try await jobQueueStore.isolateAndTag(rawImageData: rawImageData)
+            }
+            guard !Task.isCancelled else { return .timedOut }
+
+            let filename = try ImageStorage.save(imageData)
+            let prospectiveItem = WardrobeItem.make(from: metadata, imageAssetName: filename)
+
+            let inventory = try repository.fetchInventory()
+            let history = try await repository.fetchFeedbackHistory()
+            let profile = await PerfLog.time("profile") { await resolvedUserProfile() }
+
+            let (catalog, index) = await PerfLog.time("catalogBuild") {
+                WardrobeCatalogBuilder.build(
+                    from: inventory + [prospectiveItem], history: history, prospectiveItemID: prospectiveItem.id
+                )
+            }
+
+            let response = try await PerfLog.time("recommendation.call") {
+                try await recommendationService.recommendOutfits(
+                    conversationHistory: [ConversationTurn(role: .user, text: Self.prospectivePurchaseScenarioText)],
+                    isFinalTurn: true,
+                    catalog: catalog, profile: profile, weather: weather, history: history
+                )
+            }
+
+            let validated = await PerfLog.time("validation") {
+                OutfitRecommendationValidator.validate(
+                    response, index: index,
+                    constraints: response.resolvedConstraints,
+                    profile: profile, weather: weather, history: history,
+                    mustIncludeItemID: prospectiveItem.id
+                )
+            }
+
+            return .resolved(item: prospectiveItem, outfits: validated, note: validated.isEmpty ? response.followUpText : nil)
+        } catch is CancellationError {
+            return .timedOut
+        } catch {
+            if (error as? URLError)?.code == .cancelled {
+                return .timedOut
+            }
+            Self.logger.debug("Prospective purchase evaluation failed: \(String(describing: error))")
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    /// Persists the exact item that was already tagged and rendered in the
+    /// round — no re-upload, same photo/metadata. Returns whether the save
+    /// succeeded so the caller (a per-round `@State` in the View) can lock
+    /// its button without this view model needing to track "which rounds
+    /// have been saved" itself.
+    @discardableResult
+    func addProspectiveItemToCloset(_ item: WardrobeItem) -> Bool {
+        do {
+            try repository.save(item)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// "Not buying this" — best-effort cleanup of the temporary isolated
+    /// photo written by `resolveProspectivePurchase` for an item the user
+    /// decided against saving. Never fails loudly: a missing file is not
+    /// worth surfacing (`ImageStorage.delete` is itself best-effort).
+    func discardProspectiveItem(_ item: WardrobeItem) {
+        guard let filename = item.imageAssetName else { return }
+        ImageStorage.delete(filename)
+    }
+
     /// Reads the persisted style profile, lazily deriving it once from an
     /// existing portrait if none is saved yet (PRD §3.8). Best-effort: a
     /// derivation failure just means this and future calls proceed with
@@ -362,6 +563,9 @@ final class DailyAssistantViewModel {
     /// Independent per call: starting a second try-on never cancels a first
     /// one in flight.
     func startTryOn(baseImageData: Data, outfit: OutfitCombination) {
+        // Impression/Selection Event Capture: this is the concrete "pick"
+        // gesture among the shown candidates — best-effort, never a gate.
+        try? repository.recordSelection(outfitID: outfit.id)
         jobQueueStore.enqueueTryOn(baseImageData: baseImageData, outfit: outfit)
     }
 }

@@ -2,22 +2,23 @@
 //  RateItemView.swift
 //  Vision_clother
 //
-//  Item Rating & Preference Learning. Single-scroll rating form — Level 1
-//  (Fit, Comfort, Confidence, Wear again?) plus Level 2 Fashion Evaluation
-//  (Versatility, Predicted Wear Frequency, Style Identity, Quality
-//  Perception) — reusing `AddItemView`'s Form/Section idiom.
-//  `RateItemQuestionsView` is the shared question body, used exclusively by
-//  `RateCombinationView`'s per-item step — rating only happens from the
-//  Combinations tab (`CombinationDetailView` → `RateCombinationView`).
+//  Item Rating & Preference Learning. Single-scroll rating form — Fit,
+//  Comfort, Color, Pattern (skipped for solid-pattern items), Formality Fit,
+//  Style Identity, Wear again? — each question maps to a specific attribute
+//  affinity (Domain/AttributePreferenceProfile.swift) rather than one
+//  blended score, per docs/decisions/stylist-intelligence-engine.md.
+//  Reuses `AddItemView`'s Form/Section idiom. `RateItemQuestionsView` is the
+//  shared question body, used exclusively by `RateCombinationView`'s
+//  per-item step — rating only happens from the Combinations tab
+//  (`CombinationDetailView` → `RateCombinationView`).
 //
 
 import SwiftUI
 import SwiftData
 
-/// The Level 1 (Fit/Comfort/Confidence/Wear again) + Level 2 Fashion
-/// Evaluation (Versatility/Predicted Wear Frequency/Style Identity/Quality
-/// Perception) form used by `RateCombinationView`'s per-item step — generic
-/// over `RatingQuestionsViewModel`. Shows `item`'s photo (or color-swatch
+/// The Fit/Comfort/Color/Pattern/Formality Fit/Style Identity/Wear again
+/// form used by `RateCombinationView`'s per-item step — generic over
+/// `RatingQuestionsViewModel`. Shows `item`'s photo (or color-swatch
 /// fallback) at the top so the user can see exactly what they're rating,
 /// matching `ItemDetailView.garmentPreview`'s pattern.
 struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
@@ -60,29 +61,27 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
                 StarRatingRow(rating: $viewModel.comfort)
             }
 
-            Section("Confidence") {
-                Text("How did you feel wearing it?")
+            Section("Color") {
+                Text("Do you like this color on you?")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ConfidenceEmojiRow(rating: $viewModel.confidence)
+                StarRatingRow(rating: $viewModel.colorLike)
             }
 
-            Section("Wear again?") {
-                WearAgainRow(wearAgain: $viewModel.wearAgain)
+            if item.pattern != .solid {
+                Section("Pattern") {
+                    Text("How do you feel about this pattern?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    StarRatingRow(rating: $viewModel.patternLike)
+                }
             }
 
-            Section("Versatility") {
-                Text("How versatile is this piece?")
+            Section("Formality Fit") {
+                Text("Did this feel right for how formal or casual you needed it to be?")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.versatility)
-            }
-
-            Section("Predicted Wear Frequency") {
-                Text("How often do you see yourself wearing this?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.frequency)
+                StarRatingRow(rating: $viewModel.formalityFit)
             }
 
             Section("Style Identity") {
@@ -92,11 +91,8 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
                 StarRatingRow(rating: $viewModel.styleIdentity)
             }
 
-            Section("Quality Perception") {
-                Text("How would you rate the quality of this piece?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.qualityPerception)
+            Section("Wear again?") {
+                WearAgainRow(wearAgain: $viewModel.wearAgain)
             }
 
             if case .failed(let message) = viewModel.state {

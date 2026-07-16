@@ -113,7 +113,7 @@ final class MockWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, colorLike: Int, patternLike: Int?, formalityFit: Int, styleIdentity: Int, wearAgain: Bool) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
     func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
@@ -127,7 +127,7 @@ final class MockWardrobeRepository: WardrobeRepository {
 
     func fetchUserProfile() throws -> UserStyleProfile? { nil }
     func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {}
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? { nil }
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
     func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }

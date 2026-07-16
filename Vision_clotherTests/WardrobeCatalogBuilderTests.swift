@@ -136,6 +136,62 @@ struct WardrobeCatalogBuilderTests {
         }
     }
 
+    // MARK: - Prospective Purchase Evaluation (2026-07-15)
+
+    @Test func prospectiveItemIsFlaggedInItsOwnCatalogEntryOnly() {
+        let prospective = makeItem(slot: .top)
+        let ordinary = makeItem(slot: .bottom)
+
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [prospective, ordinary], prospectiveItemID: prospective.id)
+
+        #expect(entries.first { $0.id == prospective.id.uuidString }?.isProspectivePurchase == true)
+        #expect(entries.first { $0.id == ordinary.id.uuidString }?.isProspectivePurchase == false)
+    }
+
+    @Test func noEntryIsFlaggedWhenProspectiveItemIDIsNil() {
+        let item = makeItem(slot: .top)
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [item])
+        #expect(entries.allSatisfy { !$0.isProspectivePurchase })
+    }
+
+    @Test func prospectiveItemSurvivesTheMaxItemsCapEvenWhenOutnumbered() {
+        // 300 ordinary tops competing for a 10-item cap — without the
+        // explicit exemption, the prospective item (added last, with no
+        // learned-taste advantage) would very likely be capped away.
+        let prospective = makeItem(slot: .top)
+        let manyOtherTops = (0..<300).map { _ in makeItem(slot: .top) }
+
+        let (entries, _) = WardrobeCatalogBuilder.build(from: [prospective] + manyOtherTops, maxItems: 10, prospectiveItemID: prospective.id)
+
+        #expect(entries.contains { $0.id == prospective.id.uuidString && $0.isProspectivePurchase })
+    }
+
+    @Test func prospectiveItemSurvivesTheConstraintsPrefilterEvenWhenItDoesntMatch() {
+        // The prospective item is out of season/formality for the supplied
+        // constraints — an ordinary item would be silently prefiltered out,
+        // but the whole point of this catalog build is to evaluate this
+        // specific item, so it must never be the thing quietly dropped.
+        let prospective = WardrobeItem(
+            slot: .top, formalityScore: 5.0,
+            colorProfile: ColorProfile(primaryHex: "#3A7CA5", secondaryHex: nil, category: .neutral),
+            pattern: .solid, seasonality: [.winter], fabricWeight: .heavy
+        )
+        let matchingItem = makeItem(slot: .bottom)
+
+        let constraints = StyleConstraints(
+            formalityRange: FormalityRange(lowerBound: 1.0, upperBound: 2.0),
+            weatherLayeringRequired: false,
+            colorPaletteVibe: [.neutral],
+            seasonSuitability: .summer
+        )
+
+        let (entries, _) = WardrobeCatalogBuilder.build(
+            from: [prospective, matchingItem], constraints: constraints, prospectiveItemID: prospective.id
+        )
+
+        #expect(entries.contains { $0.id == prospective.id.uuidString })
+    }
+
     @Test func coldStartWithNoLearnedTasteLeavesTruncationOrderUnchanged() {
         // Regression: an untrained (default, empty) `VisualPreferenceProfile`
         // must leave slot truncation byte-for-byte identical to building with

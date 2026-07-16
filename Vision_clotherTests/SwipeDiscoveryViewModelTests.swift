@@ -135,6 +135,71 @@ struct SwipeDiscoveryViewModelTests {
         #expect(viewModel.deck.isEmpty)
     }
 
+    // MARK: - Calibration meter
+
+    @Test func calibrationProgressIsZeroBeforeAnySwipeHasEverBeenPersisted() async {
+        let repository = InMemoryWardrobeRepository()
+        let feedService = MockStockImageFeedService(photosToReturn: makePhotos(count: 3))
+        let viewModel = SwipeDiscoveryViewModel(
+            repository: repository, feedService: feedService, embeddingService: MockImageEmbeddingService()
+        )
+
+        await viewModel.loadDeckIfNeeded()
+
+        #expect(viewModel.calibrationProgress == 0)
+        #expect(viewModel.isTrained == false)
+    }
+
+    @Test func calibrationProgressRefreshesAfterAPersistedSwipe() async throws {
+        let repository = InMemoryWardrobeRepository()
+        let feedService = MockStockImageFeedService(photosToReturn: makePhotos(count: 1))
+        let viewModel = SwipeDiscoveryViewModel(
+            repository: repository, feedService: feedService,
+            embeddingService: MockImageEmbeddingService(vectorToReturn: [1, 0, 0]),
+            session: makeStubbedSession()
+        )
+        await viewModel.loadDeckIfNeeded()
+
+        viewModel.swipe(liked: true)
+
+        try await waitUntil { viewModel.calibrationProgress > 0 }
+        #expect(abs(viewModel.calibrationProgress - 0.05) < 0.0001)
+    }
+
+    // MARK: - Live drift feedback
+
+    @Test func swipeShowsDriftFeedbackWhenRepositoryReturnsADrift() async throws {
+        let repository = InMemoryWardrobeRepository()
+        repository.driftToReturn = 3.4
+        let feedService = MockStockImageFeedService(photosToReturn: makePhotos(count: 1))
+        let viewModel = SwipeDiscoveryViewModel(
+            repository: repository, feedService: feedService,
+            embeddingService: MockImageEmbeddingService(), session: makeStubbedSession()
+        )
+        await viewModel.loadDeckIfNeeded()
+
+        viewModel.swipe(liked: true)
+
+        try await waitUntil { viewModel.showDriftFeedback }
+        #expect(abs(viewModel.lastDriftAmount - 0.034) < 0.0001)
+    }
+
+    @Test func swipeDoesNotShowDriftFeedbackWhenRepositoryReturnsNil() async throws {
+        let repository = InMemoryWardrobeRepository()
+        repository.driftToReturn = nil
+        let feedService = MockStockImageFeedService(photosToReturn: makePhotos(count: 1))
+        let viewModel = SwipeDiscoveryViewModel(
+            repository: repository, feedService: feedService,
+            embeddingService: MockImageEmbeddingService(), session: makeStubbedSession()
+        )
+        await viewModel.loadDeckIfNeeded()
+
+        viewModel.swipe(liked: true)
+
+        try await waitUntil { repository.recordedSwipes.count == 1 }
+        #expect(viewModel.showDriftFeedback == false)
+    }
+
     // MARK: - SwipeGestureResolver
 
     @Test func decisionIsLikePastThePositiveThreshold() {
@@ -159,6 +224,11 @@ struct SwipeDiscoveryViewModelTests {
 @MainActor
 private final class InMemoryWardrobeRepository: WardrobeRepository {
     private(set) var recordedSwipes: [(sourcePhotoID: String, liked: Bool, embedding: [Float])] = []
+    private var totalSwipes = 0
+    /// Stubbed return value for `recordSwipe` — configurable per test so
+    /// drift-toast behavior can be exercised without a real
+    /// `VisualClusterUpdater` run.
+    var driftToReturn: Double?
 
     func fetchInventory() throws -> [WardrobeItem] { [] }
     func save(_ item: WardrobeItem) throws {}
@@ -168,7 +238,7 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {}
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {}
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {}
-    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, confidence: Int, wearAgain: Bool, versatility: Int, frequency: Int, styleIdentity: Int, qualityPerception: Int) throws {}
+    func recordItemRating(itemID: UUID, fit: FitRating, comfort: Int, colorLike: Int, patternLike: Int?, formalityFit: Int, styleIdentity: Int, wearAgain: Bool) throws {}
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] { [] }
     func recordOutfitRating(outfitID: UUID, submission: OutfitRatingSubmission) throws {}
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] { [] }
@@ -178,10 +248,15 @@ private final class InMemoryWardrobeRepository: WardrobeRepository {
     func fetchUserProfile() throws -> UserStyleProfile? { nil }
     func saveUserProfile(_ wire: UserStyleProfileWire) throws {}
 
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? {
         recordedSwipes.append((sourcePhotoID, liked, embedding))
+        totalSwipes += 1
+        return driftToReturn
     }
-    func fetchVisualPreferenceState() throws -> VisualPreferenceState? { nil }
+    func fetchVisualPreferenceState() throws -> VisualPreferenceState? {
+        guard totalSwipes > 0 else { return nil }
+        return VisualPreferenceState(totalSwipes: totalSwipes)
+    }
     func updateVisualPreferenceState(likedCentroids: [VisualCentroid], dislikedCentroids: [VisualCentroid], embeddingDimension: Int) throws {}
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? { nil }
     func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {}

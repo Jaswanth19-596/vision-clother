@@ -9,6 +9,7 @@
 
 import Foundation
 import SwiftData
+import os
 
 /// One detailed "Rate this outfit" submission (Stylist Intelligence Engine
 /// Phase 1) — bundled into a struct rather than a long parameter list since
@@ -27,6 +28,9 @@ struct OutfitRatingSubmission {
     var practicality: Int
     var favoriteItemID: UUID?
     var weakestItemID: UUID?
+    /// "What would you change?" checklist (Level 3, Stylist Intelligence
+    /// Engine ADR) — empty when nothing was flagged.
+    var changeReasons: Set<OutfitChangeReason> = []
 }
 
 @MainActor
@@ -48,20 +52,20 @@ protocol WardrobeRepository {
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws
 
     /// Item Rating & Preference Learning: persists one multi-question rating
-    /// (`Models/ItemRating.swift`) from `Features/Rating/RateItemView.swift`.
-    /// `versatility`/`frequency`/`styleIdentity`/`qualityPerception` are the
-    /// Level 2 Fashion Evaluation questions (Stylist Intelligence Engine
-    /// Phase 1 addendum, item granularity).
+    /// (`Models/ItemRating.swift`) from `Features/Rating/RateItemView.swift`
+    /// — Fit, Comfort, Color, Pattern (`nil` for solid-pattern items), Formality
+    /// Fit, Style Identity, Wear Again — and, via `applyImplicitSwipe`, folds
+    /// the rating's derived liked/disliked signal into the same Swipe-to-Learn
+    /// visual centroids `recordSwipe` maintains (an implicit swipe).
     func recordItemRating(
         itemID: UUID,
         fit: FitRating,
         comfort: Int,
-        confidence: Int,
-        wearAgain: Bool,
-        versatility: Int,
-        frequency: Int,
+        colorLike: Int,
+        patternLike: Int?,
+        formalityFit: Int,
         styleIdentity: Int,
-        qualityPerception: Int
+        wearAgain: Bool
     ) throws
     /// All ratings for one item, newest first — backs the "already rated"
     /// state on `ItemDetailView`.
@@ -98,7 +102,13 @@ protocol WardrobeRepository {
     /// like/dislike swipe and folds its embedding into the persisted
     /// `VisualPreferenceState` centroids in the same call — the "hot" path a
     /// swipe gesture triggers on every card. See `Domain/VisualPreferenceProfile.swift`.
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws
+    /// Returns the centroid drift percentage from `VisualClusterUpdater.update`
+    /// (`nil` when this swipe seeded a fresh centroid rather than nudging an
+    /// existing one — there's no prior vector to diff against) so the caller
+    /// can surface real, per-swipe learning feedback instead of inferring it
+    /// from a swipe count.
+    @discardableResult
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double?
     /// Current learned visual-taste state, `nil` before the first swipe.
     func fetchVisualPreferenceState() throws -> VisualPreferenceState?
     /// Direct upsert of the visual-taste centroids — used by
@@ -117,6 +127,16 @@ protocol WardrobeRepository {
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding?
     /// Upserts one item's cached embedding, keyed by `itemID`.
     func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws
+
+    /// Impression/Selection Event Capture: inserts one `RecommendationImpressionEvent`
+    /// per candidate outfit shown in a round, rank = position in `outfits`
+    /// (0 = strongest). Best-effort at the call site (`try?`) — a logging/audit
+    /// trail, never a gate on the recommendation flow.
+    func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws
+    /// Marks the impression matching `outfitID` (the `OutfitCombination.id`
+    /// the user acted on, e.g. via `startTryOn`) as selected. No-ops if no
+    /// matching impression row exists.
+    func recordSelection(outfitID: UUID) throws
 }
 
 @MainActor
@@ -284,14 +304,20 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
                 guard let item = itemsByID[rating.itemID] else { return nil }
                 return RatedAttributes(
-                    value: rating.normalizedValue,
+                    colorLike: Double(rating.colorLike - 1) / 4.0,
+                    patternLike: rating.patternLike.map { Double($0 - 1) / 4.0 },
+                    formalityFit: Double(rating.formalityFit - 1) / 4.0,
                     colorVibe: item.colorProfile.category,
                     pattern: item.pattern,
                     formalityBand: Int(item.formalityScore.rounded()),
-                    styleIdentity: rating.styleIdentity.map { Double($0 - 1) / 4.0 } ?? 0.5,
+                    styleIdentity: Double(rating.styleIdentity - 1) / 4.0,
                     styleTags: item.styleTags,
                     recordedAt: rating.recordedAt,
-                    slot: item.slot
+                    slot: item.slot,
+                    silhouetteTag: item.silhouette,
+                    silhouetteFit: item.silhouette != nil ? rating.fit.centeredness : nil,
+                    fabricWeight: item.fabricWeight,
+                    fabricComfort: Double(rating.comfort - 1) / 4.0
                 )
             }
 
@@ -309,11 +335,22 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
 
                 let items = combination.itemIDsBySlot.values.compactMap { itemsByID[$0] }
 
-                let colorHarmonyNorm = Double(colorHarmony - 1) / 4.0
-                let occasionMatchNorm = Double(occasionMatch - 1) / 4.0
-                let styleMatchNorm = Double(styleMatch - 1) / 4.0
-                let silhouetteNorm = Double(silhouette - 1) / 4.0
-                let weatherFitNorm = (Double(weatherSuitability - 1) / 4.0 + Double(practicality - 1) / 4.0) / 2.0
+                // "What would you change?" checklist (Level 3): a flagged
+                // reason forces that dimension's contribution to a strongly
+                // negative value regardless of the star given — a
+                // deliberate signal on top of, not a replacement for, the
+                // Level 2 star (docs/decisions/stylist-intelligence-engine.md).
+                let reasons = feedback.changeReasons
+                let strongDissatisfaction = 0.1
+                let formalityFlagged = reasons.contains(.tooFormal) || reasons.contains(.tooCasual)
+
+                let colorHarmonyNorm = reasons.contains(.wrongColor) ? min(Double(colorHarmony - 1) / 4.0, strongDissatisfaction) : Double(colorHarmony - 1) / 4.0
+                let occasionMatchNorm = formalityFlagged ? min(Double(occasionMatch - 1) / 4.0, strongDissatisfaction) : Double(occasionMatch - 1) / 4.0
+                let styleMatchNorm = reasons.contains(.notMyStyle) ? min(Double(styleMatch - 1) / 4.0, strongDissatisfaction) : Double(styleMatch - 1) / 4.0
+                let silhouetteNorm = reasons.contains(.didntFitRight) ? min(Double(silhouette - 1) / 4.0, strongDissatisfaction) : Double(silhouette - 1) / 4.0
+                let weatherFitBase = (Double(weatherSuitability - 1) / 4.0 + Double(practicality - 1) / 4.0) / 2.0
+                let weatherFitNorm = reasons.contains(.wrongForWeather) ? min(weatherFitBase, strongDissatisfaction) : weatherFitBase
+                let patternDissatisfaction: Double? = reasons.contains(.wrongPattern) ? strongDissatisfaction : nil
 
                 return items.map { item in
                     OutfitDimensionRatedAttributes(
@@ -327,6 +364,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                         silhouetteTag: item.silhouette,
                         formalityBand: Int(item.formalityScore.rounded()),
                         fabricWeight: item.fabricWeight,
+                        pattern: item.pattern,
+                        patternDissatisfaction: patternDissatisfaction,
                         recordedAt: feedback.recordedAt,
                         slot: item.slot
                     )
@@ -416,25 +455,75 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         itemID: UUID,
         fit: FitRating,
         comfort: Int,
-        confidence: Int,
-        wearAgain: Bool,
-        versatility: Int,
-        frequency: Int,
+        colorLike: Int,
+        patternLike: Int?,
+        formalityFit: Int,
         styleIdentity: Int,
-        qualityPerception: Int
+        wearAgain: Bool
     ) throws {
-        modelContext.insert(ItemRating(
+        let rating = ItemRating(
             itemID: itemID,
             fit: fit,
             comfort: comfort,
-            confidence: confidence,
-            wearAgain: wearAgain,
-            versatility: versatility,
-            frequency: frequency,
+            colorLike: colorLike,
+            patternLike: patternLike,
+            formalityFit: formalityFit,
             styleIdentity: styleIdentity,
-            qualityPerception: qualityPerception
-        ))
+            wearAgain: wearAgain
+        )
+        modelContext.insert(rating)
         try modelContext.save()
+
+        // Close the loop with Swipe-to-Learn Visual Taste: best-effort — a
+        // rating should still save even if the visual-taste update fails or
+        // this item has no cached embedding yet (see `applyImplicitSwipe`).
+        try? applyImplicitSwipe(itemID: itemID, liked: rating.impliesLiked)
+    }
+
+    /// Folds a rating's derived liked/disliked signal into the same
+    /// `VisualPreferenceState` centroids `recordSwipe` maintains, treating a
+    /// highly-rated item as an implicit "swipe right" (and a poorly-rated one
+    /// as an implicit "swipe left") — see `VisualClusterUpdater.implicitLearningRate`
+    /// for why this uses a gentler fixed step than an explicit swipe. Unlike
+    /// `recordSwipe`, this does not write a `SwipeEvent`: a rating isn't a
+    /// discrete stock-photo swipe, so replaying `SwipeEvent` history to
+    /// rebuild `VisualPreferenceState` (`VisualPreferenceProfile.build(from:dislikedEmbeddings:)`)
+    /// should stay scoped to actual swipe gestures. No-ops if this item's
+    /// photo embedding hasn't been computed yet — `WardrobeItemEmbedding` is
+    /// populated lazily by `fetchFeedbackHistory()`, so a rating recorded
+    /// before that happens simply misses this one nudge.
+    private func applyImplicitSwipe(itemID: UUID, liked: Bool) throws {
+        guard let embedding = try fetchWardrobeItemEmbedding(itemID: itemID)?.vector else { return }
+
+        let state = try loadOrCreateVisualPreferenceState()
+        var likedCentroids = state.likedCentroids
+        var dislikedCentroids = state.dislikedCentroids
+        let drift: Double?
+        if liked {
+            drift = VisualClusterUpdater.update(&likedCentroids, with: embedding, learningRate: VisualClusterUpdater.implicitLearningRate)
+        } else {
+            drift = VisualClusterUpdater.update(&dislikedCentroids, with: embedding, learningRate: VisualClusterUpdater.implicitLearningRate)
+        }
+        state.likedCentroids = likedCentroids
+        state.dislikedCentroids = dislikedCentroids
+        state.updatedAt = .now
+        try modelContext.save()
+
+        if let drift {
+            MLLog.logger.notice("[AI-Stylist-ML] centroid drift: type=implicit side=\(liked ? "liked" : "disliked", privacy: .public) drift=\(drift, format: .fixed(precision: 2), privacy: .public)%")
+        }
+    }
+
+    /// Shared fetch-or-create for the single-row `VisualPreferenceState` —
+    /// used by both `recordSwipe` (explicit) and `applyImplicitSwipe`
+    /// (rating-derived).
+    private func loadOrCreateVisualPreferenceState() throws -> VisualPreferenceState {
+        let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
+        let state = existing ?? VisualPreferenceState()
+        if existing == nil {
+            modelContext.insert(state)
+        }
+        return state
     }
 
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] {
@@ -467,7 +556,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             weatherSuitability: submission.weatherSuitability,
             practicality: submission.practicality,
             favoriteItemID: submission.favoriteItemID,
-            weakestItemID: submission.weakestItemID
+            weakestItemID: submission.weakestItemID,
+            changeReasons: Array(submission.changeReasons)
         ))
         try modelContext.save()
     }
@@ -519,7 +609,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.save()
     }
 
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws {
+    @discardableResult
+    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? {
         modelContext.insert(SwipeEvent(
             sourcePhotoID: sourcePhotoID,
             imageURLString: imageURLString,
@@ -527,28 +618,38 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             embedding: embedding
         ))
 
-        let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
-        let state = existing ?? VisualPreferenceState()
-        if existing == nil {
-            modelContext.insert(state)
-        }
+        let state = try loadOrCreateVisualPreferenceState()
+        let wasTrained = state.isTrained
 
         // Mutate local copies, then reassign — `VisualClusterUpdater.update`
         // takes `inout`, which a `@Model`-backed stored property can't be
         // passed as directly.
         var likedCentroids = state.likedCentroids
         var dislikedCentroids = state.dislikedCentroids
+        let drift: Double?
         if liked {
-            VisualClusterUpdater.update(&likedCentroids, with: embedding)
+            drift = VisualClusterUpdater.update(&likedCentroids, with: embedding)
         } else {
-            VisualClusterUpdater.update(&dislikedCentroids, with: embedding)
+            drift = VisualClusterUpdater.update(&dislikedCentroids, with: embedding)
         }
         state.likedCentroids = likedCentroids
         state.dislikedCentroids = dislikedCentroids
         state.embeddingDimension = embedding.count
         state.updatedAt = .now
+        // Calibration progress is driven by explicit deck swipes only — see
+        // `VisualPreferenceState.totalSwipes`'s doc comment.
+        state.totalSwipes += 1
 
         try modelContext.save()
+
+        if let drift {
+            MLLog.logger.notice("[AI-Stylist-ML] centroid drift: type=explicit side=\(liked ? "liked" : "disliked", privacy: .public) drift=\(drift, format: .fixed(precision: 2), privacy: .public)%")
+        }
+        if !wasTrained && state.isTrained {
+            MLLog.logger.notice("[AI-Stylist-ML] calibration complete: isTrained=true totalSwipes=\(state.totalSwipes, privacy: .public)")
+        }
+
+        return drift
     }
 
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? {
@@ -560,11 +661,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         dislikedCentroids: [VisualCentroid],
         embeddingDimension: Int
     ) throws {
-        let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
-        let state = existing ?? VisualPreferenceState()
-        if existing == nil {
-            modelContext.insert(state)
-        }
+        let state = try loadOrCreateVisualPreferenceState()
         state.likedCentroids = likedCentroids
         state.dislikedCentroids = dislikedCentroids
         state.embeddingDimension = embeddingDimension
@@ -592,5 +689,28 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             ))
         }
         try modelContext.save()
+    }
+
+    func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws {
+        for (rank, outfit) in outfits.enumerated() {
+            modelContext.insert(RecommendationImpressionEvent(
+                id: outfit.id,
+                roundID: roundID,
+                rank: rank,
+                itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id)
+            ))
+        }
+        try modelContext.save()
+        MLLog.logger.notice("[AI-Stylist-ML] impressions recorded: round=\(roundID, privacy: .public) count=\(outfits.count, privacy: .public)")
+    }
+
+    func recordSelection(outfitID: UUID) throws {
+        let descriptor = FetchDescriptor<RecommendationImpressionEvent>(
+            predicate: #Predicate { $0.id == outfitID }
+        )
+        guard let event = try modelContext.fetch(descriptor).first else { return }
+        event.selectedAt = .now
+        try modelContext.save()
+        MLLog.logger.notice("[AI-Stylist-ML] selection recorded: outfit=\(outfitID, privacy: .public) rank=\(event.rank, privacy: .public)")
     }
 }

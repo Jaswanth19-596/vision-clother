@@ -40,6 +40,33 @@ enum WearAgainAnswer: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// "What would you change?" checklist (Stylist Intelligence Engine ADR,
+/// Level 3 — closed 2026-07-15): a bounded, multi-select set of structured
+/// edit signals, each mapped 1:1 onto one of the six affinity dimensions in
+/// `Domain/AttributePreferenceProfile.swift`. A flagged reason forces that
+/// dimension's contribution for this feedback event to a strongly negative
+/// value regardless of the Level 2 star given — a deliberate signal on top
+/// of, not a replacement for, the star rating (see
+/// `Data/WardrobeRepository.fetchFeedbackHistory()`). `.tooFormal`/`.tooCasual`
+/// are mutually exclusive in the UI (`RateCombinationViewModel.toggleChangeReason`).
+enum OutfitChangeReason: String, Codable, CaseIterable, Identifiable {
+    case tooFormal, tooCasual, wrongColor, wrongPattern, notMyStyle, didntFitRight, wrongForWeather
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .tooFormal: return "Too formal"
+        case .tooCasual: return "Too casual"
+        case .wrongColor: return "Wrong colors"
+        case .wrongPattern: return "Wrong pattern"
+        case .notMyStyle: return "Not my style"
+        case .didntFitRight: return "Didn't fit right"
+        case .wrongForWeather: return "Wrong for the weather"
+        }
+    }
+}
+
 /// Outfit-Level Event — dimension-based feedback on a whole saved outfit
 /// (Stylist Intelligence Engine Phase 1, superseding the earlier blended
 /// Fit/Comfort/Confidence/Wear-again form). Every Level 2 question exists
@@ -85,6 +112,12 @@ final class OutfitFeedback {
     var favoriteItemID: UUID?
     var weakestItemID: UUID?
 
+    // Level 3 — "What would you change?" checklist. Empty (not nil) when
+    // nothing was flagged, mirroring `suggestedChips`'s empty-array-not-null
+    // convention. Stored as raw strings (SwiftData-storable), same pattern
+    // as `wearAgainRaw`.
+    var changeReasonsRaw: [String] = []
+
     init(
         id: UUID = UUID(),
         outfitID: UUID,
@@ -101,7 +134,8 @@ final class OutfitFeedback {
         weatherSuitability: Int? = nil,
         practicality: Int? = nil,
         favoriteItemID: UUID? = nil,
-        weakestItemID: UUID? = nil
+        weakestItemID: UUID? = nil,
+        changeReasons: [OutfitChangeReason] = []
     ) {
         self.id = id
         self.outfitID = outfitID
@@ -119,10 +153,15 @@ final class OutfitFeedback {
         self.practicality = practicality
         self.favoriteItemID = favoriteItemID
         self.weakestItemID = weakestItemID
+        self.changeReasonsRaw = changeReasons.map(\.rawValue)
     }
 
     var wearAgain: WearAgainAnswer? {
         wearAgainRaw.flatMap(WearAgainAnswer.init(rawValue:))
+    }
+
+    var changeReasons: [OutfitChangeReason] {
+        changeReasonsRaw.compactMap(OutfitChangeReason.init(rawValue:))
     }
 
     /// Mean of every Level 1 + Level 2 question, normalized to `[0,1]`:

@@ -44,6 +44,9 @@ final class RateCombinationViewModel {
     var favoriteItemID: UUID?
     var weakestItemID: UUID?
 
+    // Level 3 — "What would you change?" checklist
+    var selectedChangeReasons: Set<OutfitChangeReason> = []
+
     private(set) var state: RatingSaveState = .idle
 
     private let repository: WardrobeRepository
@@ -70,6 +73,22 @@ final class RateCombinationViewModel {
         }
     }
 
+    /// "Too formal" and "Too casual" describe opposite directions on the
+    /// same formality dimension — selecting one clears the other, mirroring
+    /// `selectFavorite`/`selectWeakest`'s mutual-exclusion pattern.
+    func toggleChangeReason(_ reason: OutfitChangeReason) {
+        if selectedChangeReasons.contains(reason) {
+            selectedChangeReasons.remove(reason)
+            return
+        }
+        selectedChangeReasons.insert(reason)
+        switch reason {
+        case .tooFormal: selectedChangeReasons.remove(.tooCasual)
+        case .tooCasual: selectedChangeReasons.remove(.tooFormal)
+        default: break
+        }
+    }
+
     func submit() async {
         state = .saving
         do {
@@ -85,7 +104,8 @@ final class RateCombinationViewModel {
                 weatherSuitability: weatherSuitability,
                 practicality: practicality,
                 favoriteItemID: favoriteItemID,
-                weakestItemID: weakestItemID
+                weakestItemID: weakestItemID,
+                changeReasons: selectedChangeReasons
             )
             try repository.recordOutfitRating(outfitID: outfitID, submission: submission)
             state = .saved

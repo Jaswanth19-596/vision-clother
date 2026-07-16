@@ -158,4 +158,14 @@ struct StylistBrainTests {
 
         #expect(prompt.contains("no single top_id, bottom_id, footwear_id, or outerwear_id may appear in more than one outfit"))
     }
+
+    // MARK: - Prospective Purchase Evaluation (2026-07-15)
+
+    @Test func promptDescribesProspectivePurchaseEvaluation() {
+        let prompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(profile: nil, attributeProfile: nil)
+
+        #expect(prompt.contains("PROSPECTIVE PURCHASE EVALUATION"))
+        #expect(prompt.contains("is_prospective_purchase"))
+        #expect(prompt.contains("even zero"))
+    }
 }

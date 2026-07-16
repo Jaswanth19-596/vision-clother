@@ -159,7 +159,10 @@ struct AddItemView: View {
 
 /// Thin `UIImagePickerController` wrapper — SwiftUI has no native camera
 /// capture view. `onCapture` receives JPEG data on success, `nil` on cancel.
-private struct CameraCaptureView: UIViewControllerRepresentable {
+/// Not `private` — reused by `Features/DailyAssistant/DailyAssistantView.swift`'s
+/// Prospective Purchase Evaluation photo capture, which needs the identical
+/// single-photo capture behavior.
+struct CameraCaptureView: UIViewControllerRepresentable {
     let onCapture: (Data?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
