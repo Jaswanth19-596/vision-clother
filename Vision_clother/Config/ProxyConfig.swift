@@ -17,7 +17,7 @@ enum ProxyConfig {
     static let baseURL: URL = {
         #if DEBUG
         // return URL(string: "http://localhost:5001/REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID/us-central1/api")!
-        return URL(string: "https://06b7-2601-243-c884-d480-1da0-d138-6153-810f.ngrok-free.app/visionclother/us-central1/api")!
+        return URL(string: "https://4c94-2601-243-c884-d480-ac0a-b28-d01a-a91a.ngrok-free.app/visionclother/us-central1/api")!
 
         #else
         return URL(string: "https://REPLACE_WITH_YOUR_DEPLOYED_FUNCTION_URL/api")!

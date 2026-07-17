@@ -30,13 +30,13 @@ Read the relevant doc **before** modifying a layer:
 * **Scoring isolation:** `Domain/PairCompatibilityScoring.swift` is mockable, NaN-safe, ghost-element-identical — see `Domain/CLAUDE.md`
 * **Async boundaries:** `OpenRouterTryOnRenderService` drives a single bounded-timeout request through explicit `TryOnState`, never a bare unbounded loop — see `Services/CLAUDE.md`
 
-## 5. Workflow Rules
+## 5. Workflow & COding rulesRules
 * Always propose a plan before making changes to 3+ files.
 * Run `xcodebuild clean build` after every implementation task.
 * Use Swift Testing framework (`import Testing`, `@Test`, `#expect`), not XCTest.
+* **Logging:** When implementing any new feature, service, or repository mutation, you must explicitly implement logging. Follow the unified project telemetry string pattern exactly (e.g., using `[AI-Stylist-ML]`, `[SyncOutbox]`, or similar localized subsystems) to ensure matching observability across the codebase.
 
-## 6. Update Timeline
-* Every time you implement a new feature or fix a bug, make sure to update the timeline.
-* The timeline allows the user to see the history of changes and the status of each feature.
-* It also helps you understand the context of the codebase and plan the next feature.
+## 6. Update & Consult Timeline
+* **Read Before Coding:** Always read `timeline.md` at the start of a task to understand the chronological context, recent architectural changes, schema evolution, and how prior changes were implemented.
+* **Update After Coding:** Every time you implement a new feature or fix a bug, make sure to update `timeline.md` with the date, status, problem statement, and precise file changes. This allows the user to see the history and helps you maintain context across turns.
 

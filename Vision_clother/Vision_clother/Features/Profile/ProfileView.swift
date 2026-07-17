@@ -43,6 +43,7 @@ struct ProfileView: View {
     @State private var viewModel: ProfileViewModel?
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var isCameraPresented = false
+    @State private var isSettingsPresented = false
 
     /// Single-row profile (PRD §3.8) — `Data/WardrobeRepository.swift`'s
     /// `saveUserProfile` guarantees at most one row exists.
@@ -228,6 +229,13 @@ struct ProfileView: View {
             .navigationTitle("Profile")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        isSettingsPresented = true
+                    } label: {
+                        Label("Account Settings", systemImage: "gearshape")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
                     JobQueueBadgeButton()
                 }
             }
@@ -260,12 +268,24 @@ struct ProfileView: View {
             }
             .ignoresSafeArea()
         }
+        .sheet(isPresented: $isSettingsPresented) {
+            NavigationStack {
+                List {
+                    AccountSectionView()
+                }
+                .navigationTitle("Account")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { isSettingsPresented = false }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
     private func content(viewModel: ProfileViewModel) -> some View {
         List {
-            AccountSectionView()
             identitySection(viewModel: viewModel)
             swipeDiscoverySection
             styleCheckSection

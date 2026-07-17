@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-07-17 — UX Polish: Move Account/Debug Controls into a Gear-Icon Sheet
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+`AccountSectionView` (Sign In/Out, Delete Account, sync status, Debug Log export) rendered as the very first item in `ProfileView`'s `List`, pushing the user's avatar, photo actions, and style attributes below account/debug chrome most users touch rarely. This doesn't match standard iOS convention, where account/settings controls live behind a gear icon, not inline at the top of a profile screen.
+
+### Changes
+`AccountSectionView` itself is unchanged — only its call site moved. `ProfileView` gained a `gearshape` toolbar button (`.primaryAction`, alongside the existing `JobQueueBadgeButton()`) that presents a `.sheet` wrapping `AccountSectionView()` in its own `NavigationStack { List { ... } }` with a "Done" dismiss action (`.cancellationAction`), so the `Section("Account")` styling still renders correctly outside the main list. `WardrobeSyncCoordinator`'s environment value propagates into the sheet automatically since it's presented from within `ProfileView`. The main `List` now starts directly with `identitySection` (avatar, photo actions, style attributes), followed by "Discover Your Style" and "Test Your Style".
+
+| File | Change |
+|---|---|
+| `Vision_clother/Vision_clother/Features/Profile/ProfileView.swift` | Added `isSettingsPresented` state, gearshape toolbar button, `.sheet` wrapping `AccountSectionView()`; removed `AccountSectionView()` from the top of the main `List` |
+
+---
+
 ## 2026-07-16 — Feature: Firestore + Cloud Storage Wardrobe Sync (Delta + Durable Outbox)
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
