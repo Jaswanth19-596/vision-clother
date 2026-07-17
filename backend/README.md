@@ -1,12 +1,15 @@
 # Vision Clother Backend — Firebase Proxy
 
-A thin passthrough proxy that holds the OpenRouter and Pexels API keys server-side, so distributed iOS builds (TestFlight/App Store) never ship a provider key. It does no business logic — see `docs/backend/architecture.md` and `docs/backend/conventions.md` at the repo root for the design rationale.
+A thin passthrough proxy that holds the OpenRouter and Pexels API keys server-side, so distributed iOS builds (TestFlight/App Store) never ship a provider key. It does no business logic — see `docs/backend/architecture.md` and `docs/backend/conventions.md` at the repo root for the design rationale — with two deliberate exceptions that need Admin SDK privileges: `/account/delete` and `/iap/verify` (see `src/app.ts`'s doc comment).
 
-Three routes, behind Firebase Auth (Google Sign-In or Phone Number):
+Routes, behind Firebase Auth (guest-first anonymous sessions; Google Sign-In or Phone Number to link):
 
 - `POST /openrouter/chat` → `https://openrouter.ai/api/v1/chat/completions`
-- `POST /openrouter/images` → `https://openrouter.ai/api/v1/images`
+- `POST /openrouter/recommend` / `POST /openrouter/tryon` → same handler, quota-gated per feature (`src/middleware/quota.ts`)
+- `POST /openrouter/images` → `https://openrouter.ai/api/v1/images` (quota-gated as `tryOn`)
 - `GET /pexels/search` → `https://api.pexels.com/v1/search`
+- `POST /account/delete` → Admin-SDK account purge (`src/routes/accountDelete.ts`)
+- `POST /iap/verify` → StoreKit 2 purchase verification + credit grant (`src/routes/iapVerify.ts`): verifies the transaction JWS signature server-side, maps productId through `src/iap/products.ts`'s grant table, and atomically credits `users/{uid}/meta/usage`'s `purchased*Balance` fields with a `processedTransactions/{transactionId}` idempotency ledger. Env flag `IAP_ALLOW_XCODE_UNVERIFIED=true` (functions `.env`, default off — **never in production**) accepts unverifiable Xcode-signed transactions for local `.storekit` testing; production-environment transactions are rejected until an App Store Connect `appAppleId` is wired into `src/iap/verifyTransaction.ts`.
 
 App Check and Sign in with Apple are both deferred — both need a paid Apple Developer account to configure (App Attest requires it for the App ID capability; Sign in with Apple requires it for the capability itself). See `docs/decisions/resolved-v1.md`.
 

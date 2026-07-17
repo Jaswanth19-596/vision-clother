@@ -16,11 +16,16 @@ const runTransaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const data = ref.kind === "usage" ? usageDoc : entitlementDoc;
       return { exists: data !== undefined, data: () => data };
     },
-    set: (ref: { kind: "usage" | "entitlement" }, data: Record<string, unknown>) => {
+    // Mirrors Firestore's merge semantics: `{merge: true}` (what quota.ts
+    // now uses — see its field-scoped-write comment) folds into the existing
+    // doc; a plain set replaces it.
+    set: (ref: { kind: "usage" | "entitlement" }, data: Record<string, unknown>, options?: { merge?: boolean }) => {
+      const existing = ref.kind === "usage" ? usageDoc : entitlementDoc;
+      const next = options?.merge ? { ...(existing ?? {}), ...data } : data;
       if (ref.kind === "usage") {
-        usageDoc = data;
+        usageDoc = next;
       } else {
-        entitlementDoc = data;
+        entitlementDoc = next;
       }
     },
   };
@@ -119,5 +124,99 @@ describe("quotaGate", () => {
     const app = appWith("free-1", false, "recommendation");
     const res = await request(app).get("/protected");
     expect(res.status).toBe(200);
+  });
+
+  // Purchased-credit drawdown (StoreKit top-ups — routes/iapVerify.ts grants,
+  // this middleware spends): free tier first, then the lifetime balance.
+
+  it("draws down a purchased credit once the free tier is exhausted", async () => {
+    usageDoc = {
+      periodKey: new Date().toISOString().slice(0, 7),
+      recommendationCount: 100,
+      tryOnCount: 0,
+      purchasedRecommendationBalance: 3,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(200);
+    expect(usageDoc?.purchasedRecommendationBalance).toBe(2);
+    // The monthly counter must NOT advance past its cap on the drawdown path.
+    expect(usageDoc?.recommendationCount).toBe(100);
+  });
+
+  it("rejects with 429 and purchasedBalance 0 once both free tier and balance are gone", async () => {
+    usageDoc = {
+      periodKey: new Date().toISOString().slice(0, 7),
+      recommendationCount: 100,
+      tryOnCount: 0,
+      purchasedRecommendationBalance: 0,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe("quota_exceeded");
+    expect(res.body.purchasedBalance).toBe(0);
+  });
+
+  it("never touches the other feature's balance when drawing down", async () => {
+    usageDoc = {
+      periodKey: new Date().toISOString().slice(0, 7),
+      recommendationCount: 100,
+      tryOnCount: 0,
+      purchasedRecommendationBalance: 1,
+      purchasedTryOnBalance: 7,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(200);
+    expect(usageDoc?.purchasedRecommendationBalance).toBe(0);
+    expect(usageDoc?.purchasedTryOnBalance).toBe(7);
+  });
+
+  it("preserves purchased balances on an ordinary under-limit increment (merge regression)", async () => {
+    usageDoc = {
+      periodKey: new Date().toISOString().slice(0, 7),
+      recommendationCount: 5,
+      tryOnCount: 0,
+      purchasedRecommendationBalance: 40,
+      purchasedTryOnBalance: 10,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(200);
+    expect(usageDoc?.recommendationCount).toBe(6);
+    expect(usageDoc?.purchasedRecommendationBalance).toBe(40);
+    expect(usageDoc?.purchasedTryOnBalance).toBe(10);
+  });
+
+  it("resets monthly counts on period rollover but always carries purchased balances", async () => {
+    usageDoc = {
+      periodKey: "2000-01",
+      recommendationCount: 100,
+      tryOnCount: 10,
+      purchasedRecommendationBalance: 12,
+      purchasedTryOnBalance: 4,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(200);
+    expect(usageDoc?.recommendationCount).toBe(1);
+    expect(usageDoc?.tryOnCount).toBe(0);
+    expect(usageDoc?.purchasedRecommendationBalance).toBe(12);
+    expect(usageDoc?.purchasedTryOnBalance).toBe(4);
+  });
+
+  it("spends the free tier, not the balance, after a rollover even when the old month was capped", async () => {
+    usageDoc = {
+      periodKey: "2000-01",
+      recommendationCount: 100,
+      tryOnCount: 0,
+      purchasedRecommendationBalance: 5,
+    };
+    const app = appWith("free-1", false, "recommendation");
+    const res = await request(app).get("/protected");
+    expect(res.status).toBe(200);
+    expect(usageDoc?.recommendationCount).toBe(1);
+    expect(usageDoc?.purchasedRecommendationBalance).toBe(5);
   });
 });

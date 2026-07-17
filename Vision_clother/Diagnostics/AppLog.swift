@@ -31,6 +31,7 @@ enum AppLog {
         case vision = "Vision"
         case jobQueue = "JobQueue"
         case viewModel = "ViewModel"
+        case payments = "Payments"
         case app = "App"
     }
 

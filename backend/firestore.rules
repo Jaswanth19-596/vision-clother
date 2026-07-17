@@ -1,10 +1,13 @@
 rules_version = '2';
 
-// Two kinds of collections in this project:
+// Three kinds of collections in this project:
 // - rateLimits/{uid}_{date}: the proxy's per-uid rate-limit counter
 //   (backend/functions/src/middleware/rateLimit.ts), read and written
 //   exclusively by Cloud Functions via the Admin SDK, which bypasses these
 //   rules entirely — denied to every client outright.
+// - processedTransactions/{transactionId}: the StoreKit purchase idempotency
+//   ledger (backend/functions/src/routes/iapVerify.ts) — Admin-SDK-only for
+//   the same reason, denied to every client outright.
 // - users/{uid}/**: Cloud Sync's per-account wardrobe data
 //   (docs/decisions/resolved-v1.md's "Cloud Sync" section) — the iOS client
 //   talks to these directly, scoped so an account can only ever read/write
@@ -14,6 +17,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /rateLimits/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /processedTransactions/{document=**} {
       allow read, write: if false;
     }
 

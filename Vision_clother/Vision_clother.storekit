@@ -1,0 +1,83 @@
+{
+  "identifier" : "F3A1C7E0-0000-4000-8000-000000000001",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "1.99",
+      "familyShareable" : false,
+      "internalID" : "F3A1C7E0-0001-4000-8000-000000000001",
+      "localizations" : [
+        {
+          "description" : "50 outfit recommendations that never expire.",
+          "displayName" : "50 Recommendations",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.visionclother.credits.recs50",
+      "referenceName" : "Recommendations 50",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "5.99",
+      "familyShareable" : false,
+      "internalID" : "F3A1C7E0-0002-4000-8000-000000000002",
+      "localizations" : [
+        {
+          "description" : "200 outfit recommendations that never expire.",
+          "displayName" : "200 Recommendations",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.visionclother.credits.recs200",
+      "referenceName" : "Recommendations 200",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : false,
+      "internalID" : "F3A1C7E0-0003-4000-8000-000000000003",
+      "localizations" : [
+        {
+          "description" : "10 try-on renders that never expire.",
+          "displayName" : "10 Try-On Renders",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.visionclother.credits.tryon10",
+      "referenceName" : "TryOn 10",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "8.99",
+      "familyShareable" : false,
+      "internalID" : "F3A1C7E0-0004-4000-8000-000000000004",
+      "localizations" : [
+        {
+          "description" : "40 try-on renders that never expire.",
+          "displayName" : "40 Try-On Renders",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.visionclother.credits.tryon40",
+      "referenceName" : "TryOn 40",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

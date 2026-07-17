@@ -2,6 +2,31 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-17 — Fix: Multiple Copy Commands Compile Conflict (CLAUDE.md Target Membership)
+
+**Status:** Fixed, build verified (simulator).
+
+Goal: Resolve an Xcode compilation error (`Multiple commands produce .../CLAUDE`) where the recently created/modified sub-module `CLAUDE.md` files (specifically in `Features/Profile/` and `Vision_clother/Services/`) were included in the target's membership by Xcode's automatic File System Synchronization, causing copy command conflicts in the build folder.
+
+Details:
+- Excluded `Vision_clother/Features/Profile/CLAUDE.md` and `Vision_clother/Services/CLAUDE.md` from the compilation target by adding them to `membershipExceptions` in [project.pbxproj](file:///Users/jaswanth/mydocs/ios-apps/vision_clother/Vision_clother.xcodeproj/project.pbxproj). This correctly keeps all developer-facing doc files out of the binary product bundle.
+
+## 2026-07-17 — Feature: StoreKit 2 Consumable Credit Top-Ups (IAP)
+
+**Status:** Done, iOS build verified (`xcodebuild clean build` — BUILD SUCCEEDED, twice: after the foundation phase and after the StoreKit/UI phase). Backend TypeScript implemented but not compiled/deployed in this session (standing instruction: no `npm`/`tsc`/emulator in `backend/functions` — verify by reading); the first user-run `firebase deploy --only functions` is the compile check for the new `@apple/app-store-server-library` dependency. Tests written (backend Vitest + Swift Testing) but not run per CLAUDE.md.
+
+**Problem:** The 2026-07-16 guest-auth/quota feature capped recommendations and try-ons per month with a deliberately unimplemented premium hook — users who exhaust the free tier had no path except waiting for the monthly reset. This adds purchasable, never-expiring credit packs: the monthly free tier is always consumed first, then actions draw down the lifetime purchased balance. All verification and ledger writes are backend-only; the client can't mint credits.
+
+**Consumption model:** `quotaGate` (backend/functions/src/middleware/quota.ts) now reads `purchasedRecommendationBalance`/`purchasedTryOnBalance` off `users/{uid}/meta/usage` (lifetime fields, never reset by the monthly `periodKey` rollover). At-limit requests with a positive balance decrement it and pass (`ok_purchased` outcome, `quota.purchasedCreditUsed` log); a 429 therefore now means "free tier used AND no purchased credits" (body gains additive `purchasedBalance: 0`). Critically, quota.ts's usage-doc write switched from `{merge:false}` full overwrites to field-scoped `{merge:true}` sets that touch only the fields it owns — a full overwrite computed from a stale read would race `/iap/verify`'s concurrent grant transaction and wipe just-purchased credits.
+
+**Purchase flow:** iOS `StoreKitPaymentManager` (`@MainActor @Observable`, app-root-owned in `Vision_clotherApp`) fetches the 4 consumables (`com.visionclother.credits.recs50/recs200/tryon10/tryon40`), purchases via StoreKit 2, and POSTs `verificationResult.jwsRepresentation` to the new `POST /iap/verify` Express route (raw-URLSession + Bearer ID token, same shape as `/account/delete` — deliberately not a Firebase callable; the app has no FirebaseFunctions SDK). The route verifies the JWS signature server-side (`@apple/app-store-server-library` against Apple roots embedded in `src/iap/appleRootCerts.ts`; `Sandbox` fully verified, `Production` rejected until an App Store Connect `appAppleId` exists, `Xcode` decode-only and gated behind `IAP_ALLOW_XCODE_UNVERIFIED=true` with the environment peeked *before* the library so Xcode-signed chains never hit the Apple-root verifier), maps productId through the server-authoritative `PRODUCT_GRANTS` table, and grants inside a Firestore transaction that first checks the new server-only `processedTransactions/{transactionId}` ledger — replays/redeliveries return `alreadyProcessed` and grant nothing.
+
+**Transaction lifecycle:** the client calls `Transaction.finish()` ONLY after the backend confirms (`granted:true` incl. `alreadyProcessed`, or `granted:false reason:"revoked"`); network/5xx failures leave the transaction unfinished so `Transaction.unfinished` (launch) and `Transaction.updates` (live, incl. Ask-to-Buy approvals) redeliver it, with backend idempotency making that safe. An in-memory per-session `attemptedTransactionIDs` set throttles poison pills (e.g. a 4xx from server-side catalog drift) to one `/iap/verify` submission per session; auth-missing skips stay out of the set so a guest's stray purchase redeems in-session after linking. Purchases are linked-account-only (guest uid is disposable → orphaned credits): the store UI only shows in `linkedContent`, `ServiceFactory.makeIAPVerificationService()` mocks for guests, and the backend 403s `isAnonymous` as the backstop.
+
+**File changes** — backend (new): `src/iap/products.ts`, `src/iap/appleRootCerts.ts`, `src/iap/verifyTransaction.ts`, `src/routes/iapVerify.ts`, `test/iapVerify.test.ts`; (modified): `src/app.ts` (mount + doc comment), `src/middleware/quota.ts` (drawdown + merge:true), `backend/firestore.rules` (`processedTransactions` deny-all), `package.json` (new dep), `test/quota.test.ts` (merge-aware mock + 6 drawdown/preservation cases). iOS (new): `Services/StoreKitPaymentManager.swift`, `Services/IAPVerificationService.swift`, `Domain/CreditPack.swift` (display-only mirror of `PRODUCT_GRANTS`, hand-synced like `EntitlementLimits`), `Features/Profile/CreditsStoreView.swift` (sheet from AccountSectionView), `Vision_clother/Vision_clother.storekit` (local test config, placeholder prices), `Vision_clotherTests/CreditCatalogTests.swift`; (modified): `Diagnostics/AppLog.swift` (`.payments` category), `Config/ProxyConfig.swift` (`iapVerifyURL`), `Data/Sync/FirestoreDTOs.swift` (`UsageDTO` + optional `purchased*Balance` — optional is load-bearing for pre-IAP docs/caches), `Data/UsageTracker.swift` (purchased-remaining vars; optimistic `record*Used` mirrors server order; rollover carries balances so an offline new-month launch never zeroes the display), `Vision_clotherApp.swift` (manager wiring, `.task { start() }`, scenePhase replay), `AppWiring/ServiceFactory.swift`, `Features/Profile/AccountSectionView.swift` ("+N purchased" readout, Buy Credits, delete-alert copy), quota-exceeded copy in `OpenRouterTryOnRenderService.swift`/`OutfitRecommendationService.swift`.
+
+**Manual steps remaining (user):** select `Vision_clother.storekit` in the Run scheme (Edit Scheme → Run → Options → StoreKit Configuration — no shared scheme exists to commit this); deploy backend (`firebase deploy --only functions` + firestore rules) with `IAP_ALLOW_XCODE_UNVERIFIED=true` in `backend/functions/.env` for local testing, and flip it off after. **Launch checklist:** create the 4 products in App Store Connect, wire the real `appAppleId` into `src/iap/verifyTransaction.ts`'s production path, replace placeholder prices, and consider an App Store Server Notifications webhook for refund clawback (v1 records `revoked` at verify time but never claws back granted credits).
+
 ## 2026-07-17 — Fix: Duplicate `ForEach` ID warning in `ProfileView`'s "Best Pairings" list
 
 **Status:** Fixed, build verified (`xcodebuild clean build` — BUILD SUCCEEDED).
@@ -50,6 +75,25 @@ A review flagged that `Data/CLAUDE.md` stated "This layer never imports `Domain/
 Considered two fixes: (a) update the doc to state the truth, or (b) actually split the Domain aggregation out of the repository into a separate builder called from the view-model layer. Went with (a) — a real split would touch the `WardrobeRepository` protocol and all 4 call sites (`ProfileViewModel`, `DailyAssistantViewModel`, and two Views — `ItemDetailView`/`ClosetView` — that have no view model today and would need one), plus rework the write paths (`applyImplicitSwipe`/`recordSwipe`) that currently compute-then-persist `VisualClusterUpdater` output in one pass. That's a much larger, riskier change than the actual problem warranted.
 
 Replaced `Data/CLAUDE.md`'s line 7 with a rule that documents `SwiftDataWardrobeRepository`'s `fetchFeedbackHistory`/`applyImplicitSwipe`/`recordSwipe` as a sanctioned, scoped exception, pointing to `Domain/MLLog.swift`'s doc comment for rationale and explicitly warning against adding further Domain/ coupling elsewhere in `Data/` without discussion. Documentation-only change — no Swift source touched. `xcodebuild clean build` passes.
+
+## 2026-07-17 — Fix: Settings IAP Sheet Auto-Dismiss & Stale CLAUDE.md Documentation Overhaul
+
+**Status:** Fixed, build verified (simulator).
+
+Goal: Resolve a critical SwiftUI presentation bug where opening the "Buy Credits" IAP sheet would immediately auto-dismiss it and redirect back to the Profile tab. In addition, review and overhaul the main `CLAUDE.md` and all sub-module `CLAUDE.md` files to eliminate outdated design assumptions and accurately map the current codebase state.
+
+Details:
+1. **SwiftUI Settings/IAP Sheet Fix (`AccountSectionView.swift`):**
+   - **Root Cause:** `AccountSectionView` was defined as returning a `Section` body container. When hosted inside `ProfileView`'s Settings sheet `List`, SwiftUI distributed `AccountSectionView`'s attached `.sheet`, `.alert`, and `.task` modifiers to *every child cell row* in that section. Tapping "Buy Credits" caused all these rows to attempt to present the store sheet simultaneously, corrupting the presentation hierarchy context and resulting in a swift auto-dismissal.
+   - **Fix:** Moved all lifecycle (`.task`), presentation (`.sheet`), and alert (`.alert`) modifiers off the `Section` layout container and attached them to a single, zero-height invisible cell (`Color.clear.frame(height: 0)`) nested within the section. This ensures the modifiers are instantiated exactly once in the list environment.
+2. **Architecture Documentation Cleanups:**
+   - Overhauled `CLAUDE.md`, `Data/CLAUDE.md`, `Domain/CLAUDE.md`, `Services/CLAUDE.md`, `Models/CLAUDE.md`, and `Features/CLAUDE.md`.
+   - Documented the guest-first anonymous authentication and Phone auth fallback structure.
+   - Clarified the sanctioned exception in the Data layer (`SwiftDataWardrobeRepository` calling Domain preference profiles and updater for aggregates) to keep Data layer boundaries clear.
+   - Replaced old Fal/FASHN try-on pipeline docs with `OpenRouterTryOnRenderService`'s synchronous Gemini image completions.
+   - Outlined `VNGenerateImageFeaturePrintRequest` on-device visual embedding extraction and `VisualClusterUpdater` k-means centroids.
+   - Listed the 9 versions of `SchemaMigrations.swift` (up to `SchemaV9`) including `SyncMetadata` and supplementary accessories.
+   - Populated previously empty `CLAUDE.md` documents in `Features/Profile`, `Features/Root`, `Features/Pairing`, `Features/DailyAssistant`, and `Features/Closet`.
 
 ## 2026-07-17 — Feature: End-to-End Diagnostic Logging (iOS + Backend)
 

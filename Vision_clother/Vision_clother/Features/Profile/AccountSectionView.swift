@@ -178,6 +178,7 @@ struct AccountSectionView: View {
     /// every point-of-use quota display elsewhere in the app.
     @Environment(UsageTracker.self) private var usageTracker
     @State private var isPresentingDeleteConfirmation = false
+    @State private var isPresentingCreditsStore = false
 
     var body: some View {
         Section("Account") {
@@ -221,21 +222,32 @@ struct AccountSectionView: View {
             }
 
             debugLogContent
-        }
-        .task(id: viewModel.uid) {
-            await usageTracker.refreshUsage()
-            usageTracker.refreshItemCounts()
-        }
-        .task {
-            await viewModel.prepareDebugLogExport()
-        }
-        .alert("Delete Account?", isPresented: $isPresentingDeleteConfirmation) {
-            Button("Delete Everything", role: .destructive) {
-                Task { await viewModel.deleteAccount(syncCoordinator: syncCoordinator) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This permanently deletes your cloud data — wardrobe catalog, saved combinations, ratings, and style history — on this device and every synced device. This can't be undone.")
+
+            // Host modifiers on a single invisible leaf cell to prevent duplication by List
+            Color.clear
+                .frame(height: 0)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityHidden(true)
+                .task(id: viewModel.uid) {
+                    await usageTracker.refreshUsage()
+                    usageTracker.refreshItemCounts()
+                }
+                .task {
+                    await viewModel.prepareDebugLogExport()
+                }
+                .alert("Delete Account?", isPresented: $isPresentingDeleteConfirmation) {
+                    Button("Delete Everything", role: .destructive) {
+                        Task { await viewModel.deleteAccount(syncCoordinator: syncCoordinator) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This permanently deletes your cloud data — wardrobe catalog, saved combinations, ratings, style history, and any purchased credits — on this device and every synced device. This can't be undone.")
+                }
+                .sheet(isPresented: $isPresentingCreditsStore) {
+                    CreditsStoreView()
+                }
         }
     }
 
@@ -255,6 +267,14 @@ struct AccountSectionView: View {
     @ViewBuilder
     private var linkedContent: some View {
         Label("Signed in", systemImage: "checkmark.seal.fill")
+        // Linked accounts only — purchases hang off the Firebase uid, and a
+        // guest uid is disposable (see `CreditsStoreView`'s doc comment).
+        Button {
+            isPresentingCreditsStore = true
+        } label: {
+            Label("Buy Credits", systemImage: "plus.circle")
+        }
+        .disabled(syncCoordinator.isSyncingAccountSwitch)
         Button("Sign Out", role: .destructive) {
             Task { await viewModel.signOut(syncCoordinator: syncCoordinator) }
         }
@@ -309,7 +329,7 @@ struct AccountSectionView: View {
     /// "unlock" — AI recommendations already work as a guest.
     @ViewBuilder
     private var guestContent: some View {
-        Text("Browsing as a guest. Sign in to save your closet across devices and unlock try-on rendering.")
+        Text("Browsing as a guest. Sign in to save your closet across devices, unlock try-on rendering, and buy credits.")
             .font(.caption)
             .foregroundStyle(.secondary)
 
@@ -347,8 +367,13 @@ struct AccountSectionView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("\(usageTracker.coreItemCount)/\(usageTracker.coreItemCap) core items \u{00B7} \(usageTracker.accessoryItemCount)/\(usageTracker.accessoryItemCap) accessories")
             if usageTracker.usage != nil {
-                Text("\(usageTracker.recommendationsUsed)/\(usageTracker.recommendationLimit) recommendations this month")
-                Text("\(usageTracker.combinationsUsed)/\(usageTracker.combinationLimit) combinations this month")
+                // "+N purchased" = the lifetime StoreKit credit balance
+                // (never expires, spent only after the month's free tier) —
+                // hidden at 0 so the pre-IAP readout is unchanged.
+                Text("\(usageTracker.recommendationsUsed)/\(usageTracker.recommendationLimit) recommendations this month"
+                     + (usageTracker.purchasedRecommendationsRemaining > 0 ? " · +\(usageTracker.purchasedRecommendationsRemaining) purchased" : ""))
+                Text("\(usageTracker.combinationsUsed)/\(usageTracker.combinationLimit) combinations this month"
+                     + (usageTracker.purchasedCombinationsRemaining > 0 ? " · +\(usageTracker.purchasedCombinationsRemaining) purchased" : ""))
             }
         }
         .font(.caption)
@@ -392,5 +417,11 @@ struct AccountSectionView: View {
     .environment(UsageTracker(
         repository: SyncingWardrobeRepository(modelContext: container.mainContext),
         syncService: MockWardrobeSyncService()
+    ))
+    // Mock-backed so opening the Buy Credits sheet in a preview never hits
+    // the real proxy — same posture as every other preview environment here.
+    .environment(StoreKitPaymentManager(
+        verificationService: { MockIAPVerificationService() },
+        onCreditsGranted: {}
     ))
 }

@@ -472,12 +472,20 @@ struct SyncStatusDTO: Codable {
 }
 
 /// Bookkeeping-only doc (`users/{uid}/meta/usage`) — written exclusively by
-/// `backend/functions/src/middleware/quota.ts`'s Admin-SDK transaction
-/// (`backend/firestore.rules` denies client writes to this doc). Read-only
-/// on the client, for `AccountSectionView`'s usage readout only — never used
-/// to gate anything, since the proxy is the sole enforcer.
+/// the Admin SDK (`backend/functions/src/middleware/quota.ts`'s quota
+/// transaction and `backend/functions/src/routes/iapVerify.ts`'s purchase
+/// grants; `backend/firestore.rules` denies client writes to this doc).
+/// Read-only on the client, for `AccountSectionView`'s usage readout only —
+/// never used to gate anything, since the proxy is the sole enforcer.
+///
+/// The `purchased*Balance` fields are lifetime StoreKit credit balances,
+/// fully decoupled from the monthly `periodKey` reset. Optional is
+/// load-bearing: usage docs and `UsageTracker`'s UserDefaults caches that
+/// predate the IAP feature lack these fields entirely.
 struct UsageDTO: Codable {
     var periodKey: String
     var recommendationCount: Int
     var tryOnCount: Int
+    var purchasedRecommendationBalance: Int?
+    var purchasedTryOnBalance: Int?
 }

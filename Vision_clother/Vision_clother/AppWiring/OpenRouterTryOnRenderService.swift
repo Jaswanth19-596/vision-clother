@@ -62,7 +62,10 @@ enum TryOnError: Error, LocalizedError, Equatable {
         case .cancelled:
             return "Render cancelled."
         case .quotaExceeded:
-            return "You've used all your try-ons this month."
+            // The server only 429s once purchased credits are also 0
+            // (quota.ts draws down the balance first), so this copy can
+            // safely point at buying more.
+            return "You've used this month's free try-ons and any purchased credits. Buy more in Profile, or wait for the monthly reset."
         case .signInRequired:
             return "Sign in to try this on."
         }

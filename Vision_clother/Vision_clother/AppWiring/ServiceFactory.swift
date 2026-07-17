@@ -140,4 +140,19 @@ enum ServiceFactory {
     static func makeAccountDeletionService() -> AccountDeletionService {
         RemoteAccountDeletionService()
     }
+
+    /// StoreKit purchase verification (`Services/IAPVerificationService.swift`).
+    /// Gated on a *linked* (non-anonymous) session, stricter than the plain
+    /// `isSignedIn` gate above: purchases hang off the Firebase uid, and a
+    /// guest uid is destroyed by sign-out/reinstall, which would orphan paid
+    /// credits — the backend 403s anonymous callers for the same reason.
+    /// `StoreKitPaymentManager` holds this via a factory closure and
+    /// re-resolves per call, so there's no stale-snapshot risk and no need
+    /// for a dedicated `AuthGated` wrapper type.
+    static func makeIAPVerificationService() -> IAPVerificationService {
+        if AuthService.shared.isSignedIn && !AuthService.shared.isAnonymous {
+            return RemoteIAPVerificationService()
+        }
+        return MockIAPVerificationService()
+    }
 }

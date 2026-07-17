@@ -34,6 +34,11 @@ struct Vision_clotherApp: App {
     /// stays alive across account switches, same posture as
     /// `syncCoordinator`.
     private let usageTracker: UsageTracker
+    /// StoreKit credit top-ups: retained for the app's lifetime so its
+    /// `Transaction.updates` listener task
+    /// (`Services/StoreKitPaymentManager.swift`) survives as long as the
+    /// app does — same lifetime rationale as `usageTracker`.
+    private let paymentManager: StoreKitPaymentManager
     private let notificationDelegate = NotificationDelegate()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -57,6 +62,11 @@ struct Vision_clotherApp: App {
         let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
         syncCoordinator = WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: ServiceFactory.makeWardrobeSyncService())
         usageTracker = UsageTracker(repository: repository, syncService: ServiceFactory.makeWardrobeSyncService())
+        let tracker = usageTracker
+        paymentManager = StoreKitPaymentManager(
+            verificationService: { ServiceFactory.makeIAPVerificationService() },
+            onCreditsGranted: { await tracker.refreshUsage() }
+        )
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: ServiceFactory.makeBackgroundIsolationService(),
@@ -83,6 +93,12 @@ struct Vision_clotherApp: App {
                 .environment(jobQueueStore)
                 .environment(syncCoordinator)
                 .environment(usageTracker)
+                .environment(paymentManager)
+                // Starts the lifetime Transaction.updates listener and
+                // replays unfinished purchases from prior sessions — must
+                // run as early as possible so an interrupted purchase is
+                // never dropped (see StoreKitPaymentManager's doc comment).
+                .task { paymentManager.start() }
                 // Routes both the Google Sign-In consent redirect and the
                 // phone-auth reCAPTCHA verification redirect back into the
                 // app — see Vision_clother/Config/URLSchemes.plist and
@@ -100,6 +116,10 @@ struct Vision_clotherApp: App {
                         Task { await syncCoordinator.reconcileIfSignedIn() }
                         Task { await usageTracker.refreshUsage() }
                         usageTracker.refreshItemCounts()
+                        // Safety net for purchases stuck mid-verification
+                        // (e.g. network died after payment) — bounded by the
+                        // manager's per-session attempt throttle.
+                        Task { await paymentManager.replayUnfinished() }
                     }
                 }
         }

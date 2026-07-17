@@ -72,6 +72,18 @@ Historical architectural decisions locked for V1. Read this when you need the *w
 - **No backend involvement:** the iOS client talks to Firestore/Storage directly via their SDKs, gated by security rules keyed on `request.auth.uid` (`backend/firestore.rules`, `backend/storage.rules`) — routing this through the Node proxy would contradict its own documented "no business logic server-side" scope for no benefit.
 - **Wardrobe photos now leave the device** (Cloud Storage), which revises the root `CLAUDE.md` Core Invariant's "never leaves the device" line — see that file for the exact reworded text. The recommendation LLM call itself is unaffected: it still never receives images, only the bounded text/hex catalog.
 
+## Monetization: StoreKit 2 Consumable Credit Top-Ups (2026-07-17)
+
+**New decision:** the free monthly tiers (`quota.ts`'s `TIER_LIMITS`) are now supplemented by purchasable, never-expiring credit packs — the first real monetization surface. The "premium" tier hook in `quota.ts` remains intentionally unimplemented (a subscription is a possible future layer); credits are the v1 model because they map 1:1 onto the two already-metered, real-cost features (recommendations, try-on renders) with no proration/renewal complexity.
+
+- **Consumption order:** monthly free tier first, then lifetime `purchased*Balance` fields on `users/{uid}/meta/usage` — decremented inside `quotaGate`'s existing transaction via field-scoped `merge:true` writes (never full-doc overwrites, which would race the grant path).
+- **Server-authoritative grants:** the client posts the StoreKit 2 transaction JWS to `POST /iap/verify`, which verifies the signature against embedded Apple roots (`@apple/app-store-server-library`), maps productId through `src/iap/products.ts`, and grants atomically with a `processedTransactions/{transactionId}` idempotency ledger. The client never sends amounts and can't write any balance field (`firestore.rules`).
+- **Endpoint style:** an Express route on the existing `api` function, not a Firebase callable — the app deliberately has no FirebaseFunctions SDK; every backend call is raw URLSession + Bearer ID token.
+- **Linked accounts only:** guests can't purchase (a guest uid is destroyed by sign-out/reinstall, orphaning paid credits) — hidden in UI, mocked in `ServiceFactory`, 403'd server-side.
+- **Deferred to launch (paid Apple Developer account / App Store Connect):** production-environment JWS verification (needs `appAppleId`), real product records + pricing, sandbox testing, and refund clawback via App Store Server Notifications. Local testing uses `Vision_clother.storekit` + the backend's `IAP_ALLOW_XCODE_UNVERIFIED` flag.
+
+See `docs/timeline.md`'s 2026-07-17 entry for the full file-by-file breakdown.
+
 ## Testing Framework: Swift Testing
 - Project uses Swift Testing (`import Testing`, `@Test`, `#expect`), not XCTest.
 - Domain layer tested with zero mocking — pure function calls with constructed values.

@@ -57,7 +57,10 @@ enum OutfitRecommendationError: Error, LocalizedError {
         case .httpStatus(let code):
             return "Styling service returned an error (\(code))."
         case .quotaExceeded(let limit):
-            return "You've used all \(limit) recommendations this month."
+            // The server only 429s once purchased credits are also 0
+            // (quota.ts draws down the balance first), so this copy can
+            // safely point at buying more.
+            return "You've used all \(limit) free recommendations this month and any purchased credits. Buy more in Profile, or wait for the monthly reset."
         case .emptyChoices:
             return "The styling service didn't return any outfits."
         case .decoding:

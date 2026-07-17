@@ -8,6 +8,7 @@ import { openrouterChatRouter } from "./routes/openrouterChat";
 import { openrouterImagesRouter } from "./routes/openrouterImages";
 import { pexelsSearchRouter } from "./routes/pexelsSearch";
 import { accountDeleteRouter } from "./routes/accountDelete";
+import { iapVerifyRouter } from "./routes/iapVerify";
 import { logEvent } from "./logger";
 import type { AuthedRequest } from "./types";
 
@@ -43,10 +44,13 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
 /**
  * Every route is: verify Firebase Auth -> rate limit -> forward to the
  * provider verbatim. No business logic lives past this point — see
- * docs/backend/conventions.md — with one deliberate exception:
+ * docs/backend/conventions.md — with two deliberate exceptions:
  * `/account/delete` (see `routes/accountDelete.ts`'s doc comment) needs
  * Admin SDK privileges (bulk cross-collection Firestore delete, Storage
- * prefix wipe, deleting the Auth user) the client can never safely hold.
+ * prefix wipe, deleting the Auth user) the client can never safely hold,
+ * and `/iap/verify` (see `routes/iapVerify.ts`) verifies StoreKit 2
+ * purchase JWS tokens and credits the server-only-write usage doc — the
+ * one mutation that must never be client-reachable.
  * App Check is deferred (needs a paid Apple Developer account for App
  * Attest) — see docs/decisions/resolved-v1.md.
  */
@@ -75,6 +79,7 @@ export function buildApp(): express.Express {
   app.use("/openrouter/images", quotaGate("tryOn"), openrouterImagesRouter);
   app.use("/pexels/search", pexelsSearchRouter);
   app.use("/account/delete", accountDeleteRouter);
+  app.use("/iap/verify", iapVerifyRouter);
 
   return app;
 }

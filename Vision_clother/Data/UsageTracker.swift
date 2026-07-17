@@ -81,6 +81,16 @@ final class UsageTracker {
     var recommendationsRemaining: Int { max(0, recommendationLimit - recommendationsUsed) }
     var combinationsRemaining: Int { max(0, combinationLimit - combinationsUsed) }
 
+    /// Lifetime StoreKit credit balances (`purchased*Balance` on the usage
+    /// doc, granted via `Services/StoreKitPaymentManager.swift` →
+    /// `backend/functions/src/routes/iapVerify.ts`). Standalone persistent
+    /// values, fully decoupled from the monthly reset — see
+    /// `currentPeriodUsage()`'s carry-forward.
+    var purchasedRecommendationsRemaining: Int { usage?.purchasedRecommendationBalance ?? 0 }
+    var purchasedCombinationsRemaining: Int { usage?.purchasedTryOnBalance ?? 0 }
+    var totalRecommendationsRemaining: Int { recommendationsRemaining + purchasedRecommendationsRemaining }
+    var totalCombinationsRemaining: Int { combinationsRemaining + purchasedCombinationsRemaining }
+
     var coreItemCap: Int { EntitlementLimits.itemCap(for: .top, isAnonymous: isAnonymous) }
     var accessoryItemCap: Int { EntitlementLimits.itemCap(for: .accessory, isAnonymous: isAnonymous) }
     var isCoreItemCapReached: Bool { coreItemCount >= coreItemCap }
@@ -122,34 +132,56 @@ final class UsageTracker {
     /// Optimistic local increment, called immediately after a successful
     /// recommendation call — see file header. `refreshUsage()` reconciles
     /// with the server's real count on the next foreground/uid change.
+    /// Mirrors the server's consumption order
+    /// (`backend/functions/src/middleware/quota.ts`): the monthly free tier
+    /// absorbs the use while under its limit; past it, the purchased balance
+    /// is decremented instead (floored at 0 — the server is authoritative).
     func recordRecommendationUsed() {
         var current = currentPeriodUsage()
-        current.recommendationCount += 1
+        if current.recommendationCount < recommendationLimit {
+            current.recommendationCount += 1
+        } else {
+            current.purchasedRecommendationBalance = max(0, (current.purchasedRecommendationBalance ?? 0) - 1)
+        }
         usage = current
         if let uid = AuthService.shared.uid { Self.cacheUsage(current, uid: uid) }
-        AppLog.info(.viewModel, "UsageTracker.recordRecommendationUsed: now \(self.recommendationsUsed)/\(self.recommendationLimit)")
+        AppLog.info(.viewModel, "UsageTracker.recordRecommendationUsed: now \(self.recommendationsUsed)/\(self.recommendationLimit) purchased=\(self.purchasedRecommendationsRemaining)")
     }
 
     /// See `recordRecommendationUsed()`'s doc comment.
     func recordCombinationUsed() {
         var current = currentPeriodUsage()
-        current.tryOnCount += 1
+        if current.tryOnCount < combinationLimit {
+            current.tryOnCount += 1
+        } else {
+            current.purchasedTryOnBalance = max(0, (current.purchasedTryOnBalance ?? 0) - 1)
+        }
         usage = current
         if let uid = AuthService.shared.uid { Self.cacheUsage(current, uid: uid) }
-        AppLog.info(.viewModel, "UsageTracker.recordCombinationUsed: now \(self.combinationsUsed)/\(self.combinationLimit)")
+        AppLog.info(.viewModel, "UsageTracker.recordCombinationUsed: now \(self.combinationsUsed)/\(self.combinationLimit) purchased=\(self.purchasedCombinationsRemaining)")
     }
 
     /// Returns the in-memory `usage` DTO if it's still within the current
-    /// UTC month, or a fresh zeroed DTO otherwise — a stale DTO from a prior
-    /// period must never keep accumulating optimistic increments, since the
-    /// server's own counter has already rolled over (see
+    /// UTC month, or a DTO with zeroed *counts* otherwise — a stale DTO from
+    /// a prior period must never keep accumulating optimistic increments,
+    /// since the server's own counter has already rolled over (see
     /// `backend/functions/src/middleware/quota.ts`'s lazy `periodKey` reset).
+    /// The purchased balances are lifetime values with no relationship to
+    /// the calendar and are always carried through the rollover — zeroing
+    /// them here (e.g. on an offline launch in a new month) would make paid
+    /// credits vanish from the UI until the next successful server fetch.
     private func currentPeriodUsage() -> UsageDTO {
         let period = Self.currentPeriodKey()
         if let usage, usage.periodKey == period {
             return usage
         }
-        return UsageDTO(periodKey: period, recommendationCount: 0, tryOnCount: 0)
+        return UsageDTO(
+            periodKey: period,
+            recommendationCount: 0,
+            tryOnCount: 0,
+            purchasedRecommendationBalance: usage?.purchasedRecommendationBalance,
+            purchasedTryOnBalance: usage?.purchasedTryOnBalance
+        )
     }
 
     /// Matches `backend/functions/src/middleware/quota.ts`'s `periodKey()`

@@ -15,6 +15,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "^1.6.0",
     "express": "^4.19.2",
     "firebase-admin": "^12.3.0",
     "firebase-functions": "^5.0.0",

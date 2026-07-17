@@ -42,4 +42,9 @@ enum ProxyConfig {
     /// Backed by `backend/functions/src/routes/accountDelete.ts` — see
     /// `Services/AccountDeletionService.swift`.
     static var accountDeleteURL: URL { baseURL.appendingPathComponent("account/delete") }
+    /// Backed by `backend/functions/src/routes/iapVerify.ts` — verifies a
+    /// StoreKit 2 transaction JWS server-side and credits the purchased
+    /// balance on `users/{uid}/meta/usage`. See
+    /// `Services/IAPVerificationService.swift`.
+    static var iapVerifyURL: URL { baseURL.appendingPathComponent("iap/verify") }
 }
