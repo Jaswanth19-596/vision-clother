@@ -147,7 +147,16 @@ struct AddItemView: View {
             Task {
                 for pickerItem in newItems {
                     guard let data = try? await pickerItem.loadTransferable(type: Data.self) else { continue }
-                    PerfLog.logger.notice("[ingest] picker itemIdentifier=\(pickerItem.itemIdentifier ?? "nil", privacy: .public) raw=\(imageFingerprint(data), privacy: .public) bytes=\(data.count, privacy: .public)")
+                    // Up to `maxSelectionCount` (20) photos hash sequentially
+                    // here — `imageFingerprint` (SHA256) previously ran
+                    // inline on this Task's actor (MainActor, since it's
+                    // created from a View), so 20 selections meant 20
+                    // main-thread hashes back-to-back. `Task.detached` moves
+                    // each one off the main actor.
+                    let fingerprint = await Task.detached(priority: .utility) {
+                        imageFingerprint(data)
+                    }.value
+                    PerfLog.logger.notice("[ingest] picker itemIdentifier=\(pickerItem.itemIdentifier ?? "nil", privacy: .public) raw=\(fingerprint, privacy: .public) bytes=\(data.count, privacy: .public)")
                     jobQueueStore.enqueueUpload(rawImageData: data, defaultSlot: defaultSlot)
                 }
                 photoPickerItems = []

@@ -2,6 +2,121 @@
 
 ---
 
+## 2026-07-17 — Fix: Duplicate `ForEach` ID warning in `ProfileView`'s "Best Pairings" list
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Console warning: `ForEach<...>: the ID ... occurs multiple times within the collection, this will give undefined results!` — non-fatal but persistent. `ProfileView.swift:564` keyed `ForEach(pairs.prefix(5), id: \.itemA.id)` off only the first item of each top-pair tuple. Since the same wardrobe item can appear as `itemA` in more than one top pair (paired with different partners), two distinct rows collided on the same `UUID`.
+
+### Fix
+Switched the `ForEach` to key off the array index (`Array(pairs.prefix(5).enumerated())`, `id: \.offset`) — matching the existing convention already used elsewhere in this same file (`tasteSignals`, `buckets` at lines 471/529/539) for non-`Identifiable` derived collections, rather than inventing a compound-pair identifier.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Vision_clother/Vision_clother/Features/Profile/ProfileView.swift` | "Best Pairings" `ForEach` keyed by array offset instead of `itemA.id` |
+
+---
+
+## 2026-07-17 — Fix: Concurrent Cloud Sync passes racing on the same pulled `WardrobeItem` rows
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Crash recurred after the same-day `markMutated()` fix below, still on the same `WardrobeItem.slot` "backing data detached from context" fault, but this time with **duplicated** `[Sync] pullChanges: starting`/`ok items=1` log lines at the same instant. Traced to two independent entry points with no reentrancy guard: `WardrobeSyncCoordinator.init`'s `AuthService.shared.$uid` Combine subscription (which delivers immediately on subscribe) calls `handleUIDChange` → `handleSignIn`, while `Vision_clotherApp.swift`'s `scenePhase → .active` hook independently calls `reconcileIfSignedIn` → `reconcile`. At launch with an already-signed-in user both fire near-simultaneously, landing two overlapping `pullAndApply` passes that each independently discover and delete-and-reinsert the *same* pulled `WardrobeItem` row — doubling the odds that some other reference (e.g. a cached inventory array) gets orphaned mid-window, on top of the missing-`markMutated` issue.
+
+### Fix
+Added a single `isSyncOperationInFlight` reentrancy gate (`runExclusiveSyncOperation`) in `WardrobeSyncCoordinator.swift`, wrapping the three true entry points — `reconcileIfSignedIn`, `retrySync`, `handleUIDChange` — so only one full sync pass (`handleSignIn`/`reconcile`/`pullAndApply`) ever runs at a time; a second concurrent call now logs and no-ops instead of racing.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Data/WardrobeSyncCoordinator.swift` | Added `isSyncOperationInFlight` + `runExclusiveSyncOperation`; wrapped `reconcileIfSignedIn`/`retrySync`/`handleUIDChange` bodies with it |
+
+---
+
+## 2026-07-17 — Fix: Crash reading `WardrobeItem.slot` after a Cloud Sync pull ("backing data detached from context")
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+User-reported crash: searching Daily Assistant triggered a foreground Cloud Sync pull (`pullChanges: ok items=1`), the recommendation call succeeded, and then the app hit `SwiftData/BackingData.swift:249: Fatal error: This backing data was detached from a context without resolving attribute faults — \WardrobeItem.slot`.
+
+Root cause: `WardrobeSyncCoordinator.applyWardrobeItemChange` (and every sibling `apply*Change`) applies a pulled change by **deleting** the existing row and **inserting a brand-new model instance** with the same `id` — never mutating in place. `DailyAssistantViewModel.wardrobeSnapshot()` caches `inventoryCache: [WardrobeItem]` keyed by `WardrobeMutationTracker.shared.version`, specifically so any wardrobe change invalidates it — but `WardrobeSyncCoordinator`'s pull path (`pullAndApply`) and account-switch wipe (`wipeLocalMirror`) never called `markMutated()`. So a `DailyAssistantViewModel` that had already cached its inventory kept serving `WardrobeItem` references to now-deleted rows after a pull/wipe; the next property read on one of them (`.slot`, during catalog building/outfit resolution) crashed. Confirmed pre-existing — unrelated to the same-day performance-audit changes (investigated and ruled out before fixing).
+
+### Fix
+Added `WardrobeMutationTracker.shared.markMutated()` in two places in `WardrobeSyncCoordinator.swift`: at the end of `pullAndApply`, gated on `!delta.wardrobeItems.isEmpty` (matches the existing save/update/delete call sites' granularity); and unconditionally in `wipeLocalMirror`, right after the local-mirror delete loop (every `WardrobeItem` is gone at that point regardless of what changed).
+
+| File | Change |
+|---|---|
+| `Vision_clother/Data/WardrobeSyncCoordinator.swift` | `pullAndApply`: bump `WardrobeMutationTracker` when a pull touches `WardrobeItem` rows. `wipeLocalMirror`: bump unconditionally after wiping. |
+
+---
+
+## 2026-07-17 — Perf: Data-Scaling Audit (Power-User Closet/History Growth)
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Requested audit for hidden data-scaling bottlenecks that would surface once a power user accumulates thousands of wardrobe items/combinations/impressions and years of feedback history — even though everything works fine at demo scale today. Three parallel codebase sweeps (SwiftData query bloat, synchronous I/O/crypto in serial paths, view-body/collection-algorithm/retain-cycle patterns) turned up 9 concrete findings, prioritized by impact, fixed in order.
+
+### Fixes
+1. **Cached/backgrounded image loading (8 views):** Every wardrobe/photo grid cell (`ClosetView`, `ItemDetailView`, `ManualPairingView`, `CombinationsView`, `CombinationDetailView`, `RateItemView`, `RateCombinationView`, `OutfitCardView`) called `UIImage(contentsOfFile:)` synchronously inside a `@ViewBuilder`, re-decoding from disk on every re-render with zero caching. Added `ImageStorage.cachedImage(for:)` (bounded `NSCache`, off-main-actor decode via `Task.detached`, invalidated in `write`/`delete`/`wipeAll`) and a shared `CachedWardrobeImage` SwiftUI view (`DesignSystem/CachedWardrobeImage.swift`); replaced all 8 call sites.
+2. **`WardrobeSyncCoordinator.pushEverythingLocal` unbounded fetches:** Bootstrap sync fetched entire `OutfitFeedback`/`ItemFeedback`/`PairFeedback`/`ItemRating`/`SwipeEvent` tables (esp. `SwipeEvent`) in one shot onto `@MainActor`. A time-window predicate would be *incorrect* here (bootstrap must push all-time history to establish the cloud mirror) — instead added `pushAllInBatches` (500-row pages, `Task.yield()` + incremental `modelContext.save()` between batches) to bound peak memory/main-actor monopolization without changing which rows sync.
+3. **`ClosetView.displayItems`:** Recomputed ghost-fill + full sort once per `Slot.allCases` section (7x per render) via a computed property called from inside the loop. Hoisted to a single `let allItems = displayItems` at the top of `body`, threaded through `slotSection`/tap handler.
+4. **Query bounds — `ProfileView`/`CombinationsView`/`fetchFeedbackHistory`:** `ProfileView.itemRatings` was a full-table `@Query` used only for an `.isEmpty` check — replaced with a `fetchLimit: 1` existence query. (`outfitFeedbacks` was left full-history: `.count`/weekday-mode/most-recent are genuine all-time aggregates with no cheaper SwiftData query shape, and are bounded by human rating cadence, not swipe/impression volume — a limit there would have been a silent correctness regression.) `CombinationsView`/`CombinationDetailView`'s `SavedCombination` `@Query` capped to the most recent 300 (a real browse list, unlike Profile's aggregates). `WardrobeRepository.fetchFeedbackHistory()`'s `SavedCombination` fetch was scoped from a full-table fetch down to exactly the ids referenced by the already-180-day-windowed `outfitFeedbacks` — bounded *and* correctness-safe even when an old combo is rated again recently.
+5. **`ItemRatingScoring`:** `score(for:history:)` rescanned all of `history.pairFeedback` per item — O(items × pairFeedback) when called once per rendered cell. Added `scores(for:history:)` batch form that folds `pairFeedback` onto each item id once, then does O(1) lookups; `ClosetView` now calls it once per render instead of `score(for:)` per cell. Original `score(for:history:)` left untouched so existing direct-construction tests keep passing.
+6. **`JobQueueStore`:** `jobs` is app-session-lifetime and append-only, each `Job.thumbnail` holding a full-resolution photo forever. Thumbnails are now downscaled (`ImageStorage.downscaledJPEGForUpload`, 200px/0.6 quality) at enqueue time instead of storing originals; array capped at 200 retained jobs, evicting oldest *terminal* jobs first (in-flight jobs never evicted).
+7. **`AddItemView` fingerprint loop + `SyncOutboxWorker.drainNow`:** Up to 20 photos' SHA256 fingerprinting ran sequentially on the main actor inside a plain `Task {}`; each hash now runs via `Task.detached`. `drainNow` pushed dirty rows one at a time; now fans out up to 5 concurrent pushes via `withTaskGroup`, with row mutations still serialized on `@MainActor`.
+8. **`RecommendationImpressionEvent` retention:** Table had a `shownAt` field but no reader and no prune — pure unbounded growth. Added a 90-day retention prune (`WardrobeRepository.pruneOldImpressionEvents`), run opportunistically at the top of `recordImpressions`.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Vision_clother/Data/ImageStorage.swift` | Added bounded `NSCache`-backed `cachedImage(for:)`, cache invalidation in `write`/`delete`/`wipeAll` |
+| `Vision_clother/Vision_clother/Vision_clother/DesignSystem/CachedWardrobeImage.swift` (new) | Shared cache-first async image view |
+| `Vision_clother/Vision_clother/Features/{Closet/ClosetView,Closet/ItemDetailView,Pairing/ManualPairingView,Combinations/CombinationsView,Combinations/CombinationDetailView,Rating/RateItemView,Rating/RateCombinationView,DailyAssistant/OutfitCardView}.swift` | Replaced synchronous `UIImage(contentsOfFile:)` with `CachedWardrobeImage` |
+| `Vision_clother/Data/WardrobeSyncCoordinator.swift` | `pushEverythingLocal`: batched/yielding `pushAllInBatches` instead of 5 unbounded full-table fetches |
+| `Vision_clother/Vision_clother/Features/Closet/ClosetView.swift` | `displayItems` computed once per `body`; batch rating-score lookup |
+| `Vision_clother/Vision_clother/Features/Profile/ProfileView.swift` | `itemRatings` → `fetchLimit: 1` existence query |
+| `Vision_clother/Vision_clother/Features/Combinations/{CombinationsView,CombinationDetailView}.swift` | `SavedCombination` query capped to most recent 300 |
+| `Vision_clother/Data/WardrobeRepository.swift` | `fetchFeedbackHistory()`'s `SavedCombination` fetch scoped to referenced ids; added `pruneOldImpressionEvents()` (90-day retention) called from `recordImpressions` |
+| `Vision_clother/Domain/ItemRatingScoring.swift` | Added `scores(for:history:)` batch form |
+| `Vision_clother/Vision_clother/Features/JobQueue/JobQueueStore.swift` | Downscaled thumbnails at enqueue time; capped `jobs` to 200 with terminal-job eviction |
+| `Vision_clother/Vision_clother/Features/Closet/AddItemView.swift` | Per-photo SHA256 fingerprinting moved to `Task.detached` |
+| `Vision_clother/Data/SyncOutboxWorker.swift` | `drainNow` fans out up to 5 concurrent pushes via `withTaskGroup` |
+
+Deliberately out of scope / flagged as follow-ups: `Job.kind`'s retained payload `Data` (`rawImageData`/`baseImageData`) still isn't cleared after a job succeeds (only `thumbnail` is downscaled) — clearing it would need `Job.kind`/`UploadPayload`/`TryOnPayload` to become mutable, a slightly larger model change than this pass's risk budget. A true "load more" pagination UI for `CombinationsView` beyond the 300-item cap wasn't built (out of scope for a low-risk audit pass).
+
+---
+
+## 2026-07-17 — Fix: Main-actor disk I/O + hashing on every closet-photo cache check in `fetchFeedbackHistory()`
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Code review flagged `WardrobeRepository.fetchFeedbackHistory()`/`DailyAssistantViewModel.resolveOutfits` as O(closet size) per turn with no incremental-recompute strategy. Investigation confirmed `DailyAssistantViewModel.wardrobeSnapshot()` already caches inventory/history across conversation turns (invalidated only by `WardrobeMutationTracker`, i.e. an actual item add/edit/delete) — so the "every message" framing didn't match current code. The real, still-live bug: whenever `fetchFeedbackHistory()` *does* run (on a wardrobe mutation or cold app launch), its embedding cache-validity check read every non-ghost item's photo off disk and SHA256-hashed it synchronously **on the main actor**, for every item — including the hundreds that hadn't changed — before any of that work reached the existing off-main-actor `WardrobeEmbeddingWorker`.
+
+### Fix
+Added `WardrobeItem.imageFingerprint: String?` — a plain additive optional field (no `SchemaV10`; matches the existing `ColorProfile.undertone` precedent that this exact shape of change needs no schema-version bump under SwiftData's lightweight migration). Set once, at every site that writes fresh photo bytes for a `WardrobeItem` (`JobQueueStore.performUpload` — reusing a fingerprint already computed there for log correlation, `DailyAssistantViewModel.resolveProspectivePurchase`, `WardrobeSyncCoordinator.downloadMissingPhotos`'s Cloud Sync photo backfill). Deliberately local-only, not added to `WardrobeItemDTO` — same posture as the already-local-only `WardrobeItemEmbedding` table it exists to cheapen lookups against.
+
+`fetchFeedbackHistory()`'s embedding section now does a cheap, synchronous, pure in-memory pass first: an item with a persisted `imageFingerprint` matching its cached embedding's fingerprint resolves with zero disk I/O and zero hashing. Only items that can't be resolved this way — a pre-existing row saved before this field existed, or a genuine cache miss — go through a new `WardrobeEmbeddingWorker.computeFingerprints(for:)`, parallelized off the main actor via `withTaskGroup` (same pattern as the existing `computeEmbeddings`). Results backfill `imageFingerprint` on first sight so every later fetch for that item takes the cheap branch. No migration script needed — nil fields resolve themselves lazily, once, the first time each pre-existing item is seen.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Vision_clother/Models/WardrobeItem.swift` | Added `var imageFingerprint: String? = nil` + init param |
+| `Vision_clother/Services/WardrobeEmbeddingWorker.swift` | Added `FingerprintRequest`/`FingerprintResult` + `computeFingerprints(for:)`, parallel off-actor disk read + hash |
+| `Vision_clother/Data/WardrobeRepository.swift` | `fetchFeedbackHistory()`: replaced the unconditional main-actor disk-read+hash loop with a fast in-memory-compare path plus an off-actor backfill pass for unresolved items |
+| `Vision_clother/Vision_clother/Features/JobQueue/JobQueueStore.swift` | `performUpload`: sets `item.imageFingerprint` from the fingerprint already computed for ingestion log correlation |
+| `Vision_clother/Vision_clother/Features/DailyAssistant/DailyAssistantViewModel.swift` | `resolveProspectivePurchase`: sets `prospectiveItem.imageFingerprint` at save time |
+| `Vision_clother/Data/WardrobeSyncCoordinator.swift` | `downloadMissingPhotos`: sets `imageFingerprint` on `WardrobeItem` rows whose photo bytes were just backfilled from Cloud Storage, `modelContext.save()`s directly (not through `SyncingWardrobeRepository`, matching this file's existing pull-mutation posture) |
+
+Deliberately out of scope: the four 180-day-windowed SwiftData fetches (`pairFeedbacks`/`itemFeedbacks`/`itemRatings`/`outfitFeedbacks`) stay serial on the main actor — true parallelization would need a second background `ModelContext` off the same `ModelContainer`, a bigger change that cuts against this layer's "only place that touches `ModelContext`" invariant (`Data/CLAUDE.md`) and risks object-identity issues across contexts. Flagged to the user as a follow-up if profiling shows it's still a bottleneck after this fix.
+
+---
+
 ## 2026-07-17 — UX Polish: Move Account/Debug Controls into a Gear-Icon Sheet
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)

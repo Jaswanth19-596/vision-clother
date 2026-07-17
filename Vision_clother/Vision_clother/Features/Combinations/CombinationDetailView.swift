@@ -19,8 +19,9 @@ struct CombinationDetailView: View {
     /// view can stay open while a background pull inserts/deletes rows out
     /// from under it (`Data/WardrobeSyncCoordinator.swift`); a `@Query`
     /// re-resolves automatically instead of paging through a stale/detached
-    /// snapshot.
-    @Query(sort: \SavedCombination.savedAt, order: .reverse) private var combinations: [SavedCombination]
+    /// snapshot. Same recency cap as `CombinationsView` (same sort order, so
+    /// `startIndex` from that list always lands on the matching row here).
+    @Query(CombinationsView.recentCombinationsDescriptor) private var combinations: [SavedCombination]
     /// Photo-refresh reactivity — see `ClosetView.swift`'s matching comment.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Environment(\.dismiss) private var dismiss
@@ -111,13 +112,13 @@ private struct CombinationDetailPage: View {
 
     @ViewBuilder
     private var image: some View {
-        if let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: combination.imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+            image
                 .resizable()
                 .scaledToFit()
                 .clipShape(VCRadius.shape(VCRadius.card))
                 .vcShadow()
-        } else {
+        } placeholder: {
             Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
                 .foregroundStyle(.secondary)
         }

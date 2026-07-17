@@ -120,6 +120,21 @@ final class WardrobeItem {
     var material: String? = nil
     var texture: String? = nil
 
+    /// Content fingerprint (`ImageStorage.fingerprint`) of the bytes at
+    /// `imageAssetName`, captured once wherever those bytes are first
+    /// written locally (ingestion, prospective-purchase save, Cloud Sync
+    /// photo backfill) — lets `WardrobeRepository.fetchFeedbackHistory()`
+    /// tell "embedding cache still valid" from a pure in-memory compare
+    /// instead of re-reading and re-hashing every closet photo on every
+    /// call. Optional/defaulted so pre-existing rows decode as `nil` under
+    /// SwiftData's automatic lightweight migration (same pattern as
+    /// `ColorProfile.undertone`) — `nil` just means "not backfilled yet,"
+    /// resolved lazily and cached the next time that item is seen. Purely
+    /// local/device-derived — deliberately not part of `WardrobeItemDTO`
+    /// (`Data/Sync/FirestoreDTOs.swift`), same posture as the also-local-only
+    /// `WardrobeItemEmbedding` table it exists to cheapen lookups against.
+    var imageFingerprint: String? = nil
+
     init(
         id: UUID = UUID(),
         slot: Slot,
@@ -136,7 +151,8 @@ final class WardrobeItem {
         fit: String? = nil,
         silhouette: String? = nil,
         material: String? = nil,
-        texture: String? = nil
+        texture: String? = nil,
+        imageFingerprint: String? = nil
     ) {
         self.id = id
         self.slot = slot
@@ -154,6 +170,7 @@ final class WardrobeItem {
         self.silhouette = silhouette
         self.material = material
         self.texture = texture
+        self.imageFingerprint = imageFingerprint
     }
 
     /// Items may have no free-text description — this synthesizes a

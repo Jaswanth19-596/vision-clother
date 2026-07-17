@@ -24,6 +24,39 @@ enum ImageStorage {
         return digest.map { String(format: "%02x", $0) }.joined().prefix(12).description
     }
 
+    /// Decoded-image cache for `CachedWardrobeImage` — grid/detail views were
+    /// re-reading and re-decoding the same on-disk PNG from scratch on every
+    /// SwiftUI re-render (scroll, selection change, any observed state
+    /// mutation), which becomes the dominant cost once a closet/combinations
+    /// history grows into the thousands. Bounded so a long session viewing
+    /// many distinct photos doesn't retain all of them forever; entries are
+    /// invalidated in `write(_:filename:)`/`delete(_:)` so a Cloud Sync
+    /// overwrite or removal can never serve stale bytes.
+    private static let imageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 300
+        return cache
+    }()
+
+    /// Cache-first, off-main-actor decode. `[AI-Stylist-ML]` was considered
+    /// for this log subsystem but this is pure UI-layer I/O, not ML —
+    /// intentionally unlogged per-call to avoid log spam on every grid cell.
+    static func cachedImage(for filename: String) async -> UIImage? {
+        let key = filename as NSString
+        if let cached = imageCache.object(forKey: key) {
+            return cached
+        }
+        return await Task.detached(priority: .userInitiated) {
+            guard let image = UIImage(contentsOfFile: url(for: filename).path) else { return nil }
+            imageCache.setObject(image, forKey: key)
+            return image
+        }.value
+    }
+
+    private static func invalidateCache(_ filename: String) {
+        imageCache.removeObject(forKey: filename as NSString)
+    }
+
     private static var directory: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("WardrobeImages", isDirectory: true)
@@ -53,6 +86,7 @@ enum ImageStorage {
     /// Best-effort cleanup — a missing file is not an error worth surfacing.
     static func delete(_ filename: String) {
         try? FileManager.default.removeItem(at: url(for: filename))
+        invalidateCache(filename)
     }
 
     /// Explicit-filename write — the Cloud Sync pull path only
@@ -63,6 +97,7 @@ enum ImageStorage {
     static func write(_ data: Data, filename: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
+        invalidateCache(filename)
     }
 
     /// Removes every locally cached photo — Cloud Sync account-switch wipe
@@ -70,6 +105,7 @@ enum ImageStorage {
     /// `WardrobeItem`/`SavedCombination` rows for the new account has no use
     /// for the previous account's photo files either.
     static func wipeAll() throws {
+        imageCache.removeAllObjects()
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         try FileManager.default.removeItem(at: directory)
     }

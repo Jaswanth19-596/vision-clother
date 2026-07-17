@@ -271,13 +271,13 @@ private struct RateCombinationQuestionsView: View {
     /// rating it overall.
     @ViewBuilder
     private var combinationImage: some View {
-        if let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: imageAssetName) { image in
+            image
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: .infinity)
                 .clipShape(VCRadius.shape(VCRadius.card))
-        } else {
+        } placeholder: {
             Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
                 .foregroundStyle(.secondary)
         }

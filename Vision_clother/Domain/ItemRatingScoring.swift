@@ -43,4 +43,43 @@ enum ItemRatingScoring {
         )
         return Int((preference * 100).rounded())
     }
+
+    /// Batch form for scoring every item in a closet/grid against the same
+    /// `history` in one pass — `score(for:history:)` above rescans all of
+    /// `history.pairFeedback` per call, which is O(items × pairFeedback) when
+    /// called once per rendered cell (`ClosetView`'s grid); this folds
+    /// `pairFeedback` onto each referenced item id once, up front, so scoring
+    /// every item afterward is an O(1) dictionary lookup each. Produces the
+    /// exact same values as calling `score(for:history:)` per item.
+    static func scores(for itemIDs: some Sequence<UUID>, history: FeedbackHistory) -> [UUID: Int] {
+        var pairFolded: [UUID: (likes: Double, total: Double)] = [:]
+        for (key, counts) in history.pairFeedback {
+            for itemID in [key.a, key.b] {
+                var entry = pairFolded[itemID] ?? (likes: 0, total: 0)
+                entry.likes += counts.likes
+                entry.total += counts.total
+                pairFolded[itemID] = entry
+            }
+        }
+
+        var result: [UUID: Int] = [:]
+        for itemID in itemIDs {
+            var likes = 0.0
+            var total = 0.0
+            if let counts = history.itemFeedback[itemID] {
+                likes += counts.likes
+                total += counts.total
+            }
+            if let counts = pairFolded[itemID] {
+                likes += counts.likes
+                total += counts.total
+            }
+            let preference = PairCompatibilityScoring.itemPreference(
+                likeCount: likes,
+                dislikeCount: total - likes
+            )
+            result[itemID] = Int((preference * 100).rounded())
+        }
+        return result
+    }
 }

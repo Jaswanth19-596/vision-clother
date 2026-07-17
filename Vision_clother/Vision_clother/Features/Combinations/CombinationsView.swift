@@ -17,9 +17,22 @@ struct CombinationsView: View {
     /// `WardrobeSyncCoordinator`'s background photo prefetch writes
     /// combination renders straight to `ImageStorage`, outside SwiftData.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
-    @Query(sort: \SavedCombination.savedAt, order: .reverse) private var combinations: [SavedCombination]
+    /// Capped rather than the full all-time history — this backs a
+    /// scrollable browse list (unlike `ProfileView`'s aggregate stats, which
+    /// genuinely need every row), so showing the most recent
+    /// `recentCombinationsLimit` and dropping older ones is a normal,
+    /// low-risk pagination trade-off rather than a correctness change.
+    @Query(Self.recentCombinationsDescriptor) private var combinations: [SavedCombination]
     @State private var viewModel: CombinationsViewModel?
     @State private var selectedIndex: Int?
+
+    static let recentCombinationsLimit = 300
+
+    static var recentCombinationsDescriptor: FetchDescriptor<SavedCombination> {
+        var descriptor = FetchDescriptor<SavedCombination>(sortBy: [SortDescriptor(\.savedAt, order: .reverse)])
+        descriptor.fetchLimit = recentCombinationsLimit
+        return descriptor
+    }
 
     var body: some View {
         NavigationStack {
@@ -101,11 +114,11 @@ private struct CombinationRow: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: combination.imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-        } else {
+        } placeholder: {
             VCRadius.shape(VCRadius.swatch)
                 .fill(.thinMaterial)
                 .overlay {

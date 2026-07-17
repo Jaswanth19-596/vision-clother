@@ -201,7 +201,24 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // join, outfit-negative-signal join, embedding pass) — previously
         // each block re-fetched its own copy of the same full table.
         let inventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
-        let savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>())
+
+        // `combinationsByID` is only ever looked up by `feedback.outfitID`
+        // for a `feedback` drawn from `outfitFeedbacks` above (both join
+        // sites below), so scope the fetch to exactly those ids instead of
+        // every `SavedCombination` ever saved — bounded by the (already
+        // 180-day-windowed) feedback count, not by all-time saved-combo
+        // count, and still correct even when a combo saved long ago outside
+        // the window was rated again just now (its id is still in
+        // `outfitFeedbacks`, so it's still fetched here).
+        let neededOutfitIDs = Set(outfitFeedbacks.map(\.outfitID))
+        let savedCombinations: [SavedCombination]
+        if neededOutfitIDs.isEmpty {
+            savedCombinations = []
+        } else {
+            savedCombinations = try modelContext.fetch(FetchDescriptor<SavedCombination>(
+                predicate: #Predicate { neededOutfitIDs.contains($0.id) }
+            ))
+        }
         let combinationsByID = Dictionary(uniqueKeysWithValues: savedCombinations.map { ($0.id, $0) })
 
         var history = FeedbackHistory()
@@ -419,30 +436,57 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         let cachedEmbeddings = try modelContext.fetch(FetchDescriptor<WardrobeItemEmbedding>())
         let embeddingsByItemID = Dictionary(uniqueKeysWithValues: cachedEmbeddings.map { ($0.itemID, $0) })
 
-        // Cheap, synchronous pass on the main actor: sort cache hits straight
-        // into `history.itemEmbeddings` and collect only the missing/stale
-        // items into a batch for the background worker below.
-        var pendingRequests: [WardrobeEmbeddingWorker.EmbeddingRequest] = []
+        // Cheap, synchronous pass on the main actor: a persisted
+        // `imageFingerprint` matching the cached embedding's fingerprint is
+        // a pure in-memory compare — no disk I/O, no hashing. Only items
+        // that can't be resolved this way (a pre-existing row saved before
+        // `imageFingerprint` existed, or a genuine cache miss) get queued
+        // for the off-main-actor fingerprint pass below.
+        var pendingFingerprintChecks: [WardrobeEmbeddingWorker.FingerprintRequest] = []
+        var itemsPendingFingerprintPersist: [UUID: WardrobeItem] = [:]
         for item in inventory {
-            guard !item.isGhostElement, let assetName = item.imageAssetName,
-                  let imageData = ImageStorage.loadData(for: assetName)
-            else { continue }
-            let fingerprint = ImageStorage.fingerprint(imageData)
+            guard !item.isGhostElement, let assetName = item.imageAssetName else { continue }
 
-            if let cached = embeddingsByItemID[item.id], cached.sourceFingerprint == fingerprint {
+            if let fingerprint = item.imageFingerprint,
+               let cached = embeddingsByItemID[item.id], cached.sourceFingerprint == fingerprint {
                 history.itemEmbeddings[item.id] = cached.vector
                 continue
             }
 
-            pendingRequests.append(WardrobeEmbeddingWorker.EmbeddingRequest(
-                itemID: item.id, imageData: imageData, sourceFingerprint: fingerprint
-            ))
+            pendingFingerprintChecks.append(WardrobeEmbeddingWorker.FingerprintRequest(itemID: item.id, filename: assetName))
+            if item.imageFingerprint == nil {
+                itemsPendingFingerprintPersist[item.id] = item
+            }
+        }
+
+        // Off-main-actor, parallel across cores — best-effort per item, same
+        // posture as `computeEmbeddings` below (a missing/unreadable photo
+        // just drops that item rather than failing the whole fetch).
+        let fingerprintResults = await embeddingWorker.computeFingerprints(for: pendingFingerprintChecks)
+
+        var pendingEmbeddingRequests: [WardrobeEmbeddingWorker.EmbeddingRequest] = []
+        for result in fingerprintResults {
+            // Backfill: this item had no persisted fingerprint yet — cache
+            // it now so every later fetch for this item takes the cheap
+            // branch above instead of re-resolving it every time.
+            itemsPendingFingerprintPersist[result.itemID]?.imageFingerprint = result.fingerprint
+
+            if let cached = embeddingsByItemID[result.itemID], cached.sourceFingerprint == result.fingerprint {
+                history.itemEmbeddings[result.itemID] = cached.vector
+            } else {
+                pendingEmbeddingRequests.append(WardrobeEmbeddingWorker.EmbeddingRequest(
+                    itemID: result.itemID, imageData: result.imageData, sourceFingerprint: result.fingerprint
+                ))
+            }
+        }
+        if !itemsPendingFingerprintPersist.isEmpty {
+            try? modelContext.save()
         }
 
         // Off-main-actor, parallel across cores — best-effort per item, same
         // posture as the serial loop this replaces (a Vision failure on one
         // item's photo shouldn't fail the whole feedback-history fetch).
-        let embeddingResults = await embeddingWorker.computeEmbeddings(for: pendingRequests)
+        let embeddingResults = await embeddingWorker.computeEmbeddings(for: pendingEmbeddingRequests)
 
         // Back on the main actor: this is the only place that touches
         // `ModelContext`, so the worker itself never needs to.
@@ -710,6 +754,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     }
 
     func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws {
+        try pruneOldImpressionEvents()
         for (rank, outfit) in outfits.enumerated() {
             modelContext.insert(RecommendationImpressionEvent(
                 id: outfit.id,
@@ -720,6 +765,25 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         }
         try modelContext.save()
         MLLog.logger.notice("[AI-Stylist-ML] impressions recorded: round=\(roundID, privacy: .public) count=\(outfits.count, privacy: .public)")
+    }
+
+    /// Retention policy for `RecommendationImpressionEvent` — per its own
+    /// doc comment, nothing reads this table yet, so without this it would
+    /// grow by a few rows every Daily Assistant turn, forever, for as long as
+    /// the app is used. Pruned opportunistically here (once per recorded
+    /// round — cheap relative to the round's own LLM round-trip this is
+    /// already part of) rather than a separate scheduled job.
+    private static let impressionRetentionInterval: TimeInterval = 90 * 24 * 60 * 60
+
+    private func pruneOldImpressionEvents() throws {
+        let cutoffDate = Date.now.addingTimeInterval(-Self.impressionRetentionInterval)
+        let staleEvents = try modelContext.fetch(FetchDescriptor<RecommendationImpressionEvent>(
+            predicate: #Predicate { $0.shownAt < cutoffDate }
+        ))
+        guard !staleEvents.isEmpty else { return }
+        for event in staleEvents {
+            modelContext.delete(event)
+        }
     }
 
     func recordSelection(outfitID: UUID) throws {

@@ -29,9 +29,26 @@ struct ProfileView: View {
     @ObservedObject private var authService = AuthService.shared
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Query private var items: [WardrobeItem]
+    /// Full-history by necessity — `.count`, `mostActiveWeekdayLabel`, and
+    /// `daysSinceLastRating` below are all all-time aggregates derived from
+    /// this one array (weekday-mode in particular needs every row's date;
+    /// SwiftData has no server-side `GROUP BY`), so there's no cheaper query
+    /// shape that still answers them correctly. Bounded in practice by
+    /// real-world rating cadence (at most a few outfits/day), unlike
+    /// higher-volume tables (`SwipeEvent`, `RecommendationImpressionEvent`).
     @Query private var outfitFeedbacks: [OutfitFeedback]
-    @Query private var itemRatings: [ItemRating]
+    /// Existence-only — every other read of item ratings in this view goes
+    /// through `viewModel.feedbackHistory` (already 180-day-windowed by
+    /// `WardrobeRepository.fetchFeedbackHistory()`), so this only needs to
+    /// answer "has the user ever rated an item," not materialize the table.
+    @Query(Self.itemRatingExistenceDescriptor) private var itemRatingExistenceCheck: [ItemRating]
     @Query private var styleProfiles: [UserStyleProfile]
+
+    private static var itemRatingExistenceDescriptor: FetchDescriptor<ItemRating> {
+        var descriptor = FetchDescriptor<ItemRating>()
+        descriptor.fetchLimit = 1
+        return descriptor
+    }
 
     /// Segments offered by the "Colors You Wear Well" picker — matches the
     /// requested Tops/Bottoms/Shoes mockup; outerwear and the newer
@@ -464,7 +481,7 @@ struct ProfileView: View {
     @ViewBuilder
     private func colorAffinitySection(viewModel: ProfileViewModel) -> some View {
         Section("Colors You Wear Well") {
-            if itemRatings.isEmpty {
+            if itemRatingExistenceCheck.isEmpty {
                 Text("No item ratings yet — rate items to see which colors you favor per category.")
                     .foregroundStyle(.secondary)
             } else {
@@ -544,7 +561,7 @@ struct ProfileView: View {
                 Text("No pair feedback yet — like or dislike outfit pairings from Daily Assistant to see your best combinations here.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(pairs.prefix(5), id: \.itemA.id) { pair in
+                ForEach(Array(pairs.prefix(5).enumerated()), id: \.offset) { _, pair in
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(pair.itemA.displayLabel) + \(pair.itemB.displayLabel)")
                             .font(.subheadline.weight(.semibold))

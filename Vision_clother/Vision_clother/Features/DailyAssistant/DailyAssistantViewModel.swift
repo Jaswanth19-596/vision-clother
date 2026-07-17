@@ -531,6 +531,11 @@ final class DailyAssistantViewModel {
 
             let filename = try ImageStorage.save(imageData)
             let prospectiveItem = WardrobeItem.make(from: metadata, imageAssetName: filename)
+            // Same bytes just written to `filename` — captured now so that
+            // if the user later adds this item to their closet
+            // (`addProspectiveItemToCloset`), the next `fetchFeedbackHistory()`
+            // resolves its embedding cache without a re-read/re-hash.
+            prospectiveItem.imageFingerprint = ImageStorage.fingerprint(imageData)
 
             let (inventory, history) = try await snapshotResult
             let weather = await weatherResult

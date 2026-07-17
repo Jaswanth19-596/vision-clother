@@ -230,12 +230,11 @@ private struct PairingItemCell: View {
 
     @ViewBuilder
     private var swatch: some View {
-        if let imageAssetName = item.imageAssetName,
-           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-        } else {
+        } placeholder: {
             VCRadius.shape(VCRadius.swatch)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
         }

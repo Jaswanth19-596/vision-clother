@@ -52,11 +52,21 @@ struct ClosetView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Computed once per `body` evaluation and threaded through to every
+        // `slotSection` — previously each of the 7 `Slot.allCases` sections
+        // called the `displayItems` computed property itself, redoing the
+        // ghost-element fill + full sort 7x per render (this view re-renders
+        // on every `feedbackHistory` update and `photoRefreshTick` bump, not
+        // just when the wardrobe actually changes).
+        let allItems = displayItems
+        // Folds `feedbackHistory.pairFeedback` onto each item id once instead
+        // of once per rendered cell — see `ItemRatingScoring.scores(for:history:)`.
+        let ratingScores = ItemRatingScoring.scores(for: allItems.map(\.id), history: feedbackHistory)
+        return NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
                     ForEach(Slot.allCases) { slot in
-                        slotSection(slot)
+                        slotSection(slot, allItems: allItems, ratingScores: ratingScores)
                     }
                 }
                 .padding()
@@ -109,8 +119,8 @@ struct ClosetView: View {
         }
     }
 
-    private func slotSection(_ slot: Slot) -> some View {
-        let items = displayItems.filter { $0.slot == slot }
+    private func slotSection(_ slot: Slot, allItems: [WardrobeItem], ratingScores: [UUID: Int]) -> some View {
+        let items = allItems.filter { $0.slot == slot }
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(slotTitle(slot))
@@ -153,10 +163,10 @@ struct ClosetView: View {
                     ForEach(items, id: \.id) { item in
                         ClosetItemCell(
                             item: item,
-                            ratingScore: ItemRatingScoring.score(for: item.id, history: feedbackHistory)
+                            ratingScore: ratingScores[item.id] ?? 50
                         )
                         .onTapGesture {
-                            detailSelection = DetailSelection(id: item.id, items: displayItems)
+                            detailSelection = DetailSelection(id: item.id, items: allItems)
                         }
                     }
                 }
@@ -192,14 +202,14 @@ struct ClosetView: View {
     }
 }
 
-/// Snapshot of the tapped item id and the `displayItems` array it was drawn
-/// from, taken together in a single evaluation. `displayItems` is computed
-/// and re-evaluated on every access, so capturing the id and array
-/// separately (once on tap, once inside the sheet closure) could hand
-/// `ItemDetailView` an id from one evaluation and an array from another —
-/// this couples them so they always agree. Presenting via `.sheet(item:)`
-/// (keyed on this `Identifiable`) also forces a fresh `ItemDetailView`
-/// instance per selection, so its `@State` can't go stale across taps.
+/// Snapshot of the tapped item id and the `allItems` array (`body`'s single
+/// per-render `displayItems` evaluation) it was drawn from, taken together.
+/// Capturing the id and array separately (once on tap, once inside the sheet
+/// closure) could hand `ItemDetailView` an id from one render's array and a
+/// different render's array — this couples them so they always agree.
+/// Presenting via `.sheet(item:)` (keyed on this `Identifiable`) also forces
+/// a fresh `ItemDetailView` instance per selection, so its `@State` can't go
+/// stale across taps.
 private struct DetailSelection: Identifiable {
     let id: UUID
     let items: [WardrobeItem]
@@ -236,21 +246,24 @@ private struct ClosetItemCell: View {
     /// fall back to the flat-color swatch from `colorProfile`.
     @ViewBuilder
     private var swatch: some View {
-        if let imageAssetName = item.imageAssetName,
-           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-        } else {
-            VCRadius.shape(VCRadius.swatch)
-                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
-                .overlay {
-                    if item.isGhostElement {
-                        Image(systemName: "sparkle")
-                            .foregroundStyle(.white)
-                    }
-                }
+        } placeholder: {
+            colorFallback
         }
+    }
+
+    private var colorFallback: some View {
+        VCRadius.shape(VCRadius.swatch)
+            .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+            .overlay {
+                if item.isGhostElement {
+                    Image(systemName: "sparkle")
+                        .foregroundStyle(.white)
+                }
+            }
     }
 }
 

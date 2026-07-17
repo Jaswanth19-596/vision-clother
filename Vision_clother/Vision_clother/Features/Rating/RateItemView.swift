@@ -136,33 +136,37 @@ struct RateItemQuestionsView<ViewModel: RatingQuestionsViewModel>: View {
     /// swatch with a ghost/tshirt fallback overlay.
     @ViewBuilder
     private var itemPreview: some View {
-        if let imageAssetName = item.imageAssetName,
-           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .frame(height: 220)
-        } else {
-            VCRadius.shape(VCRadius.card)
-                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
-                .frame(height: 200)
-                .overlay {
-                    if item.isGhostElement {
-                        VStack(spacing: 8) {
-                            Image(systemName: "sparkle")
-                                .font(.largeTitle)
-                            Text("Starter Piece")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.white)
-                    } else {
-                        Image(systemName: "tshirt.fill")
-                            .font(.largeTitle)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                }
+        } placeholder: {
+            itemPreviewFallback
         }
+    }
+
+    @ViewBuilder
+    private var itemPreviewFallback: some View {
+        VCRadius.shape(VCRadius.card)
+            .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+            .frame(height: 200)
+            .overlay {
+                if item.isGhostElement {
+                    VStack(spacing: 8) {
+                        Image(systemName: "sparkle")
+                            .font(.largeTitle)
+                        Text("Starter Piece")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.white)
+                } else {
+                    Image(systemName: "tshirt.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            }
     }
 }
 

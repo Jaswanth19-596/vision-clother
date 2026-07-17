@@ -2,6 +2,55 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-17 — Fix: Duplicate `ForEach` ID warning in `ProfileView`'s "Best Pairings" list
+
+**Status:** Fixed, build verified (`xcodebuild clean build` — BUILD SUCCEEDED).
+
+Non-fatal console warning: `ForEach<...>: the ID ... occurs multiple times ... undefined results`. `ProfileView.swift`'s "Best Pairings" section keyed its `ForEach` off `\.itemA.id`, but the same wardrobe item can appear as `itemA` across multiple top pairs (paired with different partners), colliding two rows on the same `UUID`. Switched to keying by array offset (`Array(pairs.prefix(5).enumerated())`, `id: \.offset`), matching the pattern this same file already uses for its other non-`Identifiable` derived collections (`tasteSignals`, `buckets`).
+
+## 2026-07-17 — Fix: Concurrent Cloud Sync passes racing on the same pulled `WardrobeItem` rows
+
+**Status:** Fixed, build verified (`xcodebuild clean build` — BUILD SUCCEEDED).
+
+Same crash as the entry below recurred after that fix, but this time the logs showed duplicated `pullChanges: starting`/`ok items=1` lines at the same instant. Root cause: no reentrancy guard existed across `WardrobeSyncCoordinator`'s entry points — the `AuthService.$uid` Combine subscription (delivers immediately on subscribe, i.e. at coordinator `init`) calls `handleUIDChange` → `handleSignIn`, while `Vision_clotherApp.swift`'s `scenePhase → .active` hook independently calls `reconcileIfSignedIn` → `reconcile`. At launch with an already-signed-in user both fire near-simultaneously and land two overlapping `pullAndApply` passes that each independently delete-and-reinsert the same pulled row, compounding the stale-reference crash below.
+
+Added an `isSyncOperationInFlight` gate (`runExclusiveSyncOperation`) wrapping `reconcileIfSignedIn`/`retrySync`/`handleUIDChange` so only one sync pass runs at a time.
+
+## 2026-07-17 — Fix: Crash reading `WardrobeItem.slot` after a Cloud Sync pull ("backing data detached from context")
+
+**Status:** Fixed, build verified (`xcodebuild clean build` — BUILD SUCCEEDED).
+
+User hit a fatal crash (`SwiftData/BackingData.swift:249`) reading `WardrobeItem.slot` right after a Cloud Sync pull applied a changed item and a Daily Assistant recommendation call completed. Traced it: `WardrobeSyncCoordinator.applyWardrobeItemChange` (and every sibling `apply*Change`) applies a pull by deleting the existing row and inserting a fresh model instance with the same id, rather than mutating in place — so any previously-fetched Swift reference to the old object is left pointing at a deleted row. `DailyAssistantViewModel.wardrobeSnapshot()`'s `inventoryCache` exists specifically to be invalidated by `WardrobeMutationTracker.shared.markMutated()` on any wardrobe change, but `WardrobeSyncCoordinator` never called it from either the pull path (`pullAndApply`) or the account-switch wipe (`wipeLocalMirror`) — only `WardrobeRepository.save/update/delete` did. Confirmed this was a pre-existing bug, not caused by the same-day performance-audit changes, before fixing.
+
+Added `WardrobeMutationTracker.shared.markMutated()` calls in `WardrobeSyncCoordinator.swift`: in `pullAndApply` (gated on the pull actually touching a `WardrobeItem`), and unconditionally in `wipeLocalMirror`.
+
+## 2026-07-17 — Perf: Data-Scaling Audit (Power-User Closet/History Growth)
+
+**Status:** Fixed, build verified (`xcodebuild clean build` — BUILD SUCCEEDED).
+
+Requested a comprehensive audit for hidden data-scaling bottlenecks so the app stays smooth as a power user accumulates thousands of wardrobe items/combinations/impressions and years of feedback history, even though everything is fine at today's demo scale. Ran three parallel sweeps (SwiftData query bloat, synchronous I/O/crypto in serial paths, view-body/collection-algorithm/retain-cycle patterns), producing 9 findings fixed in priority order. See `timeline/TIMELINE.md`'s matching entry for the full file-by-file breakdown; summary:
+
+- **Image loading (8 views):** synchronous `UIImage(contentsOfFile:)` on every grid-cell re-render replaced with a shared `CachedWardrobeImage` view backed by a bounded `NSCache` + off-main-actor decode in `ImageStorage.cachedImage(for:)`.
+- **`WardrobeSyncCoordinator.pushEverythingLocal`:** the 5 full-table bootstrap-sync fetches (worst: `SwipeEvent`) were batched (500 rows/`Task.yield()`) rather than time-windowed — a time predicate would have silently dropped history the bootstrap is specifically supposed to push.
+- **`ClosetView.displayItems`:** was recomputed 7x per render (once per slot); hoisted to once per `body`.
+- **Query bounds:** `ProfileView.itemRatings` (used only for an `.isEmpty` check) became a `fetchLimit: 1` query; `outfitFeedbacks` was deliberately left unbounded since its stats are genuine all-time aggregates with no cheaper query shape — capping it would have been a correctness bug, not a fix. `CombinationsView`/`CombinationDetailView` capped to the most recent 300 saved combos. `fetchFeedbackHistory()`'s `SavedCombination` fetch narrowed from the full table to exactly the ids referenced by the (already time-windowed) `outfitFeedbacks`.
+- **`ItemRatingScoring`:** added a batch `scores(for:history:)` that folds pair-feedback once instead of rescanning it per item per cell.
+- **`JobQueueStore`:** thumbnails downscaled at enqueue time instead of retaining full-resolution originals forever; `jobs` capped at 200 with oldest-terminal-first eviction (in-flight jobs protected).
+- **`AddItemView`/`SyncOutboxWorker`:** per-photo SHA256 hashing moved off the main actor; outbox drain now fans out up to 5 concurrent pushes instead of one at a time.
+- **`RecommendationImpressionEvent`:** added a 90-day retention prune — the table had no reader and no prune, pure unbounded growth.
+
+Deferred as follow-ups (out of scope for this low-risk pass): `Job.kind`'s retained payload bytes aren't cleared post-success (would need `Job`/payload structs to become mutable); no "load more" pagination UI was built for `CombinationsView`'s 300-item cap.
+
+## 2026-07-17 — Fix: Data/CLAUDE.md's "never imports Domain/" rule contradicted actual repository code
+
+**Status:** Fixed, build verified (simulator).
+
+A review flagged that `Data/CLAUDE.md` stated "This layer never imports `Domain/` — they are peers, not dependencies," but `SwiftDataWardrobeRepository` (`Data/WardrobeRepository.swift`) has always called into `Domain/`: `fetchFeedbackHistory()` builds `AttributePreferenceProfile`/`RatedAttributes`/`OutfitDimensionRatedAttributes`/`ItemAttributeSnapshot`/`VisualPreferenceProfile`, and `applyImplicitSwipe`/`recordSwipe` call `VisualClusterUpdater.update`; several functions also log via `Domain/MLLog.swift` — whose own doc comment already acknowledges this exact dependency as intentional. So the doc rule was stale, not the code.
+
+Considered two fixes: (a) update the doc to state the truth, or (b) actually split the Domain aggregation out of the repository into a separate builder called from the view-model layer. Went with (a) — a real split would touch the `WardrobeRepository` protocol and all 4 call sites (`ProfileViewModel`, `DailyAssistantViewModel`, and two Views — `ItemDetailView`/`ClosetView` — that have no view model today and would need one), plus rework the write paths (`applyImplicitSwipe`/`recordSwipe`) that currently compute-then-persist `VisualClusterUpdater` output in one pass. That's a much larger, riskier change than the actual problem warranted.
+
+Replaced `Data/CLAUDE.md`'s line 7 with a rule that documents `SwiftDataWardrobeRepository`'s `fetchFeedbackHistory`/`applyImplicitSwipe`/`recordSwipe` as a sanctioned, scoped exception, pointing to `Domain/MLLog.swift`'s doc comment for rationale and explicitly warning against adding further Domain/ coupling elsewhere in `Data/` without discussion. Documentation-only change — no Swift source touched. `xcodebuild clean build` passes.
+
 ## 2026-07-17 — Feature: End-to-End Diagnostic Logging (iOS + Backend)
 
 **Status:** Done, build verified (simulator). Backend TypeScript changes were not compiled/tested in this session (user instruction: implement only, no `npm`/`tsc` runs) — read carefully against neighboring code instead.

@@ -27,10 +27,48 @@ actor WardrobeEmbeddingWorker {
         let sourceFingerprint: String
     }
 
+    struct FingerprintRequest: Sendable {
+        let itemID: UUID
+        let filename: String
+    }
+
+    struct FingerprintResult: Sendable {
+        let itemID: UUID
+        let imageData: Data
+        let fingerprint: String
+    }
+
     private let embeddingService: ImageEmbeddingService
 
     init(embeddingService: ImageEmbeddingService) {
         self.embeddingService = embeddingService
+    }
+
+    /// Off-main-actor disk read + content hash — same fan-out-across-cores
+    /// posture as `computeEmbeddings`, used by `WardrobeRepository.fetchFeedbackHistory()`
+    /// only for items whose embedding-cache validity can't be resolved from
+    /// an already-persisted `WardrobeItem.imageFingerprint` (a pre-existing
+    /// row saved before that field existed, or a genuine cache miss) — the
+    /// steady-state case skips this entirely via a pure in-memory compare.
+    /// Best-effort per item: a missing/unreadable file just drops that item,
+    /// same posture as `computeEmbeddings`.
+    func computeFingerprints(for requests: [FingerprintRequest]) async -> [FingerprintResult] {
+        await withTaskGroup(of: FingerprintResult?.self) { group in
+            for request in requests {
+                group.addTask {
+                    guard let data = ImageStorage.loadData(for: request.filename) else { return nil }
+                    return FingerprintResult(itemID: request.itemID, imageData: data, fingerprint: ImageStorage.fingerprint(data))
+                }
+            }
+
+            var results: [FingerprintResult] = []
+            for await result in group {
+                if let result {
+                    results.append(result)
+                }
+            }
+            return results
+        }
     }
 
     /// Best-effort per item, same posture as the serial loop this replaces —

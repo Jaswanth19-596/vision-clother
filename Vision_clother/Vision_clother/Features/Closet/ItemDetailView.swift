@@ -108,15 +108,14 @@ struct ItemDetailView: View {
 
     @ViewBuilder
     private func garmentPreview(for item: WardrobeItem) -> some View {
-        if let imageAssetName = item.imageAssetName,
-           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxHeight: 320)
                 .clipShape(VCRadius.shape(VCRadius.card))
                 .vcShadow()
-        } else {
+        } placeholder: {
             VCRadius.shape(VCRadius.card)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(height: 200)

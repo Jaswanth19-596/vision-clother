@@ -127,14 +127,13 @@ struct OutfitCardView: View {
     /// to the flat-color swatch from `colorProfile`.
     @ViewBuilder
     private func thumbnail(for item: WardrobeItem) -> some View {
-        if let imageAssetName = item.imageAssetName,
-           let uiImage = UIImage(contentsOfFile: ImageStorage.url(for: imageAssetName).path) {
-            Image(uiImage: uiImage)
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 44, height: 44)
                 .clipShape(VCRadius.shape(VCRadius.swatch))
-        } else {
+        } placeholder: {
             VCRadius.shape(VCRadius.swatch)
                 .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
                 .frame(width: 44, height: 44)

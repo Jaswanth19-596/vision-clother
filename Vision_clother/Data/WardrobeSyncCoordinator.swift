@@ -63,6 +63,30 @@ final class WardrobeSyncCoordinator {
     /// fresh, empty account. Cleared on the next successful attempt.
     private(set) var lastSyncError: String?
 
+    /// Guards `reconcileIfSignedIn`/`handleUIDChange`/`retrySync` — the three
+    /// independent entry points that can each kick off a full `handleSignIn`
+    /// or `reconcile` pass — from ever running concurrently. Without this,
+    /// the `AuthService.$uid` Combine subscription (which delivers
+    /// immediately on subscribe, i.e. at coordinator init) and the
+    /// `scenePhase → .active` hook (`Vision_clotherApp.swift`) both fire at
+    /// app launch for an already-signed-in user, landing two overlapping
+    /// `pullAndApply` calls that each independently discover and
+    /// delete-and-reinsert the same pulled `WardrobeItem` rows — doubling the
+    /// odds of a caller elsewhere holding a since-deleted reference across
+    /// the two interleaved passes (see `pullAndApply`'s `markMutated` comment
+    /// for the crash this produces).
+    private var isSyncOperationInFlight = false
+
+    private func runExclusiveSyncOperation(_ operation: () async -> Void) async {
+        guard !isSyncOperationInFlight else {
+            AppLog.debug(.sync, "runExclusiveSyncOperation: a sync pass is already in flight, skipping")
+            return
+        }
+        isSyncOperationInFlight = true
+        defer { isSyncOperationInFlight = false }
+        await operation()
+    }
+
     /// Bumped once whenever the background photo prefetch (`downloadMissingPhotos`)
     /// actually writes a file to disk — item/combination photos and the
     /// portrait alike. Those writes go straight to `ImageStorage`/
@@ -119,10 +143,12 @@ final class WardrobeSyncCoordinator {
     /// signed out.
     func reconcileIfSignedIn() async {
         guard let uid = AuthService.shared.uid else { return }
-        if Self.currentMirrorUID == uid {
-            await reconcile(uid: uid)
-        } else {
-            await handleSignIn(uid: uid)
+        await runExclusiveSyncOperation {
+            if Self.currentMirrorUID == uid {
+                await self.reconcile(uid: uid)
+            } else {
+                await self.handleSignIn(uid: uid)
+            }
         }
     }
 
@@ -131,14 +157,18 @@ final class WardrobeSyncCoordinator {
     /// switch doesn't require backgrounding/foregrounding the app to retry.
     func retrySync() async {
         guard let uid = AuthService.shared.uid else { return }
-        await handleSignIn(uid: uid)
+        await runExclusiveSyncOperation {
+            await self.handleSignIn(uid: uid)
+        }
     }
 
     // MARK: - Account-switch handling
 
     private func handleUIDChange(_ uid: String?) async {
         guard let uid else { return }
-        await handleSignIn(uid: uid)
+        await runExclusiveSyncOperation {
+            await self.handleSignIn(uid: uid)
+        }
     }
 
     private func handleSignIn(uid: String) async {
@@ -286,6 +316,12 @@ final class WardrobeSyncCoordinator {
             try? modelContext.delete(model: type)
         }
         try? modelContext.save()
+        // Every `WardrobeItem` (and everything else above) is gone from this
+        // context — see `pullAndApply`'s matching comment on why any cache
+        // keyed by `WardrobeMutationTracker.shared.version` must be told,
+        // or it keeps serving now-detached references across the account
+        // switch.
+        WardrobeMutationTracker.shared.markMutated()
         try? ImageStorage.wipeAll()
         // The outgoing account's portrait must not leak into whichever
         // account is switched into next — mirrors `ImageStorage.wipeAll()`
@@ -341,22 +377,22 @@ final class WardrobeSyncCoordinator {
         for item in (try? repository.fetchInventory()) ?? [] {
             markDirtyForBootstrap(.wardrobeItem, entityID: item.id, dto: WardrobeItemDTO.from(item))
         }
-        for feedback in (try? modelContext.fetch(FetchDescriptor<OutfitFeedback>())) ?? [] {
+        await pushAllInBatches(OutfitFeedback.self, sortBy: [SortDescriptor(\.recordedAt)]) { feedback in
             markDirtyForBootstrap(.outfitFeedback, entityID: feedback.id, dto: OutfitFeedbackDTO.from(feedback))
         }
-        for feedback in (try? modelContext.fetch(FetchDescriptor<ItemFeedback>())) ?? [] {
+        await pushAllInBatches(ItemFeedback.self, sortBy: [SortDescriptor(\.recordedAt)]) { feedback in
             markDirtyForBootstrap(.itemFeedback, entityID: feedback.id, dto: ItemFeedbackDTO.from(feedback))
         }
-        for feedback in (try? modelContext.fetch(FetchDescriptor<PairFeedback>())) ?? [] {
+        await pushAllInBatches(PairFeedback.self, sortBy: [SortDescriptor(\.recordedAt)]) { feedback in
             markDirtyForBootstrap(.pairFeedback, entityID: feedback.id, dto: PairFeedbackDTO.from(feedback))
         }
-        for rating in (try? modelContext.fetch(FetchDescriptor<ItemRating>())) ?? [] {
+        await pushAllInBatches(ItemRating.self, sortBy: [SortDescriptor(\.recordedAt)]) { rating in
             markDirtyForBootstrap(.itemRating, entityID: rating.id, dto: ItemRatingDTO.from(rating))
         }
         for combination in (try? repository.fetchSavedCombinations()) ?? [] {
             markDirtyForBootstrap(.savedCombination, entityID: combination.id, dto: SavedCombinationDTO.from(combination))
         }
-        for event in (try? modelContext.fetch(FetchDescriptor<SwipeEvent>())) ?? [] {
+        await pushAllInBatches(SwipeEvent.self, sortBy: [SortDescriptor(\.recordedAt)]) { event in
             markDirtyForBootstrap(.swipeEvent, entityID: event.id, dto: SwipeEventDTO.from(event))
         }
         if let profile = try? repository.fetchUserProfile() {
@@ -372,6 +408,41 @@ final class WardrobeSyncCoordinator {
         let fullySynced = await outboxWorker.drainNow(uid: uid)
         AppLog.info(.sync, "pushEverythingLocal: bootstrap push finished, fullySynced=\(fullySynced)")
         return fullySynced
+    }
+
+    /// Batch size for the per-entity-table fetches below — event/log tables
+    /// (`OutfitFeedback`/`ItemFeedback`/`PairFeedback`/`ItemRating`/`SwipeEvent`)
+    /// can run into the thousands of rows for a long-time user, and this
+    /// bootstrap still needs every one of them (it's what establishes the
+    /// cloud mirror), so a time-window predicate isn't an option here the way
+    /// it is in `WardrobeRepository.fetchFeedbackHistory()`. Fetching the
+    /// whole table in one shot would hold every row's model object in memory
+    /// at once and monopolize the main actor (the only actor allowed to touch
+    /// `ModelContext`, per this directory's `CLAUDE.md`) for that entire
+    /// stretch; paginating and yielding between batches bounds peak memory
+    /// and lets the run loop service other main-thread work between chunks,
+    /// without changing which rows ultimately get synced.
+    private static let bootstrapBatchSize = 500
+
+    private func pushAllInBatches<T: PersistentModel>(
+        _ type: T.Type,
+        sortBy: [SortDescriptor<T>],
+        process: (T) -> Void
+    ) async {
+        var offset = 0
+        while true {
+            var descriptor = FetchDescriptor<T>(sortBy: sortBy)
+            descriptor.fetchLimit = Self.bootstrapBatchSize
+            descriptor.fetchOffset = offset
+            guard let batch = try? modelContext.fetch(descriptor), !batch.isEmpty else { break }
+            for entity in batch {
+                process(entity)
+            }
+            try? modelContext.save()
+            offset += batch.count
+            if batch.count < Self.bootstrapBatchSize { break }
+            await Task.yield()
+        }
     }
 
     /// Same shape as `SyncingWardrobeRepository.upsertSyncMetadata`, kept as
@@ -447,6 +518,22 @@ final class WardrobeSyncCoordinator {
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
 
         try? modelContext.save()
+
+        // `applyWardrobeItemChange` deletes-and-reinserts (never mutates in
+        // place — a fresh `WardrobeItem` instance with the same `id`, so any
+        // previously-fetched Swift reference to the old row is now backed by
+        // a deleted object). `DailyAssistantViewModel.wardrobeSnapshot()`
+        // caches `inventoryCache` keyed by `WardrobeMutationTracker.shared.version`
+        // specifically so a stale cache like that gets invalidated on any
+        // wardrobe change — but this pull path never bumped it, so a cache
+        // populated before this pull kept serving detached `WardrobeItem`
+        // references, crashing the next time anything read a property (e.g.
+        // `.slot`) off one of them. Bumping only when this pull actually
+        // touched a `WardrobeItem` row matches every other call site
+        // (`WardrobeRepository.save`/`update`/`delete`).
+        if !delta.wardrobeItems.isEmpty {
+            WardrobeMutationTracker.shared.markMutated()
+        }
 
         let newWatermark = delta.queryStartTime.addingTimeInterval(-Self.watermarkSafetyMargin)
         try? await syncService.updateLastPulledAt(uid: uid, date: newWatermark)
@@ -633,10 +720,15 @@ final class WardrobeSyncCoordinator {
     /// written, so views keyed off it redraw at most once per batch.
     private func downloadMissingPhotos(uid: String, syncService: WardrobeSyncService) async {
         var missingFilenames: Set<String> = []
+        // Keyed so a just-downloaded `WardrobeItem` photo can have its
+        // `imageFingerprint` set immediately below, rather than leaving it
+        // `nil` for `fetchFeedbackHistory()` to backfill on some later call.
+        var itemsByAssetName: [String: WardrobeItem] = [:]
 
         for item in (try? repository.fetchInventory()) ?? [] {
             guard let assetName = item.imageAssetName, ImageStorage.loadData(for: assetName) == nil else { continue }
             missingFilenames.insert(assetName)
+            itemsByAssetName[assetName] = item
         }
         for combination in (try? repository.fetchSavedCombinations()) ?? [] {
             guard ImageStorage.loadData(for: combination.imageAssetName) == nil else { continue }
@@ -644,10 +736,22 @@ final class WardrobeSyncCoordinator {
         }
 
         var didWriteAnything = false
+        var touchedItems = false
         for filename in missingFilenames {
             guard let data = try? await syncService.downloadImage(filename: filename, uid: uid) else { continue }
             try? ImageStorage.write(data, filename: filename)
             didWriteAnything = true
+            if let item = itemsByAssetName[filename] {
+                item.imageFingerprint = ImageStorage.fingerprint(data)
+                touchedItems = true
+            }
+        }
+        // Direct `modelContext.save()`, not `repository.update` — same
+        // rationale as the rest of this file's pull-applied mutations:
+        // routing a locally-derived cache field through `SyncingWardrobeRepository`
+        // would re-mark the row dirty and push it right back to Firestore.
+        if touchedItems {
+            try? modelContext.save()
         }
 
         if !UserPortraitStorage.exists, (try? await syncService.fetchPortraitUpdatedAt(uid: uid)) != nil,

@@ -4,7 +4,7 @@ Persistence and storage. The only place that touches `ModelContext`.
 - `WardrobeRepository` protocol is `@MainActor`-isolated to match `SwiftDataWardrobeRepository`.
 - View models take `WardrobeRepository`, never a concrete `ModelContext`.
 - `ImageStorage` manages garment photo files on disk — not SwiftData; Cloud Storage is its remote mirror (see below), not a replacement.
-- This layer never imports `Domain/` — they are peers, not dependencies.
+- This layer is persistence-focused, but `SwiftDataWardrobeRepository` is a sanctioned exception: `fetchFeedbackHistory()`, `applyImplicitSwipe`, and `recordSwipe` call into `Domain/` (`AttributePreferenceProfile`, `VisualPreferenceProfile`, `VisualClusterUpdater`, `MLLog`) to compute and persist preference-profile aggregates in the same pass as the SwiftData read/write — see `Domain/MLLog.swift`'s doc comment for the rationale. Don't add further Domain/ coupling elsewhere in this layer without discussing it first.
 - See `docs/ios/architecture.md` for the full layer diagram.
 
 ## Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section)

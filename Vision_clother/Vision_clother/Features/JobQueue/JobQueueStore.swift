@@ -37,6 +37,32 @@ final class JobQueueStore {
     private(set) var jobs: [Job] = []
     var isPanelPresented = false
 
+    /// `jobs` is app-session-lifetime, in-memory, append-mostly storage
+    /// (never persisted, never pruned before this) — a long-lived session
+    /// with many uploads/try-ons would otherwise grow this array, and each
+    /// `Job.thumbnail`'s full-resolution photo `Data`, without bound.
+    /// `JobRow` only ever renders `thumbnail` at 48x48 (`JobQueuePanelView.swift`),
+    /// so `downscaledThumbnail` below shrinks it to a small JPEG up front
+    /// instead of retaining the original capture/library-resolution bytes;
+    /// `maxRetainedJobs` bounds the array itself, evicting the oldest
+    /// *terminal* jobs first (in-flight jobs are never evicted).
+    private static let maxRetainedJobs = 200
+
+    private static func downscaledThumbnail(_ data: Data) -> Data {
+        ImageStorage.downscaledJPEGForUpload(data, maxDimension: 200, quality: 0.6)
+    }
+
+    private func pruneOldTerminalJobsIfNeeded() {
+        guard jobs.count > Self.maxRetainedJobs else { return }
+        let overflow = jobs.count - Self.maxRetainedJobs
+        var removed = 0
+        jobs.removeAll { job in
+            guard removed < overflow, !job.status.isInFlight else { return false }
+            removed += 1
+            return true
+        }
+    }
+
     private let repository: WardrobeRepository
     private let backgroundIsolationService: BackgroundIsolationService
     private let imagePreprocessingService: BackgroundIsolationService
@@ -95,8 +121,9 @@ final class JobQueueStore {
 
     func enqueueUpload(rawImageData: Data, defaultSlot: Slot?) {
         let payload = UploadPayload(rawImageData: rawImageData, defaultSlot: defaultSlot)
-        let job = Job(kind: .upload(payload), thumbnail: rawImageData)
+        let job = Job(kind: .upload(payload), thumbnail: Self.downscaledThumbnail(rawImageData))
         jobs.append(job)
+        pruneOldTerminalJobsIfNeeded()
         AppLog.info(.jobQueue, "enqueueUpload: job=\(job.id) defaultSlot=\(defaultSlot?.rawValue ?? "nil") bytes=\(rawImageData.count)")
         Task { await notificationService.requestAuthorizationIfNeeded() }
         scheduleStart(job.id) { [weak self] in self?.startUploadTask(job.id, payload: payload) }
@@ -137,7 +164,8 @@ final class JobQueueStore {
             finishJob(jobID, status: .failed("Cancelled"))
             return
         }
-        PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) sentToLLM=\(imageFingerprint(imageToTag), privacy: .public) bytes=\(imageToTag.count, privacy: .public)")
+        let taggedImageFingerprint = imageFingerprint(imageToTag)
+        PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) sentToLLM=\(taggedImageFingerprint, privacy: .public) bytes=\(imageToTag.count, privacy: .public)")
 
         setStatus(jobID, .processing("Tagging item…"))
 
@@ -177,6 +205,10 @@ final class JobQueueStore {
         do {
             let filename = try ImageStorage.save(imageToTag)
             let item = WardrobeItem.make(from: metadata, imageAssetName: filename)
+            // Same bytes just written to `filename` — captured once here
+            // rather than re-read+re-hashed by `fetchFeedbackHistory()`'s
+            // embedding cache-check on every future call for this item.
+            item.imageFingerprint = taggedImageFingerprint
             try repository.save(item)
             finishJob(jobID, status: .succeeded, resultItemID: item.id)
             PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) savedItem=\(item.id, privacy: .public) filename=\(filename, privacy: .public)")
@@ -225,8 +257,9 @@ final class JobQueueStore {
 
     func enqueueTryOn(baseImageData: Data, outfit: OutfitCombination) {
         let payload = TryOnPayload(baseImageData: baseImageData, outfit: outfit)
-        let job = Job(kind: .tryOn(payload), thumbnail: baseImageData)
+        let job = Job(kind: .tryOn(payload), thumbnail: Self.downscaledThumbnail(baseImageData))
         jobs.append(job)
+        pruneOldTerminalJobsIfNeeded()
         AppLog.info(.jobQueue, "enqueueTryOn: job=\(job.id) items=\(outfit.items.count)")
         Task { await notificationService.requestAuthorizationIfNeeded() }
         scheduleStart(job.id) { [weak self] in self?.startTryOnTask(job.id, payload: payload) }

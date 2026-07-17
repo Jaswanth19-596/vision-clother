@@ -26,6 +26,15 @@ final class SyncOutboxWorker {
     /// avoid two passes racing to update the same `SyncMetadata` rows.
     private var isDraining = false
 
+    /// Bounds how many rows' network pushes run concurrently in one
+    /// `drainNow` pass — see the fan-out in `drainNow` below.
+    private static let maxConcurrentPushes = 5
+
+    private enum PushOutcome {
+        case pushed
+        case failed
+    }
+
     init(modelContext: ModelContext, syncService: WardrobeSyncService) {
         self.modelContext = modelContext
         self.syncService = syncService
@@ -61,45 +70,75 @@ final class SyncOutboxWorker {
         AppLog.info(.sync, "drainNow: starting, dirtyRows=\(dirtyRows.count)")
 
         let now = Date()
-        var didChangeAnything = false
-        var allSucceeded = true
-        var pushedCount = 0
+        var eligibleRows: [SyncMetadata] = []
         var backedOffCount = 0
-        var failedCount = 0
-
         for row in dirtyRows {
             if let lastAttemptAt = row.lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < Self.backoffSeconds(attemptCount: row.attemptCount) {
-                allSucceeded = false
                 backedOffCount += 1
-                continue
-            }
-
-            do {
-                try await push(row, uid: uid)
-                didChangeAnything = true
-                pushedCount += 1
-                if row.operation == .delete {
-                    modelContext.delete(row)
-                } else {
-                    row.isDirty = false
-                    row.attemptCount = 0
-                    row.lastAttemptAt = nil
-                }
-            } catch {
-                didChangeAnything = true
-                allSucceeded = false
-                failedCount += 1
-                row.attemptCount += 1
-                row.lastAttemptAt = now
-                AppLog.error(.sync, "drainNow: push failed for \(row.entityType) \(row.entityID) (attempt \(row.attemptCount)) — \(String(describing: error))")
+            } else {
+                eligibleRows.append(row)
             }
         }
 
+        var pushedCount = 0
+        var failedCount = 0
+
+        // Bounded fan-out — each row's push is an independent network
+        // request (`push(_:uid:)` only reads `row` until the `await`
+        // returns), so running up to `maxConcurrentPushes` at once cuts
+        // wall-clock drain time for a large backlog (e.g. after being
+        // offline a while, or the bootstrap push's dirty rows) instead of
+        // one request at a time. The `ModelContext` mutations in
+        // `attemptPush` still only ever run on this actor, one at a time,
+        // same as before.
+        await withTaskGroup(of: PushOutcome.self) { group in
+            var index = 0
+            func addNext() {
+                guard index < eligibleRows.count else { return }
+                let row = eligibleRows[index]
+                index += 1
+                group.addTask { [weak self] in
+                    await self?.attemptPush(row, uid: uid, now: now) ?? .failed
+                }
+            }
+            for _ in 0..<min(Self.maxConcurrentPushes, eligibleRows.count) {
+                addNext()
+            }
+            while let outcome = await group.next() {
+                switch outcome {
+                case .pushed: pushedCount += 1
+                case .failed: failedCount += 1
+                }
+                addNext()
+            }
+        }
+
+        let didChangeAnything = pushedCount > 0 || failedCount > 0
         if didChangeAnything {
             try? modelContext.save()
         }
+        let allSucceeded = failedCount == 0 && backedOffCount == 0
         AppLog.info(.sync, "drainNow: finished pushed=\(pushedCount) failed=\(failedCount) backedOff=\(backedOffCount) allSucceeded=\(allSucceeded)")
         return allSucceeded
+    }
+
+    private func attemptPush(_ row: SyncMetadata, uid: String, now: Date) async -> PushOutcome {
+        do {
+            try await push(row, uid: uid)
+            if row.operation == .delete {
+                modelContext.delete(row)
+            } else {
+                row.isDirty = false
+                row.attemptCount = 0
+                row.lastAttemptAt = nil
+            }
+            return .pushed
+        } catch {
+            row.attemptCount += 1
+            row.lastAttemptAt = now
+            AppLog.error(.sync, "drainNow: push failed for \(row.entityType) \(row.entityID) (attempt \(row.attemptCount)) — \(String(describing: error))")
+            return .failed
+        }
     }
 
     private func push(_ row: SyncMetadata, uid: String) async throws {
