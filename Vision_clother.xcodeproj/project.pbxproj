@@ -46,12 +46,12 @@
 				Domain/CLAUDE.md,
 				Models/CLAUDE.md,
 				Services/CLAUDE.md,
+				Vision_clother/AppWiring/CLAUDE.md,
 				Vision_clother/Features/CLAUDE.md,
 				Vision_clother/Features/Closet/CLAUDE.md,
 				Vision_clother/Features/DailyAssistant/CLAUDE.md,
 				Vision_clother/Features/Pairing/CLAUDE.md,
 				Vision_clother/Features/Root/CLAUDE.md,
-				Vision_clother/Services/CLAUDE.md,
 			);
 			target = AC57968F2FFF8A8C00DEEE33 /* Vision_clother */;
 		};

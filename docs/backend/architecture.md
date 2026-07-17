@@ -26,7 +26,7 @@ This is intentionally **not** one Cloud Function per iOS service. All prompt/sch
 | `OpenRouterOutfitRecommendationService` | `Vision_clother/Services/OutfitRecommendationService.swift` | `/openrouter/chat` |
 | `OpenRouterVisionMetadataExtractionService` | `Vision_clother/Services/VisionMetadataExtractionService.swift` | `/openrouter/chat` |
 | `OpenRouterUserProfileDerivationService` | `Vision_clother/Services/UserProfileDerivationService.swift` | `/openrouter/chat` |
-| `OpenRouterTryOnRenderService` | `Vision_clother/Vision_clother/Services/OpenRouterTryOnRenderService.swift` | `/openrouter/chat` or `/openrouter/images` (branches on model, `ModelConfig.isChatCompletionImageModel`) |
+| `OpenRouterTryOnRenderService` | `Vision_clother/Vision_clother/AppWiring/OpenRouterTryOnRenderService.swift` | `/openrouter/chat` or `/openrouter/images` (branches on model, `ModelConfig.isChatCompletionImageModel`) |
 | `OpenRouterBackgroundIsolationService` | `Vision_clother/Services/BackgroundIsolationService.swift` | `/openrouter/chat` or `/openrouter/images` |
 | `PexelsImageFeedService` | `Vision_clother/Services/StockImageFeedService.swift` | `/pexels/search` |
 
