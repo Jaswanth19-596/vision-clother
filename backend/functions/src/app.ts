@@ -3,6 +3,7 @@ import type { NextFunction, Response } from "express";
 import { verifyAuth } from "./middleware/verifyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { quotaGate } from "./middleware/quota";
+import { responseCache } from "./middleware/responseCache";
 import { openrouterChatRouter } from "./routes/openrouterChat";
 import { openrouterImagesRouter } from "./routes/openrouterImages";
 import { pexelsSearchRouter } from "./routes/pexelsSearch";
@@ -62,10 +63,16 @@ export function buildApp(): express.Express {
   // features only. Vision-tagging, profile derivation, intent-extraction,
   // and background isolation stay on /openrouter/chat, uncapped beyond the
   // global rateLimit guardrail above — see docs/decisions/resolved-v1.md.
-  app.use("/openrouter/recommend", quotaGate("recommendation"), openrouterChatRouter);
+  app.use("/openrouter/recommend", responseCache("recommendation"), quotaGate("recommendation"), openrouterChatRouter);
   app.use("/openrouter/tryon", quotaGate("tryOn"), openrouterChatRouter);
   app.use("/openrouter/chat", openrouterChatRouter);
-  app.use("/openrouter/images", openrouterImagesRouter);
+  // Same "tryOn" feature as /openrouter/tryon above — this is the
+  // dedicated-Images-API branch the same two services (try-on render,
+  // background isolation) fall back to when ModelConfig points at a
+  // non-chat-completion image model (see ModelConfig.isChatCompletionImageModel).
+  // Previously ungated: real generation cost reachable by URL alone,
+  // independent of which feature/quota the client claims to be using.
+  app.use("/openrouter/images", quotaGate("tryOn"), openrouterImagesRouter);
   app.use("/pexels/search", pexelsSearchRouter);
   app.use("/account/delete", accountDeleteRouter);
 

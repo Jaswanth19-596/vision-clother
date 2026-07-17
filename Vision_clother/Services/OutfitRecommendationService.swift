@@ -175,6 +175,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             throw OutfitRecommendationError.emptyChoices
         }
 
+        if let usage = decoded.usage {
+            let cached = usage.promptTokensDetails?.cachedTokens ?? 0
+            AppLog.info(.recommendation, "[\(requestID)] recommend: promptTokens=\(usage.promptTokens ?? -1) cachedTokens=\(cached)")
+        }
+
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
             let result = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: payload)
@@ -210,18 +215,27 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         // (Stylist Intelligence Engine ADR, Phase 2). Only turn 0 (always
         // the user's initial scenario) carries the weather/catalog blob;
         // every later turn's text is sent verbatim with its own role.
-        let turnMessages: [[String: String]] = conversationHistory.enumerated().map { index, turn in
-            let content: String
+        //
+        // Turn 0's content and the system prompt are the two large blocks
+        // (catalog routinely 75-80KB) that stay byte-identical across every
+        // turn of one clarification session, so both get wrapped in
+        // `cacheableContent` — an OpenRouter-documented Anthropic-style
+        // `cache_control` breakpoint, passed through verbatim by
+        // `openrouterChat.ts`. Additive/inert for models that don't support
+        // it (extra ignored field, same request otherwise); on models that
+        // do, it turns a full-catalog retransmission into a cached-prefix
+        // read for every turn after the first. Later turns are short
+        // clarification replies, not worth marking.
+        let turnMessages: [[String: Any]] = conversationHistory.enumerated().map { index, turn in
             if index == 0 {
-                content = StylistBrain.DynamicPromptComposer.composeUserContent(
+                let content = StylistBrain.DynamicPromptComposer.composeUserContent(
                     scenarioText: turn.text,
                     weather: weather,
                     catalogDataText: catalogText
                 )
-            } else {
-                content = turn.text
+                return ["role": turn.role.rawValue, "content": Self.cacheableContent(content)]
             }
-            return ["role": turn.role.rawValue, "content": content]
+            return ["role": turn.role.rawValue, "content": turn.text]
         }
 
         var body: [String: Any] = [
@@ -232,7 +246,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             // configured model may support extended "thinking" reasoning,
             // which this call doesn't need and can't afford latency-wise.
             "reasoning": ["enabled": false],
-            "messages": [["role": "system", "content": systemPrompt]] + turnMessages,
+            "messages": [["role": "system", "content": Self.cacheableContent(systemPrompt)]] + turnMessages,
         ]
 
         if useStructuredOutput {
@@ -255,12 +269,20 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             code fences, no explanation, no text before or after the JSON:
             \(schemaText)
             """
-            body["messages"] = [["role": "system", "content": systemPrompt]] + turnMessages
+            body["messages"] = [["role": "system", "content": Self.cacheableContent(systemPrompt)]] + turnMessages
         }
 
         Self.logPromptForDebugging(body: body)
 
         return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Wraps `text` in OpenRouter's content-array-with-`cache_control`
+    /// shape (see `encodeRequestBody`'s doc comment above) instead of a
+    /// plain string — the format OpenRouter forwards as an Anthropic
+    /// prompt-caching breakpoint on models that support it.
+    private static func cacheableContent(_ text: String) -> [[String: Any]] {
+        [["type": "text", "text": text, "cache_control": ["type": "ephemeral"]]]
     }
 
     /// Dumps the exact request body sent to the LLM to the Xcode console —
@@ -433,7 +455,26 @@ private struct OpenRouterRecommendationChatResponse: Decodable {
         }
         let message: Message
     }
+    /// Observability only (see `encodeRequestBody`'s `cacheableContent`
+    /// doc comment) — `prompt_tokens_details.cached_tokens` is OpenRouter's
+    /// normalized field for how many prompt tokens were served from cache,
+    /// present only on models/providers that actually honored the
+    /// `cache_control` breakpoint. Absent entirely on providers that don't
+    /// support it, hence fully optional — never assume its presence.
+    struct Usage: Decodable {
+        struct PromptTokensDetails: Decodable {
+            let cachedTokens: Int?
+            enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+        }
+        let promptTokens: Int?
+        let promptTokensDetails: PromptTokensDetails?
+        enum CodingKeys: String, CodingKey {
+            case promptTokens = "prompt_tokens"
+            case promptTokensDetails = "prompt_tokens_details"
+        }
+    }
     let choices: [Choice]
+    let usage: Usage?
 }
 
 /// `backend/functions/src/middleware/quota.ts`'s 429 body shape:

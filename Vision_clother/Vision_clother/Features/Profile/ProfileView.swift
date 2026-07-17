@@ -25,8 +25,10 @@ struct ProfileView: View {
     /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
     /// nothing else tells it to re-read the portrait after a later account
     /// switch — see `Data/WardrobeSyncCoordinator.swift`'s file header and
-    /// `ProfileViewModel.refreshPortrait()`'s doc comment.
-    @ObservedObject private var authService = AuthService.shared
+    /// `ProfileViewModel.refreshPortrait()`'s doc comment. Reads
+    /// `viewModel.uid` (mirrored from `AuthService.shared`) rather than
+    /// holding its own `@ObservedObject AuthService.shared` — see
+    /// `ProfileViewModel`'s `uid` doc comment.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Query private var items: [WardrobeItem]
     /// Full-history by necessity — `.count`, `mostActiveWeekdayLabel`, and
@@ -271,7 +273,7 @@ struct ProfileView: View {
             viewModel?.refreshFeedbackHistory()
             viewModel?.refreshPortrait()
         }
-        .onChange(of: authService.uid) { _, _ in
+        .onChange(of: viewModel?.uid) { _, _ in
             viewModel?.refreshPortrait()
         }
         .onChange(of: syncCoordinator.photoRefreshTick) { _, _ in

@@ -249,21 +249,43 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         }
     }
 
+    /// Docs per page — bounds a single Firestore round trip regardless of
+    /// collection size. A delta pull (`since` non-nil) rarely spans more
+    /// than one page, but a full/bootstrap pull (`since == nil`, a
+    /// fresh-device sign-in) previously issued one unbounded
+    /// `getDocuments()` per collection — fine for a new account, but
+    /// unbounded for an engaged user's `swipeEvents`/`wardrobeItems`
+    /// history. `.order(by: "updatedAt")` paired with the `since` range
+    /// filter on that same field is a single-field index Firestore
+    /// maintains automatically, so this needs no `firestore.indexes.json`
+    /// change.
+    private static let pullPageSize = 300
+
     private static func fetchCollection<T: Decodable>(_ collection: CollectionReference, since: Date?) async throws -> [PulledChange<T>] {
-        var query: Query = collection
-        if let since {
-            query = query.whereField("updatedAt", isGreaterThan: Timestamp(date: since))
-        }
-        let snapshot = try await query.getDocuments()
-        return snapshot.documents.compactMap { doc -> PulledChange<T>? in
-            guard let updatedAtTimestamp = doc.get("updatedAt") as? Timestamp else { return nil }
-            let updatedAt = updatedAtTimestamp.dateValue()
-            if (doc.get("isDeleted") as? Bool) == true {
-                return .deleted(id: doc.documentID, updatedAt: updatedAt)
+        var results: [PulledChange<T>] = []
+        var lastDoc: DocumentSnapshot?
+        while true {
+            var query: Query = collection.order(by: "updatedAt")
+            if let since {
+                query = query.whereField("updatedAt", isGreaterThan: Timestamp(date: since))
             }
-            guard let dto = try? doc.data(as: T.self) else { return nil }
-            return .upsert(dto, updatedAt: updatedAt)
+            if let lastDoc {
+                query = query.start(afterDocument: lastDoc)
+            }
+            let snapshot = try await query.limit(to: pullPageSize).getDocuments()
+            results += snapshot.documents.compactMap { doc -> PulledChange<T>? in
+                guard let updatedAtTimestamp = doc.get("updatedAt") as? Timestamp else { return nil }
+                let updatedAt = updatedAtTimestamp.dateValue()
+                if (doc.get("isDeleted") as? Bool) == true {
+                    return .deleted(id: doc.documentID, updatedAt: updatedAt)
+                }
+                guard let dto = try? doc.data(as: T.self) else { return nil }
+                return .upsert(dto, updatedAt: updatedAt)
+            }
+            guard let last = snapshot.documents.last, snapshot.documents.count == pullPageSize else { break }
+            lastDoc = last
         }
+        return results
     }
 
     /// Single-row `meta` docs have no delta query of their own (one doc, not

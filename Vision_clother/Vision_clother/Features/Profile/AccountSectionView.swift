@@ -9,6 +9,7 @@
 //  Services/AuthService.swift), so the rest of the app stays interactive.
 //
 
+import Combine
 import SwiftData
 import SwiftUI
 
@@ -34,10 +35,41 @@ final class AccountSectionViewModel {
     /// of the (synchronous) `ShareLink` init rather than read inline in the view.
     var debugLogURL: URL?
 
+    /// Mirrors of `AuthService.shared`'s `@Published` auth state — added so
+    /// `AccountSectionView` (Features/CLAUDE.md: "Views never call Services
+    /// directly — always go through a ViewModel") can read auth state here
+    /// instead of holding its own `@ObservedObject AuthService.shared`. A
+    /// plain computed property forwarding to `AuthService.shared` wouldn't
+    /// be reactive under `@Observable` (its tracking only fires on this
+    /// class's own stored property writes, not on a Combine `@Published`
+    /// read nested inside a computed property), hence the active mirror via
+    /// `bindAuthState()`'s Combine subscriptions.
+    private(set) var isSignedIn = AuthService.shared.isSignedIn
+    private(set) var isAnonymous = AuthService.shared.isAnonymous
+    private(set) var uid: String? = AuthService.shared.uid
+    private(set) var guestSessionError: String? = AuthService.shared.guestSessionError
+    private var authCancellables = Set<AnyCancellable>()
+
     private let syncService: WardrobeSyncService
 
     init(syncService: WardrobeSyncService = ServiceFactory.makeWardrobeSyncService()) {
         self.syncService = syncService
+        bindAuthState()
+    }
+
+    private func bindAuthState() {
+        AuthService.shared.$isSignedIn
+            .sink { [weak self] in self?.isSignedIn = $0 }
+            .store(in: &authCancellables)
+        AuthService.shared.$isAnonymous
+            .sink { [weak self] in self?.isAnonymous = $0 }
+            .store(in: &authCancellables)
+        AuthService.shared.$uid
+            .sink { [weak self] in self?.uid = $0 }
+            .store(in: &authCancellables)
+        AuthService.shared.$guestSessionError
+            .sink { [weak self] in self?.guestSessionError = $0 }
+            .store(in: &authCancellables)
     }
 
     /// Usage readout (`AccountSectionView`'s "X/20 recommendations this
@@ -151,16 +183,15 @@ final class AccountSectionViewModel {
 }
 
 struct AccountSectionView: View {
-    @ObservedObject private var authService = AuthService.shared
     @State private var viewModel = AccountSectionViewModel()
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @State private var isPresentingDeleteConfirmation = false
 
     var body: some View {
         Section("Account") {
-            if authService.isSignedIn && !authService.isAnonymous {
+            if viewModel.isSignedIn && !viewModel.isAnonymous {
                 linkedContent
-            } else if authService.isSignedIn {
+            } else if viewModel.isSignedIn {
                 guestContent
             } else {
                 noSessionContent
@@ -199,7 +230,7 @@ struct AccountSectionView: View {
 
             debugLogContent
         }
-        .task(id: authService.uid) {
+        .task(id: viewModel.uid) {
             await viewModel.loadUsage()
         }
         .task {
@@ -256,7 +287,7 @@ struct AccountSectionView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-        if let guestSessionError = authService.guestSessionError {
+        if let guestSessionError = viewModel.guestSessionError {
             Text(guestSessionError)
                 .font(.caption)
                 .foregroundStyle(.red)
@@ -320,8 +351,8 @@ struct AccountSectionView: View {
     @ViewBuilder
     private var usageContent: some View {
         if let usage = viewModel.usage {
-            let recommendationLimit = EntitlementLimits.recommendationLimit(isAnonymous: authService.isAnonymous)
-            let tryOnLimit = EntitlementLimits.tryOnLimit(isAnonymous: authService.isAnonymous)
+            let recommendationLimit = EntitlementLimits.recommendationLimit(isAnonymous: viewModel.isAnonymous)
+            let tryOnLimit = EntitlementLimits.tryOnLimit(isAnonymous: viewModel.isAnonymous)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(usage.recommendationCount)/\(recommendationLimit) recommendations this month")
                 Text("\(usage.tryOnCount)/\(tryOnLimit) try-ons this month")

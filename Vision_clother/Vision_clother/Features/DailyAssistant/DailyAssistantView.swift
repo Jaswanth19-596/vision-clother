@@ -23,8 +23,10 @@ struct DailyAssistantView: View {
     /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
     /// without this the chat timeline from the previous account would just
     /// keep showing after switching — see
-    /// `Data/WardrobeSyncCoordinator.swift`'s file header.
-    @ObservedObject private var authService = AuthService.shared
+    /// `Data/WardrobeSyncCoordinator.swift`'s file header. Reads
+    /// `viewModel.uid`/`.isAnonymous` (mirrored from `AuthService.shared`)
+    /// rather than holding its own `@ObservedObject AuthService.shared` —
+    /// see `DailyAssistantViewModel.bindAuthState()`'s doc comment.
     @State private var viewModel: DailyAssistantViewModel?
     /// Which historical (non-latest) outfits rounds the user has manually
     /// expanded back open — the latest round is always expanded regardless
@@ -88,7 +90,7 @@ struct DailyAssistantView: View {
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )
         }
-        .onChange(of: authService.uid) { _, _ in
+        .onChange(of: viewModel?.uid) { _, _ in
             viewModel?.resetConversation()
             expandedRoundIDs.removeAll()
         }
@@ -213,7 +215,7 @@ struct DailyAssistantView: View {
                             }
                         },
                         onStartTryOn: { outfit in
-                            guard !AuthService.shared.isAnonymous else {
+                            guard !viewModel.isAnonymous else {
                                 isGuestTryOnAlertPresented = true
                                 return
                             }
@@ -242,7 +244,7 @@ struct DailyAssistantView: View {
                             }
                         },
                         onStartTryOn: { outfit in
-                            guard !AuthService.shared.isAnonymous else {
+                            guard !viewModel.isAnonymous else {
                                 isGuestTryOnAlertPresented = true
                                 return
                             }

@@ -10,6 +10,7 @@
 //  `Task`.
 //
 
+import Combine
 import Foundation
 import Observation
 import os
@@ -185,6 +186,19 @@ final class DailyAssistantViewModel {
     private var feedbackHistoryCache: FeedbackHistory?
     private var cachedSnapshotVersion: UUID?
 
+    /// Mirrors of `AuthService.shared`'s `@Published` auth state — added so
+    /// `DailyAssistantView` (Features/CLAUDE.md: "Views never call Services
+    /// directly — always go through a ViewModel") can read auth state here
+    /// instead of holding its own `@ObservedObject AuthService.shared`. A
+    /// plain computed property forwarding to `AuthService.shared` wouldn't
+    /// be reactive — `@Observable`'s change tracking only fires on this
+    /// class's own stored property writes, not on a Combine `@Published`
+    /// read nested inside a computed property — so these are actively kept
+    /// in sync via `bindAuthState()`'s Combine subscriptions instead.
+    private(set) var isAnonymous = AuthService.shared.isAnonymous
+    private(set) var uid: String? = AuthService.shared.uid
+    private var authCancellables = Set<AnyCancellable>()
+
     init(
         repository: WardrobeRepository,
         jobQueueStore: JobQueueStore,
@@ -197,6 +211,16 @@ final class DailyAssistantViewModel {
         self.recommendationService = recommendationService
         self.weatherProvider = weatherProvider
         self.profileDerivationService = profileDerivationService
+        bindAuthState()
+    }
+
+    private func bindAuthState() {
+        AuthService.shared.$isAnonymous
+            .sink { [weak self] in self?.isAnonymous = $0 }
+            .store(in: &authCancellables)
+        AuthService.shared.$uid
+            .sink { [weak self] in self?.uid = $0 }
+            .store(in: &authCancellables)
     }
 
     /// Primary path (PRD §2.1a): prompt + bounded wardrobe catalog + style

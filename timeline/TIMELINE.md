@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-07-17 — Fix: Six High-severity scale/cost findings (prompt caching, response caching, quota loopholes, fail-open abuse vector, unbounded sync pull, View/ViewModel layering)
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+A review of the app's readiness for multi-user scale (not personal single-device use — see `docs/decisions/resolved-v1.md`) flagged six High-severity findings, all pointing at cost/availability paths that work fine today but break first at 10x users:
+1. The recommendation call's ~75-80KB catalog + system prompt was retransmitted in full on every clarification turn, with no prompt-caching breakpoints.
+2. No response-level caching for identical/near-identical recommendation requests — a retry or repeat ask cost a full paid inference call every time.
+3. `AccountSectionView`, `ProfileView`, `DailyAssistantView` each held their own `@ObservedObject AuthService.shared` and read its published state directly, bypassing their ViewModels (`Features/CLAUDE.md`: "Views never call Services directly").
+4. `/openrouter/images` was mounted with no quota gate at all — reachable directly with a valid ID token, bypassing the try-on quota by construction (gated by URL path, not by feature).
+5. `rateLimit`/`quotaGate` both failed open on any Firestore error, for every caller including anonymous/guest accounts — a free-to-mint cost-abuse vector.
+6. `WardrobeSyncService.fetchCollection`'s Firestore pull had zero pagination across all 7 synced collections — fine for a delta pull, unbounded on a fresh-device full/bootstrap pull for an engaged user's history.
+
+### Fix
+- **Prompt caching:** `OutfitRecommendationService.encodeRequestBody` now wraps the system prompt and turn-0's catalog/scenario/weather content in OpenRouter's `cache_control: {"type": "ephemeral"}` content-array form (`cacheableContent` helper) — both blocks are byte-identical across a clarification session's turns, so this turns each later turn's full-catalog resend into a cached-prefix read on models that support it, and is inert/additive on models that don't. Also decodes+logs `usage.prompt_tokens_details.cached_tokens` when present, for observability.
+- **Response cache:** new `backend/functions/src/middleware/responseCache.ts` — hashes the raw request body per-uid, checks/writes a 10-minute-TTL Firestore doc (`users/{uid}/responseCache/{hash}`), and short-circuits before `quotaGate` on a hit (zero quota charged, zero upstream call). Mounted only on `/openrouter/recommend` in `app.ts` (not `/openrouter/tryon` — image responses are a poor fit for a Firestore doc cache).
+- **Quota loophole:** `/openrouter/images` is now mounted behind `quotaGate("tryOn")` in `app.ts`, same feature as `/openrouter/tryon` (it's the dedicated-Images-API fallback branch of the same two services).
+- **Fail-open abuse vector:** `rateLimit.ts`/`quota.ts` now fail **closed** (503) specifically for `req.isAnonymous` requests on a Firestore error, and keep failing open for linked accounts — targets the actual free-to-mint abuse vector without risking an outage-wide availability regression for real users.
+- **Unbounded pull:** `WardrobeSyncService.fetchCollection` now pages with `.order(by: "updatedAt")` + `.limit(to: 300)` + `.start(afterDocument:)`, looping until a short page — no `firestore.indexes.json` change needed (single-field index, automatic).
+- **View/ViewModel layering:** `AccountSectionViewModel`/`ProfileViewModel`/`DailyAssistantViewModel` each gained Combine-backed mirrors (`bindAuthState()`) of the `AuthService.shared` `@Published` fields they need (`isSignedIn`/`isAnonymous`/`uid`/`guestSessionError`, subset per screen) — a plain computed forwarding property wouldn't be reactive under `@Observable`, since its change tracking only fires on the class's own stored-property writes. The three views dropped their `@ObservedObject AuthService.shared` and read the mirrored ViewModel properties instead.
+
+Deliberately **not** touched: App Check/attestation (blocked on a paid Apple Developer account, per the existing ADR) and the `4.2` "what's next" items (Firestore transaction contention, empty `firestore.indexes.json`) — no concrete failure evidence yet for either, flagged as follow-ups rather than silently fixed.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Services/OutfitRecommendationService.swift` | `cacheableContent` cache-control wrapper on system + turn-0 messages; decode+log `usage.prompt_tokens_details.cached_tokens` |
+| `backend/functions/src/middleware/responseCache.ts` | New — per-uid response cache middleware |
+| `backend/functions/src/app.ts` | Mount `responseCache` ahead of `quotaGate` on `/openrouter/recommend`; gate `/openrouter/images` behind `quotaGate("tryOn")` |
+| `backend/functions/src/middleware/rateLimit.ts`, `quota.ts` | Fail-closed (503) for `req.isAnonymous` on a Firestore error; unchanged fail-open for linked accounts |
+| `Vision_clother/Services/WardrobeSyncService.swift` | `fetchCollection` rewritten with `.order`/`.limit`/`.start(afterDocument:)` pagination loop |
+| `Features/Profile/AccountSectionView.swift`, `AccountSectionViewModel` (same file) | Added `isSignedIn`/`isAnonymous`/`uid`/`guestSessionError` Combine mirrors + `bindAuthState()`; view drops `@ObservedObject AuthService.shared` |
+| `Features/Profile/ProfileView.swift`, `ProfileViewModel.swift` | Added `uid` mirror + `bindAuthState()`; view drops `@ObservedObject AuthService.shared` |
+| `Features/DailyAssistant/DailyAssistantView.swift`, `DailyAssistantViewModel.swift` | Added `isAnonymous`/`uid` mirrors + `bindAuthState()`; view drops `@ObservedObject AuthService.shared` |
+
+---
+
 ## 2026-07-17 — Fix: Duplicate `ForEach` ID warning in `ProfileView`'s "Best Pairings" list
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)

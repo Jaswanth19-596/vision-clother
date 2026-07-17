@@ -17,6 +17,7 @@
 //  not a Service call.
 //
 
+import Combine
 import Foundation
 import Observation
 
@@ -48,6 +49,17 @@ final class ProfileViewModel {
     private let syncService: WardrobeSyncService
     private var derivationTask: Task<Void, Never>?
 
+    /// Mirror of `AuthService.shared.$uid` — added so `ProfileView`
+    /// (Features/CLAUDE.md: "Views never call Services directly — always go
+    /// through a ViewModel") can observe account switches here instead of
+    /// holding its own `@ObservedObject AuthService.shared`. A plain
+    /// computed property forwarding to `AuthService.shared` wouldn't be
+    /// reactive under `@Observable` (its tracking only fires on this
+    /// class's own stored property writes), hence the active Combine
+    /// mirror via `bindAuthState()`.
+    private(set) var uid: String? = AuthService.shared.uid
+    private var authCancellables = Set<AnyCancellable>()
+
     init(
         repository: WardrobeRepository,
         validationService: PersonPhotoValidationService = MockPersonPhotoValidationService(),
@@ -60,10 +72,13 @@ final class ProfileViewModel {
         self.syncService = syncService
         self.hasPortrait = UserPortraitStorage.exists
         self.portraitImageData = UserPortraitStorage.load()
+        AuthService.shared.$uid
+            .sink { [weak self] in self?.uid = $0 }
+            .store(in: &authCancellables)
     }
 
     /// Re-reads local portrait state from disk — called when the signed-in
-    /// account changes (`ProfileView`'s `authService.uid` observer) or when
+    /// account changes (`ProfileView`'s `viewModel.uid` observer) or when
     /// `Data/WardrobeSyncCoordinator.swift`'s background prefetch downloads a
     /// portrait for the newly-switched-to account. `init()` only reads this
     /// once, which is stale the moment an account switch happens later in

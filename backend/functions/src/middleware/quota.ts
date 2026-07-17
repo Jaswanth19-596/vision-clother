@@ -35,6 +35,12 @@ function periodKey(): string {
  * and increments a per-uid monthly usage counter in Firestore, lazily
  * resetting it when the calendar month rolls over — no cron needed, mirrors
  * rateLimit.ts's per-day doc approach at monthly granularity.
+ *
+ * On a Firestore hiccup: fails open for linked accounts, fails closed for
+ * anonymous/guest requests — see `rateLimit.ts`'s matching posture and
+ * rationale (guest accounts are free to mint, so are the actual cost-abuse
+ * vector; a real linked account hitting a transient Firestore error
+ * shouldn't lose the whole AI feature set over it).
  */
 export function quotaGate(feature: QuotaFeature) {
   return async (req: AuthedRequest, res: Response, next: NextFunction): Promise<void> => {
@@ -115,8 +121,14 @@ export function quotaGate(feature: QuotaFeature) {
           return;
       }
     } catch (error) {
-      // Firestore hiccup shouldn't take down the proxy — fail open on the
-      // quota gate itself, same posture as rateLimit.ts.
+      if (req.isAnonymous) {
+        logEvent("error", "quota.failClosed", { requestId: req.requestId, uid, feature, error: String(error) });
+        res.status(503).json({ error: "temporarily_unavailable" });
+        return;
+      }
+      // Firestore hiccup shouldn't take down the proxy for a linked
+      // account — fail open on the quota gate itself, same posture as
+      // rateLimit.ts.
       logEvent("error", "quota.failOpen", { requestId: req.requestId, uid, feature, error: String(error) });
       next();
     }

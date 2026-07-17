@@ -14,6 +14,12 @@ function todayKey(): string {
  * Must run after verifyAuth (needs req.uid). Atomically increments a
  * per-uid-per-day counter in Firestore and rejects once DAILY_REQUEST_LIMIT
  * is exceeded — cheap abuse guardrail, not a billing/metering system.
+ *
+ * On a Firestore hiccup: fails open for linked accounts (an outage
+ * shouldn't take down the whole AI feature set for real users) but fails
+ * closed for anonymous/guest requests, since guest accounts are free to
+ * mint and are the actual abuse vector this guardrail exists for — see
+ * `quota.ts`'s matching posture.
  */
 export async function rateLimit(
   req: AuthedRequest,
@@ -46,8 +52,13 @@ export async function rateLimit(
     }
     next();
   } catch (error) {
-    // Firestore hiccup shouldn't take down the proxy — fail open on the
-    // rate limiter itself, since App Check + Auth already gate access.
+    if (req.isAnonymous) {
+      logEvent("error", "rateLimit.failClosed", { requestId: req.requestId, uid, error: String(error) });
+      res.status(503).json({ error: "temporarily_unavailable" });
+      return;
+    }
+    // Firestore hiccup shouldn't take down the proxy for a linked
+    // account — fail open on the rate limiter itself.
     logEvent("error", "rateLimit.failOpen", { requestId: req.requestId, uid, error: String(error) });
     next();
   }
