@@ -168,6 +168,10 @@ final class DailyAssistantViewModel {
     /// mirroring the eager derivation `ManualPairingViewModel.savePortrait`
     /// already does on a fresh portrait save.
     private let profileDerivationService: UserProfileDerivationService
+    /// Quota visibility feature: optimistic recommendation-usage bump on a
+    /// successful `recommendationService.recommendOutfits` call — see
+    /// `Data/UsageTracker.swift`.
+    private let usageTracker: UsageTracker
     /// Guards against a stale request's result overwriting a newer one when
     /// two `requestOutfitIdeas()` calls overlap (e.g. a race between the
     /// prompt field's Return-key submit and the button) and against a
@@ -204,13 +208,15 @@ final class DailyAssistantViewModel {
         jobQueueStore: JobQueueStore,
         recommendationService: OutfitRecommendationService = MockOutfitRecommendationService(),
         weatherProvider: CurrentWeatherProviding = MockCurrentWeatherProvider(),
-        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService()
+        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService(),
+        usageTracker: UsageTracker
     ) {
         self.repository = repository
         self.jobQueueStore = jobQueueStore
         self.recommendationService = recommendationService
         self.weatherProvider = weatherProvider
         self.profileDerivationService = profileDerivationService
+        self.usageTracker = usageTracker
         bindAuthState()
     }
 
@@ -419,6 +425,13 @@ final class DailyAssistantViewModel {
                     catalog: catalog, profile: profile, weather: weather, history: history
                 )
             }
+            // A call that reaches this point already cleared the server's
+            // quotaGate("recommendation") — see backend/functions/src/
+            // middleware/quota.ts — so the monthly counter has already been
+            // incremented server-side regardless of what this response
+            // resolves to (clarification vs. outfits). Bump the local
+            // optimistic mirror here so the UI reflects it instantly.
+            usageTracker.recordRecommendationUsed()
             // Clarification Loop (Stylist Intelligence Engine ADR,
             // Phase 2): the model asked a follow-up instead of
             // deciding. Only honored while `!isFinalTurn` — a
@@ -578,6 +591,7 @@ final class DailyAssistantViewModel {
                     catalog: catalog, profile: profile, weather: weather, history: history
                 )
             }
+            usageTracker.recordRecommendationUsed()
 
             let (validated, rejections) = await PerfLog.time("validation") {
                 OutfitRecommendationValidator.validateVerbose(

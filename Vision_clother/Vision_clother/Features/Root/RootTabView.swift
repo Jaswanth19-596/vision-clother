@@ -45,16 +45,20 @@ struct RootTabView: View {
         SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
+    let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)
+    let previewUsageTracker = UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService())
     RootTabView()
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
+            repository: previewRepository,
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
-            notificationService: MockJobNotificationService()
+            notificationService: MockJobNotificationService(),
+            usageTracker: previewUsageTracker
         ))
         .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
+        .environment(previewUsageTracker)
 }

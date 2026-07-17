@@ -29,7 +29,6 @@ final class AccountSectionViewModel {
     /// gates the "Deleting your account…" status label specifically, so it
     /// can't misfire during an unrelated busy sign-in flow.
     private(set) var isDeletingAccount = false
-    private(set) var usage: UsageDTO?
     /// Set by `prepareDebugLogExport()` right before presenting `ShareLink` —
     /// `DebugLogStore` is an actor, so the URL has to be fetched async ahead
     /// of the (synchronous) `ShareLink` init rather than read inline in the view.
@@ -50,10 +49,7 @@ final class AccountSectionViewModel {
     private(set) var guestSessionError: String? = AuthService.shared.guestSessionError
     private var authCancellables = Set<AnyCancellable>()
 
-    private let syncService: WardrobeSyncService
-
-    init(syncService: WardrobeSyncService = ServiceFactory.makeWardrobeSyncService()) {
-        self.syncService = syncService
+    init() {
         bindAuthState()
     }
 
@@ -70,15 +66,6 @@ final class AccountSectionViewModel {
         AuthService.shared.$guestSessionError
             .sink { [weak self] in self?.guestSessionError = $0 }
             .store(in: &authCancellables)
-    }
-
-    /// Usage readout (`AccountSectionView`'s "X/20 recommendations this
-    /// month" row) — best-effort, `nil` usage just hides the readout rather
-    /// than showing an error, matching this section's existing
-    /// non-blocking-account-UI posture.
-    func loadUsage() async {
-        guard let uid = AuthService.shared.uid else { usage = nil; return }
-        usage = try? await syncService.fetchUsage(uid: uid)
     }
 
     func signInWithGoogle() async {
@@ -185,6 +172,11 @@ final class AccountSectionViewModel {
 struct AccountSectionView: View {
     @State private var viewModel = AccountSectionViewModel()
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
+    /// Quota visibility feature (`Data/UsageTracker.swift`) — the shared
+    /// live source this section's usage readout now reads from, replacing
+    /// its previous own `loadUsage()` fetch so it stays consistent with
+    /// every point-of-use quota display elsewhere in the app.
+    @Environment(UsageTracker.self) private var usageTracker
     @State private var isPresentingDeleteConfirmation = false
 
     var body: some View {
@@ -231,7 +223,8 @@ struct AccountSectionView: View {
             debugLogContent
         }
         .task(id: viewModel.uid) {
-            await viewModel.loadUsage()
+            await usageTracker.refreshUsage()
+            usageTracker.refreshItemCounts()
         }
         .task {
             await viewModel.prepareDebugLogExport()
@@ -340,26 +333,26 @@ struct AccountSectionView: View {
         .disabled(viewModel.isBusy || syncCoordinator.isSyncingAccountSwitch)
     }
 
-    /// Recommendation/try-on usage this billing period — read-only, sourced
-    /// from `users/{uid}/meta/usage` (server-authoritative, written only by
-    /// `backend/functions/src/middleware/quota.ts`). Limits shown are
-    /// `Domain/EntitlementLimits.swift`'s display-only mirror of the
-    /// server's actual `TIER_LIMITS`. Silently hidden until a first
-    /// recommendation/try-on request has been made this period (`usage ==
-    /// nil`), rather than showing a misleading "0/20" before any real
-    /// server round trip has happened.
+    /// Quota summary this billing period — item counts are always shown
+    /// (local-only, `Data/UsageTracker.swift.refreshItemCounts()`);
+    /// recommendation/combination counts are server-authoritative
+    /// (`users/{uid}/meta/usage`, written by
+    /// `backend/functions/src/middleware/quota.ts`) and stay hidden until
+    /// a first request has actually been made this period (`usage == nil`),
+    /// rather than showing a misleading "0/20" before any real server round
+    /// trip has happened. "Combinations" is the user-facing term for what
+    /// the server tracks as `tryOnCount` — see `UsageTracker`'s doc comment.
     @ViewBuilder
     private var usageContent: some View {
-        if let usage = viewModel.usage {
-            let recommendationLimit = EntitlementLimits.recommendationLimit(isAnonymous: viewModel.isAnonymous)
-            let tryOnLimit = EntitlementLimits.tryOnLimit(isAnonymous: viewModel.isAnonymous)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(usage.recommendationCount)/\(recommendationLimit) recommendations this month")
-                Text("\(usage.tryOnCount)/\(tryOnLimit) try-ons this month")
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(usageTracker.coreItemCount)/\(usageTracker.coreItemCap) core items \u{00B7} \(usageTracker.accessoryItemCount)/\(usageTracker.accessoryItemCap) accessories")
+            if usageTracker.usage != nil {
+                Text("\(usageTracker.recommendationsUsed)/\(usageTracker.recommendationLimit) recommendations this month")
+                Text("\(usageTracker.combinationsUsed)/\(usageTracker.combinationLimit) combinations this month")
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -396,4 +389,8 @@ struct AccountSectionView: View {
     }
     .modelContainer(container)
     .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
+    .environment(UsageTracker(
+        repository: SyncingWardrobeRepository(modelContext: container.mainContext),
+        syncService: MockWardrobeSyncService()
+    ))
 }

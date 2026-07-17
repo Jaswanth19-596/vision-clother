@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { openRouterApiKey } from "../secrets";
 import type { AuthedRequest } from "../types";
-import { logEvent } from "../logger";
+import { logEvent, upstreamErrorSnippet } from "../logger";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -49,6 +49,7 @@ openrouterChatRouter.post("/", async (req: AuthedRequest, res) => {
       model: parsed.data.model,
       status: upstream.status,
       durationMs: Date.now() - start,
+      ...(upstream.ok ? {} : { upstreamErrorMessage: upstreamErrorSnippet(text) }),
     });
     res
       .status(upstream.status)

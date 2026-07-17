@@ -10,17 +10,20 @@
 import Foundation
 
 enum ProxyConfig {
-    /// DEBUG builds point at the local Firebase emulator
-    /// (`backend/README.md`'s `npm run serve`); release builds point at the
-    /// deployed Cloud Functions HTTPS trigger — fill in the real project ID /
-    /// function URL after `firebase deploy` (see `backend/README.md`).
+    /// Both configurations point at the deployed Cloud Functions HTTPS
+    /// trigger (`backend/README.md`) — quota/usage tracking lives in real,
+    /// persistent Firestore there. DEBUG previously pointed at a local
+    /// emulator tunneled through ngrok; that setup's Firestore is ephemeral
+    /// and gets wiped on every emulator restart, which is what made quota
+    /// look like it was "resetting" during normal testing. Swap back to a
+    /// `localhost`/ngrok URL here only for offline backend-code iteration,
+    /// and start the emulator with `--import`/`--export-on-exit` if you do,
+    /// so local quota state survives restarts.
     static let baseURL: URL = {
         #if DEBUG
-        // return URL(string: "http://localhost:5001/REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID/us-central1/api")!
-        return URL(string: "https://4c94-2601-243-c884-d480-ac0a-b28-d01a-a91a.ngrok-free.app/visionclother/us-central1/api")!
-
+        return URL(string: "https://api-z3sgjy64ga-uc.a.run.app")!
         #else
-        return URL(string: "https://REPLACE_WITH_YOUR_DEPLOYED_FUNCTION_URL/api")!
+        return URL(string: "https://api-z3sgjy64ga-uc.a.run.app")!
         #endif
     }()
 

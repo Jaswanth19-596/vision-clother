@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pexelsApiKey } from "../secrets";
 import type { AuthedRequest } from "../types";
-import { logEvent } from "../logger";
+import { logEvent, upstreamErrorSnippet } from "../logger";
 
 const PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search";
 
@@ -41,6 +41,7 @@ pexelsSearchRouter.get("/", async (req: AuthedRequest, res) => {
       query: parsed.data.query,
       status: upstream.status,
       durationMs: Date.now() - start,
+      ...(upstream.ok ? {} : { upstreamErrorMessage: upstreamErrorSnippet(text) }),
     });
     res
       .status(upstream.status)

@@ -19,6 +19,10 @@ import PhotosUI
 struct DailyAssistantView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(JobQueueStore.self) private var jobQueueStore
+    /// Quota visibility feature (`Data/UsageTracker.swift`) — live
+    /// recommendation/combination captions + proactive disable, see
+    /// `promptInput`/`prospectivePurchaseInput`/`roundView`.
+    @Environment(UsageTracker.self) private var usageTracker
     /// Account-switch reactivity: `viewModel` is constructed once for this
     /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
     /// without this the chat timeline from the previous account would just
@@ -87,7 +91,8 @@ struct DailyAssistantView: View {
                 jobQueueStore: jobQueueStore,
                 recommendationService: ServiceFactory.makeOutfitRecommendationService(),
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
-                profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
+                profileDerivationService: ServiceFactory.makeUserProfileDerivationService(),
+                usageTracker: usageTracker
             )
         }
         .onChange(of: viewModel?.uid) { _, _ in
@@ -207,6 +212,8 @@ struct DailyAssistantView: View {
                         outfits: outfits,
                         isExpanded: isLatest || expandedRoundIDs.contains(round.id),
                         isLatest: isLatest,
+                        isAnonymous: viewModel.isAnonymous,
+                        combinationsRemaining: usageTracker.combinationsRemaining,
                         onToggleExpanded: {
                             if expandedRoundIDs.contains(round.id) {
                                 expandedRoundIDs.remove(round.id)
@@ -236,6 +243,8 @@ struct DailyAssistantView: View {
                         note: note,
                         isExpanded: isLatest || expandedRoundIDs.contains(round.id),
                         isLatest: isLatest,
+                        isAnonymous: viewModel.isAnonymous,
+                        combinationsRemaining: usageTracker.combinationsRemaining,
                         onToggleExpanded: {
                             if expandedRoundIDs.contains(round.id) {
                                 expandedRoundIDs.remove(round.id)
@@ -351,12 +360,18 @@ struct DailyAssistantView: View {
                     .submitLabel(.search)
                     .onSubmit { submit(viewModel: viewModel) }
 
+                    recommendationQuotaCaption
+
                     Button(viewModel.rounds.isEmpty ? "Get Outfit Ideas" : "Send") {
                         submit(viewModel: viewModel)
                         sendTick += 1
                     }
                     .buttonStyle(PrimaryButtonStyle())
-                    .disabled(viewModel.extractionState == .loading || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(
+                        viewModel.extractionState == .loading
+                        || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty
+                        || usageTracker.recommendationsRemaining <= 0
+                    )
                 }
             }
             .padding(.horizontal)
@@ -389,13 +404,15 @@ struct DailyAssistantView: View {
                 Spacer()
             }
 
+            recommendationQuotaCaption
+
             Button("Check This Item") {
                 Task { await viewModel.checkProspectiveItem() }
                 sendTick += 1
             }
             .buttonStyle(PrimaryButtonStyle())
             .frame(maxWidth: .infinity)
-            .disabled(viewModel.extractionState == .loading)
+            .disabled(viewModel.extractionState == .loading || usageTracker.recommendationsRemaining <= 0)
         } else {
             HStack(spacing: 12) {
                 Button {
@@ -449,6 +466,25 @@ struct DailyAssistantView: View {
     private var placeholderBaseImageData: Data {
         UserPortraitStorage.load() ?? Data()
     }
+
+    /// Quota visibility feature — shown above both the free-text and
+    /// prospective-purchase submit buttons, which both spend one
+    /// `recommendationCount` unit per call (`DailyAssistantViewModel`'s
+    /// `resolveOutfits`/`resolveProspectivePurchase`).
+    @ViewBuilder
+    private var recommendationQuotaCaption: some View {
+        if usageTracker.recommendationsRemaining <= 0 {
+            Text(usageTracker.isAnonymousQuota
+                 ? "You've used all your recommendations this month. Sign in for more."
+                 : "You've used all your recommendations this month. Resets next month.")
+                .font(.caption)
+                .foregroundStyle(.red)
+        } else {
+            Text("\(usageTracker.recommendationsRemaining) recommendation\(usageTracker.recommendationsRemaining == 1 ? "" : "s") left this month")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 /// One outfits round's presentation: collapsed to a one-line summary when
@@ -468,6 +504,8 @@ private struct OutfitsRoundView: View {
     let outfits: [OutfitCombination]
     let isExpanded: Bool
     let isLatest: Bool
+    let isAnonymous: Bool
+    let combinationsRemaining: Int
     let onToggleExpanded: () -> Void
     let onStartTryOn: (OutfitCombination) -> Void
 
@@ -541,23 +579,17 @@ private struct OutfitsRoundView: View {
                 }
 
                 if let selected = outfits.first(where: { $0.id == selectedOutfitID }) {
-                    let alreadyQueued = queuedOutfitIDs.contains(selected.id)
-                    Button {
+                    TryOnActionButton(
+                        isQueued: queuedOutfitIDs.contains(selected.id),
+                        isAnonymous: isAnonymous,
+                        combinationsRemaining: combinationsRemaining,
+                        elevated: true
+                    ) {
                         onStartTryOn(selected)
                         withAnimation(.easeInOut(duration: 0.2)) {
                             queuedOutfitIDs.insert(selected.id)
                         }
-                    } label: {
-                        if alreadyQueued {
-                            Label("Added to queue", systemImage: "checkmark")
-                        } else {
-                            Text("How does it look on me?")
-                        }
                     }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .vcShadow(VCShadow.elevated)
-                    .disabled(alreadyQueued)
-                    .animation(.easeInOut(duration: 0.2), value: alreadyQueued)
                 }
             }
         }
@@ -580,6 +612,8 @@ private struct PurchaseCheckRoundView: View {
     let note: String?
     let isExpanded: Bool
     let isLatest: Bool
+    let isAnonymous: Bool
+    let combinationsRemaining: Int
     let onToggleExpanded: () -> Void
     let onStartTryOn: (OutfitCombination) -> Void
     let onAddToCloset: () -> Bool
@@ -676,22 +710,17 @@ private struct PurchaseCheckRoundView: View {
             }
 
             if let selected = outfits.first(where: { $0.id == selectedOutfitID }) {
-                let alreadyQueued = queuedOutfitIDs.contains(selected.id)
-                Button {
+                TryOnActionButton(
+                    isQueued: queuedOutfitIDs.contains(selected.id),
+                    isAnonymous: isAnonymous,
+                    combinationsRemaining: combinationsRemaining,
+                    elevated: false
+                ) {
                     onStartTryOn(selected)
                     withAnimation(.easeInOut(duration: 0.2)) {
                         queuedOutfitIDs.insert(selected.id)
                     }
-                } label: {
-                    if alreadyQueued {
-                        Label("Added to queue", systemImage: "checkmark")
-                    } else {
-                        Text("How does it look on me?")
-                    }
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(alreadyQueued)
-                .animation(.easeInOut(duration: 0.2), value: alreadyQueued)
             }
         }
     }
@@ -721,21 +750,83 @@ private struct PurchaseCheckRoundView: View {
     }
 }
 
+/// Shared "How does it look on me?" try-on trigger for both
+/// `OutfitsRoundView` and `PurchaseCheckRoundView` — quota visibility
+/// feature: "combinations" is the user-facing term for a try-on render
+/// (`Data/UsageTracker.swift`'s doc comment). Once queued the button stays
+/// permanently locked (matches the pre-existing per-outfit queue-lock
+/// behavior); otherwise it reflects whichever of "blocked" states applies —
+/// guest (0 cap) takes priority over an exhausted free-tier cap, matching
+/// `onStartTryOn`'s own guest-alert-first ordering at the call site.
+private struct TryOnActionButton: View {
+    let isQueued: Bool
+    let isAnonymous: Bool
+    let combinationsRemaining: Int
+    /// `OutfitsRoundView`'s live/expanded card gets a drop shadow;
+    /// `PurchaseCheckRoundView`'s does not — matches the pre-existing
+    /// per-caller styling this button replaces.
+    let elevated: Bool
+    let action: () -> Void
+
+    private var isBlocked: Bool { isAnonymous || combinationsRemaining <= 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: action) {
+                if isQueued {
+                    Label("Added to queue", systemImage: "checkmark")
+                } else if isAnonymous {
+                    Text("Sign in to try this on")
+                } else if combinationsRemaining <= 0 {
+                    Text("Combination limit reached")
+                } else {
+                    Text("How does it look on me?")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .modifier(ConditionalElevatedShadow(isElevated: elevated))
+            .disabled(isQueued || isBlocked)
+            .animation(.easeInOut(duration: 0.2), value: isQueued)
+
+            if !isQueued && !isBlocked {
+                Text("\(combinationsRemaining) combination\(combinationsRemaining == 1 ? "" : "s") left this month")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ConditionalElevatedShadow: ViewModifier {
+    let isElevated: Bool
+
+    func body(content: Content) -> some View {
+        if isElevated {
+            content.vcShadow(VCShadow.elevated)
+        } else {
+            content
+        }
+    }
+}
+
 #Preview {
     let container = try! ModelContainer(
         for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
         SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
+    let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)
     DailyAssistantView()
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
+            repository: previewRepository,
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
-            notificationService: MockJobNotificationService()
+            notificationService: MockJobNotificationService(),
+            usageTracker: UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService())
         ))
+        .environment(UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService()))
 }

@@ -2,6 +2,178 @@
 
 ---
 
+## 2026-07-17 — Fix: Recommendation 401s traced to invalid OpenRouter key, not a secret-encoding bug; upstream error bodies were unlogged
+
+**Status:** ✅ Shipped — Cloud Functions deployed
+
+### Problem
+`/openrouter/recommend` returned `HTTP 401` past `verifyAuth.ok`/`quota.ok`
+(i.e. auth and quota gates were fine; OpenRouter itself was rejecting the
+call). Initial hypothesis was a trailing newline baked into
+`OPENROUTER_API_KEY`/`PEXELS_API_KEY` from `plutil -extract ... raw` (which
+does append `\n`) — re-provisioned both secrets stripped and redeployed, but
+the 401 persisted on a verified-fresh post-deploy Cloud Run instance
+(`DEPLOYMENT_ROLLOUT` log confirmed a new instance, still 401'd). Root cause
+turned out to be simpler and unrelated to encoding: `curl`'d
+`https://openrouter.ai/api/v1/auth/key` directly with the raw key from
+`Secrets.plist` (bypassing Firebase entirely) and got 401 straight from
+OpenRouter — the key itself (well-formed `sk-or-v1-...`, 73 chars) is
+invalid/revoked on OpenRouter's side. Also note: `firebase functions:secrets:access`
+always appends its own trailing `\n` on stdout, which had made an
+already-clean secret version look corrupted under a naive `wc -c`/`xxd`
+check — a debugging red herring in its own right.
+Separately, and the real process failure: `openrouterChat.ts`/`openrouterImages.ts`/
+`pexelsSearch.ts` all read the upstream response body into `text` and forwarded
+it to the client, but only logged `status`/`durationMs` on failure — never the
+provider's own `error.message` (e.g. "Invalid API key"), which would have
+identified "bad key" vs. "malformed request" vs. "provider outage" in one log
+line instead of the above investigation.
+
+### Fix
+- `backend/functions/src/logger.ts`: added `upstreamErrorSnippet(rawBody)` —
+  parses a failed upstream JSON body, pulls just `error.message` (or a raw
+  text fallback), truncates to 200 chars. Kept within the existing redaction
+  rule (never log raw bodies/keys) by extracting only the provider's message,
+  not the full body.
+- `backend/functions/src/routes/openrouterChat.ts`,
+  `openrouterImages.ts`, `pexelsSearch.ts`: on non-`ok` upstream responses,
+  `upstreamResponse` warn logs now include `upstreamErrorMessage` via the
+  helper above.
+- Re-provisioned `OPENROUTER_API_KEY`/`PEXELS_API_KEY` into Secret Manager
+  via a pipeline that strips any trailing newline before `--data-file -`
+  (`plutil -extract ... raw -o - Secrets.plist | tr -d '\n' | firebase
+  functions:secrets:set ... --data-file -`) and redeployed. This did not fix
+  the 401 (the stored key was already effectively clean).
+- Confirmed via the new `upstreamErrorMessage` logging: OpenRouter returns
+  `"User not found."` for every model/route on this key — the key's
+  associated OpenRouter account no longer exists (deleted/removed org), not
+  a malformed-key issue.
+- User generated a fresh `OPENROUTER_API_KEY` from a live OpenRouter account.
+  Verified directly against `https://openrouter.ai/api/v1/auth/key` (200,
+  real account, no usage limit) before touching Secret Manager, then
+  provisioned via the same newline-safe pipeline and redeployed
+  (`OPENROUTER_API_KEY` secret version 4).
+
+| File | Change |
+|---|---|
+| `backend/functions/src/logger.ts` | Added `upstreamErrorSnippet` helper |
+| `backend/functions/src/routes/openrouterChat.ts` | Logs `upstreamErrorMessage` on failed upstream calls |
+| `backend/functions/src/routes/openrouterImages.ts` | Logs `upstreamErrorMessage` on failed upstream calls |
+| `backend/functions/src/routes/pexelsSearch.ts` | Logs `upstreamErrorMessage` on failed upstream calls |
+| Secret Manager (`visionclother` project) | `OPENROUTER_API_KEY`, `PEXELS_API_KEY` re-provisioned via newline-safe pipeline |
+
+---
+
+## 2026-07-17 — Fix: Backend never deployed — quota tracking had no persistent home
+
+**Status:** ✅ Shipped — Cloud Functions deployed, secrets provisioned, `xcodebuild clean build` succeeded
+
+### Problem
+While verifying the `UsageTracker` display fix below, found the actual dominant
+cause of "quota not working at all": **Cloud Functions had never been enabled
+or deployed** in the `visionclother` Firebase project (`403: Cloud Functions
+API has not been used in project visionclother before or it is disabled`), and
+`Vision_clother/Config/ProxyConfig.swift`'s `#if DEBUG` branch was hardcoded to
+a local Firebase emulator tunneled through a personal ngrok URL. That
+emulator's Firestore is a separate, in-memory-only store from real production
+Firestore, and gets wiped on every emulator restart (not run with
+`--import`/`--export-on-exit`). Confirmed via direct Firestore/Auth queries:
+zero `users/{uid}/meta/usage` documents existed anywhere in real production
+Firestore, for any account, including the developer's own long-lived Google
+account — the server-side quota counter (`quota.ts`, otherwise verified
+correct/transactional) had simply never run against persistent storage.
+Restarting the local emulator during normal backend iteration wiped all
+locally-tracked quota state, which looked identical to "quota reset to
+maximum" from the app's point of view.
+
+### Fix
+- Provisioned `OPENROUTER_API_KEY`/`PEXELS_API_KEY` into Secret Manager
+  (`firebase functions:secrets:set`, piped from `Vision_clother/Config/Secrets.plist`
+  — values never printed) — this also auto-enabled the previously-disabled
+  Secret Manager API.
+- `backend/functions/src/index.ts`: added `invoker: "public"` to the `api`
+  `onRequest` config — the first deploy attempt succeeded but Cloud Run
+  rejected every request with a 403 at the IAM layer (separate from the app's
+  own `verifyAuth` Firebase-ID-token check) because nothing had granted
+  `allUsers` invoke access. Without this, a valid ID token still never reaches
+  Express.
+- Deployed via `firebase deploy --only functions --project visionclother` —
+  live at `https://api-z3sgjy64ga-uc.a.run.app`, confirmed with `curl` (401
+  `missing_id_token` from the app's own middleware, not Cloud Run's 403).
+- `Vision_clother/Config/ProxyConfig.swift`: both `#if DEBUG` and `#else`
+  branches now point at the deployed URL — DEBUG previously pointed at the
+  ephemeral local-emulator/ngrok setup described above. Local backend-code
+  iteration should still swap DEBUG back to `localhost`/ngrok as needed, but
+  start the emulator with `--import`/`--export-on-exit` to avoid this same
+  class of bug re-appearing locally.
+
+| File | Change |
+|---|---|
+| `backend/functions/src/index.ts` | Added `invoker: "public"` to `onRequest` config |
+| `Vision_clother/Config/ProxyConfig.swift` | Both DEBUG and Release `baseURL` now point at the deployed function URL |
+| Secret Manager (`visionclother` project) | `OPENROUTER_API_KEY`, `PEXELS_API_KEY` provisioned |
+| Cloud Functions (`visionclother` project) | `api` (2nd gen, us-central1) deployed for the first time |
+
+---
+
+## 2026-07-17 — Fix: Quota display resetting to maximum on relaunch / mid-session
+
+**Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)
+
+### Problem
+Reported: the recommendations/combinations quota shown in the app renewed to
+maximum as soon as the app was closed and reopened, and sometimes reset
+mid-session while switching views or typing. Server-side enforcement
+(`backend/functions/src/middleware/quota.ts`) and Firestore rules
+(`backend/firestore.rules`, client write access to `meta/usage` is `false`)
+were both confirmed correct — the bug was entirely in the new client-side
+read model, `Vision_clother/Data/UsageTracker.swift`:
+1. `refreshUsage()` did `usage = try? await syncService.fetchUsage(uid:)`,
+   collapsing *any* failure (network blip, permission-denied while a fresh ID
+   token propagates, decode error) into `nil`. Since the used-count computed
+   properties fall back to `?? 0` on a `nil` `usage`, any transient fetch
+   failure displayed as "quota reset to maximum" — indistinguishable from a
+   real reset. Every foreground (`Vision_clotherApp.swift`'s
+   `scenePhase == .active` handler) triggers this fetch, explaining the
+   "renews on reopen" symptom.
+2. Three uncoordinated call sites (`UsageTracker.init`'s `AuthService.shared.$uid`
+   subscription, the app's `scenePhase` handler, and `AccountSectionView`'s
+   `.task(id:)`/manual refresh) had no in-flight guard, so an older, slower
+   fetch could resolve after a newer one (or after an optimistic
+   `record*Used()` bump) and silently overwrite it — explaining the
+   "sometimes while changing views/typing" resets.
+3. Separately, `recordRecommendationUsed()`/`recordCombinationUsed()` never
+   checked `usage.periodKey` against the current month before incrementing,
+   so a stale cross-month DTO would keep accumulating instead of resetting.
+Confirmed `AuthService.uid` itself does not flicker during normal use (only
+on explicit sign-out/delete-account) — ruled out as a contributing cause.
+
+### Fix
+All changes in `Vision_clother/Data/UsageTracker.swift`:
+- `refreshUsage()` now uses `do`/`catch` instead of `try?`: a genuinely
+  missing Firestore doc (`nil`, no throw) is adopted as real "0 used", but a
+  thrown error is logged and leaves `usage` untouched (keeps last-known-good
+  value) instead of wiping it.
+- Added `refreshGeneration`, a monotonic counter captured per-call before the
+  `await`; a fetch only commits its result if it's still the most recently
+  *started* one, so a slow/stale fetch can no longer clobber a newer read or
+  an optimistic increment.
+- Added a `UserDefaults`-backed cache (`UsageTracker.cachedUsage.\(uid)`,
+  `UsageDTO` is already `Codable`) — `init` seeds `usage` from the cache
+  before the first network refresh completes, so a cold launch shows the
+  last known count immediately instead of a blank/zero state; the cache is
+  updated on every successful fetch and optimistic increment.
+- `recordRecommendationUsed()`/`recordCombinationUsed()` now route through a
+  new `currentPeriodUsage()` helper that resets to a fresh zeroed `UsageDTO`
+  when the cached `periodKey` doesn't match the current UTC month, instead of
+  incrementing stale counts.
+
+| File | Change |
+|---|---|
+| `Vision_clother/Data/UsageTracker.swift` | `refreshUsage()` error handling + generation guard; `UserDefaults` last-known-usage cache (seed on init, write on fetch/optimistic increment); `currentPeriodUsage()` cross-month reset guard for optimistic increments |
+
+---
+
 ## 2026-07-17 — Fix: Six High-severity scale/cost findings (prompt caching, response caching, quota loopholes, fail-open abuse vector, unbounded sync pull, View/ViewModel layering)
 
 **Status:** ✅ Shipped — Build Succeeded (`xcodebuild clean build`)

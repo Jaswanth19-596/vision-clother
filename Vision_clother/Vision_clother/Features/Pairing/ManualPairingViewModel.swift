@@ -44,6 +44,9 @@ final class ManualPairingViewModel {
     private let validationService: PersonPhotoValidationService
     private let tryOnService: TryOnRenderService
     private let photoLibrarySaver: PhotoLibrarySaver
+    /// Quota visibility feature: optimistic combination-usage bump on a
+    /// successful render — see `Data/UsageTracker.swift`.
+    private let usageTracker: UsageTracker
     private var generationTask: Task<Void, Never>?
     /// Identifies the in-flight generation. `Task.cancel()` is cooperative —
     /// a stale callback can still land after a newer selection has already
@@ -56,12 +59,14 @@ final class ManualPairingViewModel {
         repository: WardrobeRepository,
         validationService: PersonPhotoValidationService = MockPersonPhotoValidationService(),
         tryOnService: TryOnRenderService = MockTryOnRenderService(),
-        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver()
+        photoLibrarySaver: PhotoLibrarySaver = MockPhotoLibrarySaver(),
+        usageTracker: UsageTracker
     ) {
         self.repository = repository
         self.validationService = validationService
         self.tryOnService = tryOnService
         self.photoLibrarySaver = photoLibrarySaver
+        self.usageTracker = usageTracker
         self.hasPortrait = UserPortraitStorage.exists
 
         let inventory = (try? repository.fetchInventory()) ?? []
@@ -69,8 +74,12 @@ final class ManualPairingViewModel {
         self.availableBottoms = inventory.filter { $0.slot == .bottom && !$0.isGhostElement }
     }
 
+    /// Quota visibility feature: proactively blocks the same 0-guest-cap /
+    /// exhausted-free-tier-cap condition the server would otherwise reject
+    /// with `TryOnError.signInRequired`/`.quotaExceeded` — see
+    /// `Data/UsageTracker.swift`.
     var canGeneratePreview: Bool {
-        hasPortrait && selectedTop != nil && selectedBottom != nil
+        hasPortrait && selectedTop != nil && selectedBottom != nil && usageTracker.combinationsRemaining > 0
     }
 
     /// Selecting a different item mid-generation cancels whatever's in
@@ -89,6 +98,12 @@ final class ManualPairingViewModel {
     /// `.failed` — that's the Retry affordance's path.
     func generatePreview() {
         guard let top = selectedTop, let bottom = selectedBottom else { return }
+        guard usageTracker.combinationsRemaining > 0 else {
+            state = .failed(usageTracker.isAnonymousQuota
+                             ? "Sign in to try this on."
+                             : "You've used all your combinations this month.")
+            return
+        }
         generationTask?.cancel()
         let generationID = UUID()
         currentGenerationID = generationID
@@ -148,6 +163,7 @@ final class ManualPairingViewModel {
         case .succeeded(let imageURL):
             AppLog.info(.viewModel, "ManualPairingViewModel: generationID=\(generationID) succeeded")
             state = .success(imageURL: imageURL)
+            usageTracker.recordCombinationUsed()
         case .failed(let error):
             AppLog.error(.viewModel, "ManualPairingViewModel: generationID=\(generationID) failed — \(String(describing: error))")
             state = .failed(error.errorDescription ?? "Couldn't generate that preview.")

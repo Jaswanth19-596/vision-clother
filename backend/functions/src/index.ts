@@ -16,6 +16,11 @@ export const api = onRequest(
     secrets: [openRouterApiKey, pexelsApiKey],
     timeoutSeconds: 180,
     memory: "256MiB",
+    // Public at the Cloud Run/IAM layer — the app's own auth gate is
+    // `middleware/verifyAuth.ts` (Firebase ID token bearer), not IAM.
+    // Without this, Cloud Run rejects every request with a 403 before it
+    // ever reaches Express, regardless of a valid ID token.
+    invoker: "public",
   },
   buildApp()
 );

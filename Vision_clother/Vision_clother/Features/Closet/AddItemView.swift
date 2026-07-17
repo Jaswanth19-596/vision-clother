@@ -29,6 +29,9 @@ struct AddItemView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(JobQueueStore.self) private var jobQueueStore
+    /// Quota visibility feature (`Data/UsageTracker.swift`) — live item-count
+    /// caption + proactive cap blocking, see `captureSourcePicker`.
+    @Environment(UsageTracker.self) private var usageTracker
 
     let defaultSlot: Slot?
 
@@ -61,7 +64,10 @@ struct AddItemView: View {
             viewModel = AddItemViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
         }
         .onChange(of: viewModel?.didSave) { _, didSave in
-            if didSave == true { dismiss() }
+            if didSave == true {
+                usageTracker.refreshItemCounts()
+                dismiss()
+            }
         }
         .fullScreenCover(isPresented: $isCameraPresented) {
             CameraCaptureView { data in
@@ -86,7 +92,8 @@ struct AddItemView: View {
                 model: viewModel.editor,
                 previewImageData: nil,
                 saveButtonLabel: "Save to Closet",
-                onSave: { Task { await viewModel.saveItem() } }
+                onSave: { Task { await viewModel.saveItem() } },
+                capMessage: isSlotAtCap(viewModel.editor.slot) ? "You've reached the item limit for this category. Sign in to add more." : nil
             )
 
         case .saving:
@@ -101,6 +108,35 @@ struct AddItemView: View {
             }
             .padding()
         }
+    }
+
+    /// "3/5 core items · 1/2 accessories" — always both counts, since a
+    /// generic (`defaultSlot == nil`) add could land in either group.
+    private var itemQuotaCaption: some View {
+        Text("\(usageTracker.coreItemCount)/\(usageTracker.coreItemCap) core items · \(usageTracker.accessoryItemCount)/\(usageTracker.accessoryItemCap) accessories")
+            .font(.caption)
+            .foregroundStyle(usageTracker.isCoreItemCapReached || usageTracker.isAccessoryItemCapReached ? .red : .secondary)
+    }
+
+    /// Camera/photo-library capture never lets the user pick a category up
+    /// front — the final slot is only known after `JobQueueStore`'s
+    /// background vision-tagging pipeline runs (`performUpload`'s own
+    /// guard is the real backstop, since it checks the *tagged* slot, not
+    /// this hint). `defaultSlot` (the category tapped from `ClosetView`,
+    /// when present) is the best available pre-flight signal; with no
+    /// hint, only block once every category is full.
+    private var isCaptureBlockedByQuota: Bool {
+        guard let defaultSlot else {
+            return usageTracker.isCoreItemCapReached && usageTracker.isAccessoryItemCapReached
+        }
+        return defaultSlot.isRequired ? usageTracker.isCoreItemCapReached : usageTracker.isAccessoryItemCapReached
+    }
+
+    /// Live re-check against the manual-entry form's currently selected
+    /// category (`editor.slot`, changeable via its own picker) — unlike
+    /// `isCaptureBlockedByQuota`'s `defaultSlot` guess, this is exact.
+    private func isSlotAtCap(_ slot: Slot) -> Bool {
+        slot.isRequired ? usageTracker.isCoreItemCapReached : usageTracker.isAccessoryItemCapReached
     }
 
     private func progress(_ label: String) -> some View {
@@ -119,6 +155,8 @@ struct AddItemView: View {
                 description: Text("Take a photo, or choose one or more from your library. They'll tag and save in the background.")
             )
 
+            itemQuotaCaption
+
             Button {
                 isCameraPresented = true
             } label: {
@@ -126,12 +164,14 @@ struct AddItemView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryButtonStyle())
+            .disabled(isCaptureBlockedByQuota)
 
             PhotosPicker(selection: $photoPickerItems, maxSelectionCount: maxSelectionCount, matching: .images) {
                 Label("Choose from Library", systemImage: "photo.on.rectangle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryButtonStyle())
+            .disabled(isCaptureBlockedByQuota)
 
             Button {
                 viewModel.startManualEntry(defaultSlot: defaultSlot ?? .top)
@@ -140,6 +180,7 @@ struct AddItemView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryButtonStyle())
+            .disabled(usageTracker.isCoreItemCapReached && usageTracker.isAccessoryItemCapReached)
         }
         .padding()
         .onChange(of: photoPickerItems) { _, newItems in
@@ -213,15 +254,19 @@ struct CameraCaptureView: UIViewControllerRepresentable {
         for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, ItemRating.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
+    let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
+    let previewUsageTracker = UsageTracker(repository: repository, syncService: MockWardrobeSyncService())
     AddItemView(defaultSlot: nil)
         .modelContainer(container)
         .environment(JobQueueStore(
-            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
+            repository: repository,
             backgroundIsolationService: MockBackgroundIsolationService(),
             imagePreprocessingService: MockBackgroundIsolationService(),
             visionMetadataService: MockVisionMetadataExtractionService(),
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
-            notificationService: MockJobNotificationService()
+            notificationService: MockJobNotificationService(),
+            usageTracker: previewUsageTracker
         ))
+        .environment(previewUsageTracker)
 }

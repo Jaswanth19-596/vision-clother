@@ -20,6 +20,9 @@ import SwiftUI
 struct ManualPairingView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    /// Quota visibility feature (`Data/UsageTracker.swift`) — live
+    /// combinations caption near "Generate Preview".
+    @Environment(UsageTracker.self) private var usageTracker
 
     @State private var viewModel: ManualPairingViewModel?
     /// Ticks once per "Generate Preview" tap and once per completed save —
@@ -51,7 +54,8 @@ struct ManualPairingView: View {
                 repository: repository,
                 validationService: ServiceFactory.makePersonPhotoValidationService(),
                 tryOnService: ServiceFactory.makeTryOnRenderService(repository: repository),
-                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver()
+                photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
+                usageTracker: usageTracker
             )
         }
         .onChange(of: viewModel?.didSaveOutfit) { _, didSave in
@@ -141,6 +145,8 @@ struct ManualPairingView: View {
     private func generationSection(viewModel: ManualPairingViewModel) -> some View {
         switch viewModel.state {
         case .idle:
+            combinationsQuotaCaption
+
             Button("Generate Preview") {
                 viewModel.generatePreview()
                 generateTick += 1
@@ -200,6 +206,23 @@ struct ManualPairingView: View {
         }
     }
 
+    /// Quota visibility feature — "combinations" is the user-facing term
+    /// for a try-on render (`Data/UsageTracker.swift`'s doc comment).
+    @ViewBuilder
+    private var combinationsQuotaCaption: some View {
+        if usageTracker.combinationsRemaining <= 0 {
+            Text(usageTracker.isAnonymousQuota
+                 ? "Sign in to try this on."
+                 : "You've used all your combinations this month. Resets next month.")
+                .font(.caption)
+                .foregroundStyle(.red)
+        } else {
+            Text("\(usageTracker.combinationsRemaining) combination\(usageTracker.combinationsRemaining == 1 ? "" : "s") left this month")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private func progress(viewModel: ManualPairingViewModel, label: String) -> some View {
         VStack(spacing: 12) {
             ProgressView(label)
@@ -242,9 +265,14 @@ private struct PairingItemCell: View {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
     ManualPairingView()
-        .modelContainer(
-            for: [WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self],
-            inMemory: true
-        )
+        .modelContainer(container)
+        .environment(UsageTracker(
+            repository: SyncingWardrobeRepository(modelContext: container.mainContext),
+            syncService: MockWardrobeSyncService()
+        ))
 }

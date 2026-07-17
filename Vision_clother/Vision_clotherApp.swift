@@ -29,6 +29,11 @@ struct Vision_clotherApp: App {
     /// Combine subscription (`Data/WardrobeSyncCoordinator.swift`) stays
     /// alive; a locally-scoped instance would be deallocated immediately.
     private let syncCoordinator: WardrobeSyncCoordinator
+    /// Quota visibility feature: retained for the app's lifetime so its
+    /// `AuthService.shared.$uid` subscription (`Data/UsageTracker.swift`)
+    /// stays alive across account switches, same posture as
+    /// `syncCoordinator`.
+    private let usageTracker: UsageTracker
     private let notificationDelegate = NotificationDelegate()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -51,6 +56,7 @@ struct Vision_clotherApp: App {
 
         let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
         syncCoordinator = WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: ServiceFactory.makeWardrobeSyncService())
+        usageTracker = UsageTracker(repository: repository, syncService: ServiceFactory.makeWardrobeSyncService())
         let store = JobQueueStore(
             repository: repository,
             backgroundIsolationService: ServiceFactory.makeBackgroundIsolationService(),
@@ -58,7 +64,8 @@ struct Vision_clotherApp: App {
             visionMetadataService: ServiceFactory.makeVisionMetadataExtractionService(),
             tryOnService: ServiceFactory.makeTryOnRenderService(repository: repository),
             photoLibrarySaver: ServiceFactory.makePhotoLibrarySaver(),
-            notificationService: ServiceFactory.makeNotificationService()
+            notificationService: ServiceFactory.makeNotificationService(),
+            usageTracker: usageTracker
         )
         jobQueueStore = store
 
@@ -75,6 +82,7 @@ struct Vision_clotherApp: App {
             RootTabView()
                 .environment(jobQueueStore)
                 .environment(syncCoordinator)
+                .environment(usageTracker)
                 // Routes both the Google Sign-In consent redirect and the
                 // phone-auth reCAPTCHA verification redirect back into the
                 // app — see Vision_clother/Config/URLSchemes.plist and
@@ -90,6 +98,8 @@ struct Vision_clotherApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
                         Task { await syncCoordinator.reconcileIfSignedIn() }
+                        Task { await usageTracker.refreshUsage() }
+                        usageTracker.refreshItemCounts()
                     }
                 }
         }

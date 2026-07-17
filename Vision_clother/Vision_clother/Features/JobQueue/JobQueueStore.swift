@@ -70,6 +70,11 @@ final class JobQueueStore {
     private let tryOnService: TryOnRenderService
     private let photoLibrarySaver: PhotoLibrarySaver
     private let notificationService: JobNotificationService
+    /// Quota visibility feature (`Data/UsageTracker.swift`): item-count
+    /// refresh after a successful upload, optimistic combination-usage
+    /// bump after a successful try-on — see `performUpload`/
+    /// `handleTryOnUpdate`.
+    private let usageTracker: UsageTracker
 
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -106,7 +111,8 @@ final class JobQueueStore {
         visionMetadataService: VisionMetadataExtractionService,
         tryOnService: TryOnRenderService,
         photoLibrarySaver: PhotoLibrarySaver,
-        notificationService: JobNotificationService
+        notificationService: JobNotificationService,
+        usageTracker: UsageTracker
     ) {
         self.repository = repository
         self.backgroundIsolationService = backgroundIsolationService
@@ -115,6 +121,7 @@ final class JobQueueStore {
         self.tryOnService = tryOnService
         self.photoLibrarySaver = photoLibrarySaver
         self.notificationService = notificationService
+        self.usageTracker = usageTracker
     }
 
     // MARK: - Upload
@@ -213,6 +220,7 @@ final class JobQueueStore {
             finishJob(jobID, status: .succeeded, resultItemID: item.id)
             PerfLog.logger.notice("[ingest] job=\(jobID, privacy: .public) savedItem=\(item.id, privacy: .public) filename=\(filename, privacy: .public)")
             notificationService.notifyUploadSucceeded(itemLabel: item.displayLabel)
+            usageTracker.refreshItemCounts()
         } catch {
             let message = "Couldn't save that item. Try again."
             AppLog.error(.jobQueue, "performUpload: job=\(jobID) save failed — \(String(describing: error))")
@@ -301,6 +309,7 @@ final class JobQueueStore {
             jobs[index].completedAt = .now
             runningTasks[jobID] = nil
             notificationService.notifyTryOnSucceeded()
+            usageTracker.recordCombinationUsed()
             startNextPendingIfAny()
         case .failed(let error):
             AppLog.error(.jobQueue, "handleTryOnUpdate: job=\(jobID) failed — \(String(describing: error))")
