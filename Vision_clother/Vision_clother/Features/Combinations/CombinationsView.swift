@@ -13,6 +13,11 @@ import SwiftUI
 
 struct CombinationsView: View {
     @Environment(\.modelContext) private var modelContext
+    /// Photo-refresh reactivity — see `ClosetView.swift`'s matching comment;
+    /// `WardrobeSyncCoordinator`'s background photo prefetch writes
+    /// combination renders straight to `ImageStorage`, outside SwiftData.
+    @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
+    @Query(sort: \SavedCombination.savedAt, order: .reverse) private var combinations: [SavedCombination]
     @State private var viewModel: CombinationsViewModel?
     @State private var selectedIndex: Int?
 
@@ -41,14 +46,11 @@ struct CombinationsView: View {
             guard viewModel == nil else { return }
             viewModel = CombinationsViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
         }
-        .onAppear {
-            viewModel?.loadCombinations()
-        }
     }
 
     @ViewBuilder
     private func content(viewModel: CombinationsViewModel) -> some View {
-        if viewModel.combinations.isEmpty {
+        if combinations.isEmpty {
             ContentUnavailableView(
                 "No Saved Combinations",
                 systemImage: "square.grid.2x2",
@@ -56,7 +58,7 @@ struct CombinationsView: View {
             )
         } else {
             List {
-                ForEach(Array(viewModel.combinations.enumerated()), id: \.element.id) { index, combination in
+                ForEach(Array(combinations.enumerated()), id: \.element.id) { index, combination in
                     Button {
                         selectedIndex = index
                     } label: {
@@ -72,6 +74,7 @@ struct CombinationsView: View {
                     }
                 }
             }
+            .id(syncCoordinator.photoRefreshTick)
         }
     }
 }

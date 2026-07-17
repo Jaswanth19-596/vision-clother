@@ -121,7 +121,9 @@ final class SwipeDiscoveryViewModel {
             let photos = try await feedService.fetchDeck(count: deckSize)
             deck.append(contentsOf: photos)
             loadState = .loaded
+            AppLog.info(.viewModel, "SwipeDiscoveryViewModel.loadDeck: ok fetched=\(photos.count) deckSize=\(deck.count)")
         } catch {
+            AppLog.error(.viewModel, "SwipeDiscoveryViewModel.loadDeck: failed — \(String(describing: error))")
             loadState = .failed("Couldn't load new photos. Try again.")
         }
     }
@@ -158,10 +160,12 @@ final class SwipeDiscoveryViewModel {
                 embedding: embedding
             )
             refreshCalibrationState()
+            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: ok photo=\(photo.id) liked=\(liked) drift=\(drift.map(String.init(describing:)) ?? "nil")")
             if let drift {
                 presentDriftFeedback(drift / 100.0)
             }
         } catch {
+            AppLog.error(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: failed photo=\(photo.id) — \(String(describing: error))")
             lastSwipeError = "Couldn't save that swipe — it won't count toward your taste profile."
         }
     }

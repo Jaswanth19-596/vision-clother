@@ -470,3 +470,14 @@ struct SyncStatusDTO: Codable {
     var hasCompletedInitialSync: Bool
     var lastPulledAt: Date?
 }
+
+/// Bookkeeping-only doc (`users/{uid}/meta/usage`) — written exclusively by
+/// `backend/functions/src/middleware/quota.ts`'s Admin-SDK transaction
+/// (`backend/firestore.rules` denies client writes to this doc). Read-only
+/// on the client, for `AccountSectionView`'s usage readout only — never used
+/// to gate anything, since the proxy is the sole enforcer.
+struct UsageDTO: Codable {
+    var periodKey: String
+    var recommendationCount: Int
+    var tryOnCount: Int
+}

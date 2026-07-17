@@ -67,6 +67,7 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.save(item)
         markDirty(.wardrobeItem, entityID: item.id, dto: WardrobeItemDTO.from(item))
         uploadImageIfNeeded(assetName: item.imageAssetName, kind: .wardrobeItemCutout)
+        adjustItemCountIfNeeded(slot: item.slot, delta: 1)
     }
 
     func update(_ item: WardrobeItem) throws {
@@ -78,6 +79,7 @@ final class SyncingWardrobeRepository: WardrobeRepository {
     func delete(_ item: WardrobeItem) throws {
         try underlying.delete(item)
         markDeleted(.wardrobeItem, entityID: item.id)
+        adjustItemCountIfNeeded(slot: item.slot, delta: -1)
     }
 
     // MARK: - Feedback history (read-only aggregate)
@@ -254,6 +256,7 @@ final class SyncingWardrobeRepository: WardrobeRepository {
     }
 
     private func upsertSyncMetadata(type: SyncEntityType, entityID: UUID, operation: SyncOperation, payload: Data?) {
+        AppLog.debug(.sync, "outbox: enqueue \(type.rawValue) \(operation.rawValue) \(entityID)")
         let key = SyncMetadata.compositeKey(entityType: type, entityID: entityID)
         let descriptor = FetchDescriptor<SyncMetadata>(predicate: #Predicate { $0.compositeKey == key })
 
@@ -277,7 +280,10 @@ final class SyncingWardrobeRepository: WardrobeRepository {
     /// runs (e.g. mid account-switch). `nil` (signed out) is a no-op: the
     /// row stays queued, dirty, for the next successful sign-in's drain.
     private func kickOutboxDrain() {
-        guard let uid = AuthService.shared.uid else { return }
+        guard let uid = AuthService.shared.uid else {
+            AppLog.debug(.sync, "kickOutboxDrain: no uid, staying queued for next sign-in")
+            return
+        }
         let worker = outboxWorker
         Task { await worker.drainNow(uid: uid) }
     }
@@ -296,11 +302,35 @@ final class SyncingWardrobeRepository: WardrobeRepository {
     private func uploadImageIfNeeded(assetName: String?, kind: ImageKind) {
         guard let assetName, let uid = AuthService.shared.uid, let data = ImageStorage.loadData(for: assetName) else { return }
         let uploadData: Data
+        let contentType: SyncImageContentType
         switch kind {
-        case .wardrobeItemCutout: uploadData = ImageStorage.downscaledPNGForUpload(data)
-        case .combinationRender: uploadData = ImageStorage.downscaledJPEGForUpload(data)
+        case .wardrobeItemCutout: uploadData = ImageStorage.downscaledPNGForUpload(data); contentType = .png
+        case .combinationRender: uploadData = ImageStorage.downscaledJPEGForUpload(data); contentType = .jpeg
         }
         let service = syncService
-        Task { try? await service.uploadImage(filename: assetName, data: uploadData, uid: uid) }
+        Task {
+            do {
+                try await service.uploadImage(filename: assetName, data: uploadData, contentType: contentType, uid: uid)
+            } catch {
+                AppLog.error(.sync, "uploadImageIfNeeded: \(assetName) failed, will retry on next save/update — \(String(describing: error))")
+            }
+        }
+    }
+
+    /// Best-effort, fire-and-forget — see `Services/WardrobeSyncService.swift`'s
+    /// `adjustItemCount` doc comment for why this isn't atomic with the item
+    /// doc write. Only `save` (+1) and `delete` (-1) call this; `update`
+    /// deliberately doesn't. Known gap: `Features/Closet/EditItemView.swift`
+    /// does let a user re-slot an item on edit, which this counter doesn't
+    /// track (the old slot is already overwritten on `item` by the time
+    /// `update` sees it, so there's no previous value to diff against here).
+    /// Same posture as `backend/firestore.rules`'s own documented
+    /// `meta/itemCounts` limitation — a scheduled reconciliation function
+    /// against actual per-slot counts is the recommended real fix, not
+    /// implemented here.
+    private func adjustItemCountIfNeeded(slot: Slot, delta: Int) {
+        guard let uid = AuthService.shared.uid else { return }
+        let service = syncService
+        Task { try? await service.adjustItemCount(slot: slot, delta: delta, uid: uid) }
     }
 }

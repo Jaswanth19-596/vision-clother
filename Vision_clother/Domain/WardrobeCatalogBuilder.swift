@@ -116,6 +116,7 @@ enum WardrobeCatalogBuilder {
         history: FeedbackHistory? = nil,
         prospectiveItemID: UUID? = nil
     ) -> (entries: [CatalogEntry], index: [String: WardrobeItem]) {
+        let ghostCount = inventory.filter(\.isGhostElement).count
         var candidates = inventory.filter { !$0.isGhostElement }
 
         if let constraints {
@@ -127,6 +128,8 @@ enum WardrobeCatalogBuilder {
             // an overly narrow constraint shouldn't starve the catalog.
             if !prefiltered.isEmpty {
                 candidates = prefiltered
+            } else {
+                MLLog.logger.notice("catalogBuild: constraints prefilter would leave 0 items, skipped")
             }
         }
 
@@ -172,6 +175,7 @@ enum WardrobeCatalogBuilder {
             )
         }
 
+        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil)")
         return (entries, index)
     }
 

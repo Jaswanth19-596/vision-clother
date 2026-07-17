@@ -13,6 +13,13 @@ import UIKit
 
 struct ClosetView: View {
     @Environment(\.modelContext) private var modelContext
+    /// Photo-refresh reactivity: `Data/WardrobeSyncCoordinator.swift`'s
+    /// background photo prefetch writes downloaded bytes straight to
+    /// `ImageStorage`, entirely outside SwiftData — `@Query` never re-fires
+    /// for that, so without keying the grid off this tick, a photo that
+    /// wasn't cached locally yet at the first post-switch draw would never
+    /// appear until something unrelated forced a redraw.
+    @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Query private var storedItems: [WardrobeItem]
     @State private var isAddItemPresented = false
     @State private var isManualPairingPresented = false
@@ -53,6 +60,7 @@ struct ClosetView: View {
                     }
                 }
                 .padding()
+                .id(syncCoordinator.photoRefreshTick)
             }
             .navigationTitle("My Closet")
             .toolbar {

@@ -113,10 +113,14 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
         weather: WeatherContext?,
         useStructuredOutput: Bool
     ) async throws -> StyleConstraints {
+        let requestID = AppLog.newRequestID()
+        AppLog.info(.network, "[\(requestID)] intentExtraction: POST \(endpoint.path) structured=\(useStructuredOutput) promptLength=\(prompt.count)")
+
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.network, "[\(requestID)] intentExtraction: missing auth header — \(String(describing: error))")
             throw IntentExtractionError.missingAPIKey
         }
 
@@ -138,11 +142,13 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            AppLog.error(.network, "[\(requestID)] intentExtraction: transport error — \(String(describing: error))")
             throw IntentExtractionError.network(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.error(.network, "[\(requestID)] intentExtraction: HTTP \(statusCode)")
             throw IntentExtractionError.httpStatus(statusCode)
         }
 
@@ -150,17 +156,22 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
         do {
             decoded = try JSONDecoder().decode(OpenRouterChatResponse.self, from: data)
         } catch {
+            AppLog.error(.network, "[\(requestID)] intentExtraction: response envelope decode failed — \(String(describing: error))")
             throw IntentExtractionError.decoding(error)
         }
 
         guard let content = decoded.choices.first?.message.content, !content.isEmpty else {
+            AppLog.error(.network, "[\(requestID)] intentExtraction: empty choices")
             throw IntentExtractionError.emptyChoices
         }
 
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
-            return try JSONDecoder().decode(StyleConstraints.self, from: payload)
+            let constraints = try JSONDecoder().decode(StyleConstraints.self, from: payload)
+            AppLog.info(.network, "[\(requestID)] intentExtraction: ok")
+            return constraints
         } catch {
+            AppLog.error(.network, "[\(requestID)] intentExtraction: StyleConstraints decode failed — \(String(describing: error))")
             throw IntentExtractionError.decoding(error)
         }
     }
@@ -268,5 +279,21 @@ struct MockIntentExtractionService: IntentExtractionService {
 
     func extractConstraints(prompt: String, weather: WeatherContext?) async throws -> StyleConstraints {
         result
+    }
+}
+
+/// Routes each call to a real or mock `IntentExtractionService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`) and
+/// `AuthGatedVisionMetadataExtractionService`.
+@MainActor
+final class AuthGatedIntentExtractionService: IntentExtractionService {
+    private lazy var real = OpenRouterIntentExtractionService()
+    private lazy var mock = MockIntentExtractionService()
+    private var current: IntentExtractionService { AuthService.shared.isSignedIn ? real : mock }
+
+    func extractConstraints(prompt: String, weather: WeatherContext?) async throws -> StyleConstraints {
+        try await current.extractConstraints(prompt: prompt, weather: weather)
     }
 }

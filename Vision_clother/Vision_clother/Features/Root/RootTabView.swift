@@ -56,4 +56,5 @@ struct RootTabView: View {
             photoLibrarySaver: MockPhotoLibrarySaver(),
             notificationService: MockJobNotificationService()
         ))
+        .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
 }

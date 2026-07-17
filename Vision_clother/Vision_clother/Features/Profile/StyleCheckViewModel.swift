@@ -103,6 +103,7 @@ final class StyleCheckViewModel {
             state = .result(result)
             logResult(result)
         } catch {
+            MLLog.logger.error("manual style check: failed — \(String(describing: error), privacy: .public)")
             state = .failed("Couldn't analyze that photo. Try a different one.")
         }
     }

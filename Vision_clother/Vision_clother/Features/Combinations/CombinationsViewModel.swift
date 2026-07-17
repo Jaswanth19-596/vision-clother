@@ -11,25 +11,29 @@
 import Foundation
 import Observation
 
+/// Deliberately holds no cached `combinations` array of its own — `CombinationsView`/
+/// `CombinationDetailView` each read a live `@Query` instead (SwiftData
+/// auto-updates it on every insert/delete, including ones `WardrobeSyncCoordinator`
+/// makes during a background pull). A manually-cached snapshot here used to
+/// go stale/detached out from under an open `CombinationDetailView` mid-pull,
+/// crashing on the next property access — see `Data/WardrobeSyncCoordinator.swift`'s
+/// pull-apply methods for the matching fix on the write side.
 @Observable
 @MainActor
 final class CombinationsViewModel {
-    private(set) var combinations: [SavedCombination] = []
-
     private let repository: WardrobeRepository
 
     init(repository: WardrobeRepository) {
         self.repository = repository
-        loadCombinations()
-    }
-
-    func loadCombinations() {
-        combinations = (try? repository.fetchSavedCombinations()) ?? []
     }
 
     func delete(_ combination: SavedCombination) {
-        try? repository.deleteCombination(combination)
-        loadCombinations()
+        do {
+            try repository.deleteCombination(combination)
+            AppLog.info(.viewModel, "CombinationsViewModel.delete: ok id=\(combination.id)")
+        } catch {
+            AppLog.error(.viewModel, "CombinationsViewModel.delete: failed id=\(combination.id) — \(String(describing: error))")
+        }
     }
 
     /// Resolves `combination.itemIDsBySlot` back to real `WardrobeItem`s for

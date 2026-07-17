@@ -87,10 +87,14 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
     }
 
     private func performRequest(imageData: Data, useStructuredOutput: Bool) async throws -> GarmentMetadata {
+        let requestID = AppLog.newRequestID()
+        AppLog.info(.vision, "[\(requestID)] visionTagging: POST \(endpoint.path) structured=\(useStructuredOutput) imageBytes=\(imageData.count)")
+
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.vision, "[\(requestID)] visionTagging: missing auth header — \(String(describing: error))")
             throw VisionMetadataExtractionError.missingAPIKey
         }
 
@@ -111,11 +115,13 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            AppLog.error(.vision, "[\(requestID)] visionTagging: transport error — \(String(describing: error))")
             throw VisionMetadataExtractionError.network(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.error(.vision, "[\(requestID)] visionTagging: HTTP \(statusCode)")
             throw VisionMetadataExtractionError.httpStatus(statusCode)
         }
 
@@ -123,21 +129,22 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         do {
             decoded = try JSONDecoder().decode(OpenRouterVisionChatResponse.self, from: data)
         } catch {
-            if let rawResponse = String(data: data, encoding: .utf8) {
-                print("❌ OpenRouter vision response decoding failed. Raw response: \(rawResponse)")
-            }
+            AppLog.error(.vision, "[\(requestID)] visionTagging: response envelope decode failed — \(String(describing: error))")
             throw VisionMetadataExtractionError.decoding(error)
         }
 
         guard let content = decoded.choices.first?.message.content, !content.isEmpty else {
+            AppLog.error(.vision, "[\(requestID)] visionTagging: empty choices")
             throw VisionMetadataExtractionError.emptyChoices
         }
 
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
-            return try JSONDecoder().decode(GarmentMetadata.self, from: payload)
+            let metadata = try JSONDecoder().decode(GarmentMetadata.self, from: payload)
+            AppLog.info(.vision, "[\(requestID)] visionTagging: ok slot=\(metadata.slot.rawValue)")
+            return metadata
         } catch {
-            print("❌ Decoding GarmentMetadata failed. Raw content: \(content)")
+            AppLog.error(.vision, "[\(requestID)] visionTagging: GarmentMetadata decode failed — \(String(describing: error))")
             throw VisionMetadataExtractionError.decoding(error)
         }
     }
@@ -270,5 +277,27 @@ struct MockVisionMetadataExtractionService: VisionMetadataExtractionService {
 
     func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
         result
+    }
+}
+
+/// Routes each call to a real or mock `VisionMetadataExtractionService` based
+/// on `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`). `ServiceFactory` used to
+/// snapshot `isSignedIn` once and bake the choice into a `let`
+/// `JobQueueStore` held for its entire lifetime: a cold launch before
+/// `AuthService.ensureGuestSession()` finished (or before a real sign-in
+/// took effect) permanently froze uploads on
+/// `MockVisionMetadataExtractionService`'s fixed placeholder description,
+/// silently mistagging every garment for the rest of the process's life
+/// even after sign-in completed.
+@MainActor
+final class AuthGatedVisionMetadataExtractionService: VisionMetadataExtractionService {
+    private lazy var real = OpenRouterVisionMetadataExtractionService()
+    private lazy var mock = MockVisionMetadataExtractionService()
+    private var current: VisionMetadataExtractionService { AuthService.shared.isSignedIn ? real : mock }
+
+    func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
+        try await current.extractMetadata(imageData: imageData)
     }
 }

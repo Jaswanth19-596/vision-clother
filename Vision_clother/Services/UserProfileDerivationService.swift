@@ -78,10 +78,14 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
     }
 
     private func performRequest(portraitData: Data, useStructuredOutput: Bool) async throws -> UserStyleProfileWire {
+        let requestID = AppLog.newRequestID()
+        AppLog.info(.network, "[\(requestID)] profileDerivation: POST \(endpoint.path) structured=\(useStructuredOutput) imageBytes=\(portraitData.count)")
+
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.network, "[\(requestID)] profileDerivation: missing auth header — \(String(describing: error))")
             throw UserProfileDerivationError.missingAPIKey
         }
 
@@ -102,11 +106,13 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            AppLog.error(.network, "[\(requestID)] profileDerivation: transport error — \(String(describing: error))")
             throw UserProfileDerivationError.network(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.error(.network, "[\(requestID)] profileDerivation: HTTP \(statusCode)")
             throw UserProfileDerivationError.httpStatus(statusCode)
         }
 
@@ -114,17 +120,22 @@ final class OpenRouterUserProfileDerivationService: UserProfileDerivationService
         do {
             decoded = try JSONDecoder().decode(OpenRouterProfileChatResponse.self, from: data)
         } catch {
+            AppLog.error(.network, "[\(requestID)] profileDerivation: response envelope decode failed — \(String(describing: error))")
             throw UserProfileDerivationError.decoding(error)
         }
 
         guard let content = decoded.choices.first?.message.content, !content.isEmpty else {
+            AppLog.error(.network, "[\(requestID)] profileDerivation: empty choices")
             throw UserProfileDerivationError.emptyChoices
         }
 
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
-            return try JSONDecoder().decode(UserStyleProfileWire.self, from: payload)
+            let profile = try JSONDecoder().decode(UserStyleProfileWire.self, from: payload)
+            AppLog.info(.network, "[\(requestID)] profileDerivation: ok")
+            return profile
         } catch {
+            AppLog.error(.network, "[\(requestID)] profileDerivation: UserStyleProfileWire decode failed — \(String(describing: error))")
             throw UserProfileDerivationError.decoding(error)
         }
     }
@@ -227,5 +238,21 @@ struct MockUserProfileDerivationService: UserProfileDerivationService {
 
     func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire {
         result
+    }
+}
+
+/// Routes each call to a real or mock `UserProfileDerivationService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`) and
+/// `AuthGatedVisionMetadataExtractionService`.
+@MainActor
+final class AuthGatedUserProfileDerivationService: UserProfileDerivationService {
+    private lazy var real = OpenRouterUserProfileDerivationService()
+    private lazy var mock = MockUserProfileDerivationService()
+    private var current: UserProfileDerivationService { AuthService.shared.isSignedIn ? real : mock }
+
+    func deriveProfile(portraitData: Data) async throws -> UserStyleProfileWire {
+        try await current.deriveProfile(portraitData: portraitData)
     }
 }

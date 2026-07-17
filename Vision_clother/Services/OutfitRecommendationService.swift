@@ -42,6 +42,9 @@ enum OutfitRecommendationError: Error, LocalizedError {
     case missingAPIKey
     case network(Error)
     case httpStatus(Int)
+    /// 429 from `backend/functions/src/middleware/quota.ts`'s `"recommendation"`
+    /// gate — `limit` is the monthly cap that was hit (20 guest / 100 free).
+    case quotaExceeded(limit: Int)
     case emptyChoices
     case decoding(Error)
 
@@ -53,6 +56,8 @@ enum OutfitRecommendationError: Error, LocalizedError {
             return "Couldn't reach the styling service. Check your connection."
         case .httpStatus(let code):
             return "Styling service returned an error (\(code))."
+        case .quotaExceeded(let limit):
+            return "You've used all \(limit) recommendations this month."
         case .emptyChoices:
             return "The styling service didn't return any outfits."
         case .decoding:
@@ -64,7 +69,7 @@ enum OutfitRecommendationError: Error, LocalizedError {
 final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     private let session: URLSession
     private let model: String
-    private let endpoint = ProxyConfig.openRouterChatURL
+    private let endpoint = ProxyConfig.openRouterRecommendURL
 
     init(session: URLSession = .shared, model: String = ModelConfig.textToText) {
         self.session = session
@@ -110,10 +115,14 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
+        let requestID = AppLog.newRequestID()
+        AppLog.info(.recommendation, "[\(requestID)] recommend: POST \(endpoint.path) structured=\(useStructuredOutput) catalogSize=\(catalog.count) turns=\(conversationHistory.count) isFinalTurn=\(isFinalTurn)")
+
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.recommendation, "[\(requestID)] recommend: missing auth header — \(String(describing: error))")
             throw OutfitRecommendationError.missingAPIKey
         }
 
@@ -139,11 +148,17 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            AppLog.error(.recommendation, "[\(requestID)] recommend: transport error — \(String(describing: error))")
             throw OutfitRecommendationError.network(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if statusCode == 429, let quota = try? JSONDecoder().decode(QuotaExceededResponse.self, from: data) {
+                AppLog.notice(.recommendation, "[\(requestID)] recommend: quota exceeded, limit=\(quota.limit)")
+                throw OutfitRecommendationError.quotaExceeded(limit: quota.limit)
+            }
+            AppLog.error(.recommendation, "[\(requestID)] recommend: HTTP \(statusCode)")
             throw OutfitRecommendationError.httpStatus(statusCode)
         }
 
@@ -151,17 +166,22 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         do {
             decoded = try JSONDecoder().decode(OpenRouterRecommendationChatResponse.self, from: data)
         } catch {
+            AppLog.error(.recommendation, "[\(requestID)] recommend: response envelope decode failed — \(String(describing: error))")
             throw OutfitRecommendationError.decoding(error)
         }
 
         guard let content = decoded.choices.first?.message.content, !content.isEmpty else {
+            AppLog.error(.recommendation, "[\(requestID)] recommend: empty choices")
             throw OutfitRecommendationError.emptyChoices
         }
 
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
-            return try JSONDecoder().decode(OutfitRecommendationResponse.self, from: payload)
+            let result = try JSONDecoder().decode(OutfitRecommendationResponse.self, from: payload)
+            AppLog.info(.recommendation, "[\(requestID)] recommend: ok outfits=\(result.outfits.count) intentClear=\(result.intentClear)")
+            return result
         } catch {
+            AppLog.error(.recommendation, "[\(requestID)] recommend: OutfitRecommendationResponse decode failed — \(String(describing: error))")
             throw OutfitRecommendationError.decoding(error)
         }
     }
@@ -416,6 +436,12 @@ private struct OpenRouterRecommendationChatResponse: Decodable {
     let choices: [Choice]
 }
 
+/// `backend/functions/src/middleware/quota.ts`'s 429 body shape:
+/// `{ error: "quota_exceeded", limit, period }`.
+private struct QuotaExceededResponse: Decodable {
+    let limit: Int
+}
+
 // MARK: - Mock for previews/tests — never touches the network.
 
 /// Reads the *actual* catalog it's given and returns valid picks referencing
@@ -472,6 +498,36 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
                 ),
             ],
             resolvedConstraints: resolvedConstraints
+        )
+    }
+}
+
+/// Routes each call to a real or mock `OutfitRecommendationService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`) and
+/// `AuthGatedVisionMetadataExtractionService`.
+@MainActor
+final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
+    private lazy var real = OpenRouterOutfitRecommendationService()
+    private lazy var mock = MockOutfitRecommendationService()
+    private var current: OutfitRecommendationService { AuthService.shared.isSignedIn ? real : mock }
+
+    func recommendOutfits(
+        conversationHistory: [ConversationTurn],
+        isFinalTurn: Bool,
+        catalog: [CatalogEntry],
+        profile: UserStyleProfile?,
+        weather: WeatherContext?,
+        history: FeedbackHistory
+    ) async throws -> OutfitRecommendationResponse {
+        try await current.recommendOutfits(
+            conversationHistory: conversationHistory,
+            isFinalTurn: isFinalTurn,
+            catalog: catalog,
+            profile: profile,
+            weather: weather,
+            history: history
         )
     }
 }

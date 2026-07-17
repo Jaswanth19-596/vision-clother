@@ -42,6 +42,12 @@ enum TryOnError: Error, LocalizedError, Equatable {
     case renderFailed(reason: String)
     case timedOut
     case cancelled
+    /// 429 from `backend/functions/src/middleware/quota.ts`'s `"tryOn"` gate
+    /// — the signed-in free-tier monthly cap (10) was hit.
+    case quotaExceeded
+    /// 403 `sign_in_required` from the same gate — guests have a 0 try-on
+    /// cap, so this always means "you're browsing as a guest."
+    case signInRequired
 
     var errorDescription: String? {
         switch self {
@@ -55,6 +61,10 @@ enum TryOnError: Error, LocalizedError, Equatable {
             return "That's taking longer than expected. Try again."
         case .cancelled:
             return "Render cancelled."
+        case .quotaExceeded:
+            return "You've used all your try-ons this month."
+        case .signInRequired:
+            return "Sign in to try this on."
         }
     }
 }
@@ -73,10 +83,14 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
         items: [WardrobeItem],
         onUpdate: @escaping (TryOnState) -> Void
     ) async {
+        let requestID = AppLog.newRequestID()
+        AppLog.info(.tryOn, "[\(requestID)] renderTryOn: starting, model=\(model) items=\(items.count)")
+
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.tryOn, "[\(requestID)] renderTryOn: missing auth header — \(String(describing: error))")
             onUpdate(.failed(.missingAPIKey))
             return
         }
@@ -106,7 +120,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             var request: URLRequest
 
             if isChatModel {
-                request = URLRequest(url: ProxyConfig.openRouterChatURL)
+                request = URLRequest(url: ProxyConfig.openRouterTryOnURL)
 
                 var contentParts: [[String: Any]] = []
 
@@ -200,6 +214,18 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             try Task.checkCancellation()
 
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let failedStatusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if failedStatusCode == 429 {
+                    AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: quota exceeded")
+                    throw TryOnError.quotaExceeded
+                }
+                if failedStatusCode == 403,
+                   let proxyError = try? JSONDecoder().decode(ProxyQuotaErrorResponse.self, from: data),
+                   proxyError.error == "sign_in_required" {
+                    AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: sign-in required")
+                    throw TryOnError.signInRequired
+                }
+
                 let errorReason: String
                 if let errorObj = try? JSONDecoder().decode(OpenRouterErrorResponse.self, from: data),
                    let msg = errorObj.error?.message {
@@ -210,6 +236,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                     let bodyString = String(data: data, encoding: .utf8) ?? "No error body"
                     errorReason = "HTTP \(statusCode): \(bodyString)"
                 }
+                AppLog.error(.tryOn, "[\(requestID)] renderTryOn: HTTP \(failedStatusCode) — \(errorReason)")
                 throw TryOnError.renderFailed(reason: errorReason)
             }
 
@@ -221,13 +248,16 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             }
 
             if let resultURL = parsedURL {
+                AppLog.info(.tryOn, "[\(requestID)] renderTryOn: ok")
                 onUpdate(.succeeded(imageURL: resultURL))
             } else {
                 let debugString = String(data: data, encoding: .utf8) ?? "Empty response"
+                AppLog.error(.tryOn, "[\(requestID)] renderTryOn: unparseable response — \(debugString.prefix(500))")
                 throw TryOnError.renderFailed(reason: "Invalid response format: \(debugString)")
             }
 
         } catch is CancellationError {
+            AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: cancelled")
             onUpdate(.failed(.cancelled))
         } catch let error as TryOnError {
             onUpdate(.failed(error))
@@ -236,7 +266,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             // DNS/host failure, etc.) instead of always reporting the same
             // generic message — a large-upload timeout and a truly offline
             // device look identical to the user otherwise.
-            print("⚠️ Try-on request failed before a response was received: \(error)")
+            AppLog.error(.tryOn, "[\(requestID)] renderTryOn: transport error before a response was received — \(String(describing: error))")
             onUpdate(.failed(.network))
         }
     }
@@ -338,7 +368,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
                 try imageData.write(to: tempURL, options: .atomic)
                 return tempURL
             } catch {
-                print("⚠️ Failed to write temporary try-on image: \(error)")
+                AppLog.error(.tryOn, "handleImageString: failed to write temporary try-on image — \(String(describing: error))")
                 return nil
             }
         }
@@ -395,6 +425,13 @@ private struct OpenRouterErrorResponse: Decodable {
     let error: ErrorDetail?
 }
 
+/// `backend/functions/src/middleware/quota.ts`'s 403 body shape:
+/// `{ error: "sign_in_required" }` — a flat string, not `OpenRouterErrorResponse`'s
+/// nested `{ error: { message } }` shape.
+private struct ProxyQuotaErrorResponse: Decodable {
+    let error: String
+}
+
 // MARK: - Mock for previews/tests — never touches the network.
 
 struct MockTryOnRenderService: TryOnRenderService {
@@ -411,5 +448,28 @@ struct MockTryOnRenderService: TryOnRenderService {
         onUpdate(.polling(stage: .rendering, elapsedSeconds: 0.8))
         try? await Task.sleep(nanoseconds: simulatedStepDelayNanoseconds)
         onUpdate(.succeeded(imageURL: resultImageURL))
+    }
+}
+
+/// Routes each call to a real or mock `TryOnRenderService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`) and
+/// `AuthGatedVisionMetadataExtractionService`. `ServiceFactory.makeTryOnRenderService`
+/// wraps this in `CachedTryOnRenderService`, so the cache still sees a single
+/// stable `TryOnRenderService` even though the real/mock choice underneath it
+/// can now change between calls.
+@MainActor
+final class AuthGatedTryOnRenderService: TryOnRenderService {
+    private lazy var real = OpenRouterTryOnRenderService()
+    private lazy var mock = MockTryOnRenderService()
+    private var current: TryOnRenderService { AuthService.shared.isSignedIn ? real : mock }
+
+    func renderTryOn(
+        baseImageData: Data,
+        items: [WardrobeItem],
+        onUpdate: @escaping (TryOnState) -> Void
+    ) async {
+        await current.renderTryOn(baseImageData: baseImageData, items: items, onUpdate: onUpdate)
     }
 }

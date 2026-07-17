@@ -97,6 +97,7 @@ final class JobQueueStore {
         let payload = UploadPayload(rawImageData: rawImageData, defaultSlot: defaultSlot)
         let job = Job(kind: .upload(payload), thumbnail: rawImageData)
         jobs.append(job)
+        AppLog.info(.jobQueue, "enqueueUpload: job=\(job.id) defaultSlot=\(defaultSlot?.rawValue ?? "nil") bytes=\(rawImageData.count)")
         Task { await notificationService.requestAuthorizationIfNeeded() }
         scheduleStart(job.id) { [weak self] in self?.startUploadTask(job.id, payload: payload) }
     }
@@ -104,6 +105,7 @@ final class JobQueueStore {
     func retryUpload(_ jobID: Job.ID) {
         guard let job = jobs.first(where: { $0.id == jobID }),
               case .upload(let payload) = job.kind else { return }
+        AppLog.info(.jobQueue, "retryUpload: job=\(jobID)")
         setStatus(jobID, .queued)
         scheduleStart(jobID) { [weak self] in self?.startUploadTask(jobID, payload: payload) }
     }
@@ -144,6 +146,7 @@ final class JobQueueStore {
             metadata = try await visionMetadataService.extractMetadata(imageData: imageToTag)
         } catch {
             let message = (error as? VisionMetadataExtractionError)?.errorDescription ?? error.localizedDescription
+            AppLog.error(.jobQueue, "performUpload: job=\(jobID) vision tagging failed — \(message)")
             finishJob(jobID, status: .failed(message))
             notificationService.notifyUploadFailed(reason: message)
             return
@@ -156,6 +159,21 @@ final class JobQueueStore {
 
         setStatus(jobID, .processing("Saving…"))
 
+        // Guest-first quota plan (Domain/EntitlementLimits.swift): same
+        // client-side pre-check as AddItemViewModel.saveItem(), backstopped
+        // server-side by backend/firestore.rules' meta/itemCounts cap.
+        // `WardrobeItem.make` slots the item by `metadata.slot` (the
+        // vision-tagged result), not `payload.defaultSlot` (only a tagging
+        // hint), so that's what's checked here too.
+        let existingCount = (try? repository.fetchInventory())?.filter { $0.slot == metadata.slot }.count ?? 0
+        guard existingCount < EntitlementLimits.itemCap(for: metadata.slot, isAnonymous: AuthService.shared.isGuestTier) else {
+            let message = "You've reached the item limit for this category. Sign in to add more."
+            AppLog.notice(.jobQueue, "performUpload: job=\(jobID) item cap reached for slot=\(metadata.slot.rawValue)")
+            finishJob(jobID, status: .failed(message))
+            notificationService.notifyUploadFailed(reason: message)
+            return
+        }
+
         do {
             let filename = try ImageStorage.save(imageToTag)
             let item = WardrobeItem.make(from: metadata, imageAssetName: filename)
@@ -165,6 +183,7 @@ final class JobQueueStore {
             notificationService.notifyUploadSucceeded(itemLabel: item.displayLabel)
         } catch {
             let message = "Couldn't save that item. Try again."
+            AppLog.error(.jobQueue, "performUpload: job=\(jobID) save failed — \(String(describing: error))")
             finishJob(jobID, status: .failed(message))
             notificationService.notifyUploadFailed(reason: message)
         }
@@ -208,6 +227,7 @@ final class JobQueueStore {
         let payload = TryOnPayload(baseImageData: baseImageData, outfit: outfit)
         let job = Job(kind: .tryOn(payload), thumbnail: baseImageData)
         jobs.append(job)
+        AppLog.info(.jobQueue, "enqueueTryOn: job=\(job.id) items=\(outfit.items.count)")
         Task { await notificationService.requestAuthorizationIfNeeded() }
         scheduleStart(job.id) { [weak self] in self?.startTryOnTask(job.id, payload: payload) }
     }
@@ -242,6 +262,7 @@ final class JobQueueStore {
         case .polling(let stage, _):
             jobs[index].status = .processing(stage.label)
         case .succeeded:
+            AppLog.info(.jobQueue, "handleTryOnUpdate: job=\(jobID) succeeded")
             jobs[index].tryOnResultState = state
             jobs[index].status = .succeeded
             jobs[index].completedAt = .now
@@ -249,6 +270,7 @@ final class JobQueueStore {
             notificationService.notifyTryOnSucceeded()
             startNextPendingIfAny()
         case .failed(let error):
+            AppLog.error(.jobQueue, "handleTryOnUpdate: job=\(jobID) failed — \(String(describing: error))")
             jobs[index].tryOnResultState = state
             jobs[index].status = .failed(error.errorDescription ?? "Something went wrong")
             jobs[index].completedAt = .now
@@ -274,7 +296,11 @@ final class JobQueueStore {
         guard let job = jobs.first(where: { $0.id == jobID }),
               case .tryOn(let payload) = job.kind,
               case .succeeded(let imageURL) = job.tryOnResultState,
-              let imageData = try? Data(contentsOf: imageURL) else { return }
+              let imageData = try? Data(contentsOf: imageURL) else {
+            AppLog.error(.jobQueue, "saveCombination: job=\(jobID) has no succeeded try-on result to save")
+            return
+        }
+        AppLog.info(.jobQueue, "saveCombination: job=\(jobID) liked=\(liked)")
 
         let outfit = payload.outfit
         if let assetName = try? ImageStorage.save(imageData) {
@@ -308,6 +334,7 @@ final class JobQueueStore {
     /// `OpenRouterTryOnRenderService` short-circuits it. For uploads, this
     /// stops the pipeline at its next cancellation checkpoint.
     func cancelJob(_ jobID: Job.ID) {
+        AppLog.notice(.jobQueue, "cancelJob: job=\(jobID)")
         pendingStarts.removeAll { $0.id == jobID }
         runningTasks[jobID]?.cancel()
         runningTasks[jobID] = nil

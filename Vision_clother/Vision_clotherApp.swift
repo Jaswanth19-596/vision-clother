@@ -74,6 +74,7 @@ struct Vision_clotherApp: App {
         WindowGroup {
             RootTabView()
                 .environment(jobQueueStore)
+                .environment(syncCoordinator)
                 // Routes both the Google Sign-In consent redirect and the
                 // phone-auth reCAPTCHA verification redirect back into the
                 // app — see Vision_clother/Config/URLSchemes.plist and

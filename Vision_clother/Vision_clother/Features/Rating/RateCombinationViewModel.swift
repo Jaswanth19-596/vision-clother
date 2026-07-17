@@ -90,6 +90,7 @@ final class RateCombinationViewModel {
     }
 
     func submit() async {
+        AppLog.info(.viewModel, "RateCombinationViewModel.submit: outfitID=\(outfitID)")
         state = .saving
         do {
             let submission = OutfitRatingSubmission(
@@ -110,6 +111,7 @@ final class RateCombinationViewModel {
             try repository.recordOutfitRating(outfitID: outfitID, submission: submission)
             state = .saved
         } catch {
+            AppLog.error(.viewModel, "RateCombinationViewModel.submit: failed outfitID=\(outfitID) — \(String(describing: error))")
             state = .failed("Couldn't save that rating. Try again.")
         }
     }

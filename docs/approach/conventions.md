@@ -27,6 +27,12 @@ Practical conventions this codebase actually follows, derived from how the iOS s
 - **Local Path Fallback (Debug):** During simulator execution, if the bundle resource `Secrets.plist` fails to load (due to target copy issues), `APIKeys.value(for:)` has a fallback under `#if DEBUG` to read directly from the absolute workspace file path `/Users/jaswanth/mydocs/ios-apps/vision_clother/Vision_clother/Vision_clother/Config/Secrets.plist`.
 - Before any distributed build, this whole mechanism needs to be replaced — see `docs/architecture.md` and `CLAUDE.md` §5.
 
+## Diagnostics/Logging
+
+- **`Vision_clother/Diagnostics/AppLog.swift` is the shared logger** for everything outside the AI-Stylist-ML pipeline (which keeps its own narrowly-scoped `Domain/MLLog.swift`) and the Daily Assistant latency instrumentation (`Services/PerfLog.swift`) — new code should call `AppLog.info/notice/error(.category, message)` rather than `print()` or a fresh ad hoc `os.Logger`. Every line also mirrors to `Diagnostics/DebugLogStore.swift`, a size-capped file the user can export from Profile → Debug Log with no Mac/Xcode session — this is the mechanism for turning a bug report into an actual log excerpt.
+- **Never log ID tokens, API keys, base64 image payloads, or full LLM prompt/response bodies.** Log lengths, ids, status codes, and counts instead. This applies to both `AppLog` call sites and `backend/functions/src/logger.ts`'s `logEvent`.
+- **Every proxied network call gets a short request id** (`AppLog.newRequestID()`), attached as the `X-Request-Id` header by `Services/ProxyAuthHeaders.swift` and echoed back by the backend's `app.ts` request-logging middleware — this is the join key between an iOS log line and the matching Cloud Logging line for the same call. Keep threading it through if you add a new proxied service.
+
 ## Ghost elements (PRD §3.2)
 
 Ghost elements are **scored identically to real items** — never add an `isGhostElement` branch to anything in `Domain/PairCompatibilityScoring.swift` or `Domain/OutfitRecommendationEngine.swift`. If ghost-item provenance needs to affect behavior, that belongs in the UI layer (a badge, a label) via `OutfitCombination.containsGhostElements` / `WardrobeItem.isGhostElement`, not in the math.

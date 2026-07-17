@@ -67,6 +67,7 @@ final class RateItemViewModel: RatingQuestionsViewModel {
     }
 
     func submit() async {
+        AppLog.info(.viewModel, "RateItemViewModel.submit: itemID=\(item.id)")
         state = .saving
         do {
             try repository.recordItemRating(
@@ -81,6 +82,7 @@ final class RateItemViewModel: RatingQuestionsViewModel {
             )
             state = .saved
         } catch {
+            AppLog.error(.viewModel, "RateItemViewModel.submit: failed itemID=\(item.id) — \(String(describing: error))")
             state = .failed("Couldn't save that rating. Try again.")
         }
     }

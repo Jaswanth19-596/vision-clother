@@ -17,7 +17,7 @@ enum ProxyConfig {
     static let baseURL: URL = {
         #if DEBUG
         // return URL(string: "http://localhost:5001/REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID/us-central1/api")!
-        return URL(string: "https://5747-2601-243-c884-d480-1da0-d138-6153-810f.ngrok-free.app/visionclother/us-central/api")!
+        return URL(string: "https://06b7-2601-243-c884-d480-1da0-d138-6153-810f.ngrok-free.app/visionclother/us-central1/api")!
 
         #else
         return URL(string: "https://REPLACE_WITH_YOUR_DEPLOYED_FUNCTION_URL/api")!
@@ -25,6 +25,18 @@ enum ProxyConfig {
     }()
 
     static var openRouterChatURL: URL { baseURL.appendingPathComponent("openrouter/chat") }
+    /// Quota'd alias of `openRouterChatURL` for outfit recommendations only
+    /// (`backend/functions/src/middleware/quota.ts`'s `"recommendation"`
+    /// feature) — same pass-through handler, different path so the backend
+    /// can gate it without parsing the request body.
+    static var openRouterRecommendURL: URL { baseURL.appendingPathComponent("openrouter/recommend") }
+    /// Quota'd alias of `openRouterChatURL` for try-on rendering only
+    /// (`quota.ts`'s `"tryOn"` feature, 0 for guests) — see
+    /// `openRouterRecommendURL`'s doc comment.
+    static var openRouterTryOnURL: URL { baseURL.appendingPathComponent("openrouter/tryon") }
     static var openRouterImagesURL: URL { baseURL.appendingPathComponent("openrouter/images") }
     static var pexelsSearchURL: URL { baseURL.appendingPathComponent("pexels/search") }
+    /// Backed by `backend/functions/src/routes/accountDelete.ts` — see
+    /// `Services/AccountDeletionService.swift`.
+    static var accountDeleteURL: URL { baseURL.appendingPathComponent("account/delete") }
 }

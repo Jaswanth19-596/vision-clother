@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { openRouterApiKey } from "../secrets";
+import type { AuthedRequest } from "../types";
+import { logEvent } from "../logger";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -19,13 +21,15 @@ const bodySchema = z
 
 export const openrouterChatRouter = Router();
 
-openrouterChatRouter.post("/", async (req, res) => {
+openrouterChatRouter.post("/", async (req: AuthedRequest, res) => {
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
+    logEvent("warn", "openrouterChat.invalidBody", { requestId: req.requestId, uid: req.uid });
     res.status(400).json({ error: "invalid_request_body" });
     return;
   }
 
+  const start = Date.now();
   try {
     const upstream = await fetch(OPENROUTER_CHAT_URL, {
       method: "POST",
@@ -39,11 +43,24 @@ openrouterChatRouter.post("/", async (req, res) => {
     });
 
     const text = await upstream.text();
+    logEvent(upstream.ok ? "info" : "warn", "openrouterChat.upstreamResponse", {
+      requestId: req.requestId,
+      uid: req.uid,
+      model: parsed.data.model,
+      status: upstream.status,
+      durationMs: Date.now() - start,
+    });
     res
       .status(upstream.status)
       .setHeader("Content-Type", upstream.headers.get("Content-Type") ?? "application/json")
       .send(text);
-  } catch {
+  } catch (error) {
+    logEvent("error", "openrouterChat.upstreamUnreachable", {
+      requestId: req.requestId,
+      uid: req.uid,
+      durationMs: Date.now() - start,
+      error: String(error),
+    });
     res.status(502).json({ error: "upstream_unreachable" });
   }
 });

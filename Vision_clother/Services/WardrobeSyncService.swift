@@ -39,6 +39,16 @@ struct RemoteMetaUpdate<DTO> {
     var updatedAt: Date
 }
 
+/// MIME type for a Cloud Storage photo upload — required so
+/// `backend/storage.rules`' `request.resource.contentType.matches('image/.*')`
+/// check actually passes. Every `WardrobeItem` cutout is PNG
+/// (`ImageStorage.downscaledPNGForUpload`, alpha-preserving); every
+/// `SavedCombination` render is JPEG (`ImageStorage.downscaledJPEGForUpload`).
+enum SyncImageContentType: String {
+    case png = "image/png"
+    case jpeg = "image/jpeg"
+}
+
 /// Everything pulled in one `pullChanges` call.
 struct PulledWardrobeDelta {
     var wardrobeItems: [PulledChange<WardrobeItemDTO>] = []
@@ -88,8 +98,36 @@ protocol WardrobeSyncService {
     /// doc comment) — stored as a plain value, not a server timestamp.
     func updateLastPulledAt(uid: String, date: Date) async throws
 
-    func uploadImage(filename: String, data: Data, uid: String) async throws
+    func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws
     func downloadImage(filename: String, uid: String) async throws -> Data
+
+    /// Portrait sync: the user's own try-on base photo
+    /// (`Services/UserPortraitStorage.swift`) is a single fixed file per
+    /// account, not a `WardrobeItem`/`SavedCombination` row — so unlike
+    /// `uploadImage`/`downloadImage` it has no per-file `filename` and
+    /// carries its own presence/timestamp doc (`meta/portrait`) instead of
+    /// riding along with a synced entity. Same best-effort posture as the
+    /// other photo transports (not part of the durable `SyncMetadata`
+    /// outbox) — see `Data/WardrobeSyncCoordinator.swift`.
+    func uploadPortrait(data: Data, uid: String) async throws
+    func downloadPortrait(uid: String) async throws -> Data
+    /// `nil` means no portrait has ever been uploaded for this account.
+    func fetchPortraitUpdatedAt(uid: String) async throws -> Date?
+
+    /// Read-only — `AccountSectionView`'s usage readout. `nil` means no
+    /// requests made yet this period (never written to).
+    func fetchUsage(uid: String) async throws -> UsageDTO?
+
+    /// Client-side counterpart to `backend/firestore.rules`'s
+    /// `meta/itemCounts` cap enforcement — `Domain/EntitlementLimits.swift`'s
+    /// `itemCap` pre-check is the fast, optimistic UX guard; this is what
+    /// actually moves the counter the rules validate against. Called
+    /// best-effort/fire-and-forget from `Data/SyncingWardrobeRepository.swift`'s
+    /// `save`/`delete` (same posture as `uploadImageIfNeeded`) — not
+    /// transactionally atomic with the item doc write itself, a documented
+    /// gap acceptable at this app's scale (see `backend/firestore.rules`'s
+    /// comment on `meta/itemCounts`).
+    func adjustItemCount(slot: Slot, delta: Int, uid: String) async throws
 }
 
 @MainActor
@@ -176,6 +214,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
     // MARK: - Pull
 
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
+        AppLog.info(.sync, "pullChanges: starting, since=\(since.map(String.init(describing:)) ?? "nil") (full pull)")
         let queryStartTime = Date()
         let usersRef = usersDoc(uid)
 
@@ -189,18 +228,25 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         async let userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("styleProfile"), since: since)
         async let visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("visualPreferenceState"), since: since)
 
-        return PulledWardrobeDelta(
-            wardrobeItems: try await wardrobeItems,
-            outfitFeedback: try await outfitFeedback,
-            itemFeedback: try await itemFeedback,
-            pairFeedback: try await pairFeedback,
-            itemRatings: try await itemRatings,
-            savedCombinations: try await savedCombinations,
-            swipeEvents: try await swipeEvents,
-            userStyleProfile: try await userStyleProfile,
-            visualPreferenceState: try await visualPreferenceState,
-            queryStartTime: queryStartTime
-        )
+        do {
+            let delta = PulledWardrobeDelta(
+                wardrobeItems: try await wardrobeItems,
+                outfitFeedback: try await outfitFeedback,
+                itemFeedback: try await itemFeedback,
+                pairFeedback: try await pairFeedback,
+                itemRatings: try await itemRatings,
+                savedCombinations: try await savedCombinations,
+                swipeEvents: try await swipeEvents,
+                userStyleProfile: try await userStyleProfile,
+                visualPreferenceState: try await visualPreferenceState,
+                queryStartTime: queryStartTime
+            )
+            AppLog.info(.sync, "pullChanges: ok items=\(delta.wardrobeItems.count) outfitFeedback=\(delta.outfitFeedback.count) itemFeedback=\(delta.itemFeedback.count) pairFeedback=\(delta.pairFeedback.count) itemRatings=\(delta.itemRatings.count) savedCombinations=\(delta.savedCombinations.count) swipeEvents=\(delta.swipeEvents.count)")
+            return delta
+        } catch {
+            AppLog.error(.sync, "pullChanges: failed — \(String(describing: error))")
+            throw error
+        }
     }
 
     private static func fetchCollection<T: Decodable>(_ collection: CollectionReference, since: Date?) async throws -> [PulledChange<T>] {
@@ -253,19 +299,193 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         try await syncStatusDoc(uid).setData(["lastPulledAt": Timestamp(date: date)], merge: true)
     }
 
+    // MARK: - Quota (read-only usage readout + item-count backstop)
+
+    func fetchUsage(uid: String) async throws -> UsageDTO? {
+        let snapshot = try await usersDoc(uid).collection("meta").document("usage").getDocument()
+        guard snapshot.exists else { return nil }
+        return try? snapshot.data(as: UsageDTO.self)
+    }
+
+    func adjustItemCount(slot: Slot, delta: Int, uid: String) async throws {
+        let ref = usersDoc(uid).collection("meta").document("itemCounts")
+        do {
+            try await db.runTransaction { transaction, errorPointer -> Any? in
+                let snapshot: DocumentSnapshot
+                do {
+                    snapshot = try transaction.getDocument(ref)
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+                let current = (snapshot.data()?[slot.rawValue] as? Int) ?? 0
+                transaction.setData([slot.rawValue: max(0, current + delta)], forDocument: ref, merge: true)
+                return nil
+            }
+        } catch {
+            AppLog.error(.sync, "adjustItemCount: \(slot.rawValue) delta=\(delta) failed — \(String(describing: error))")
+            throw error
+        }
+    }
+
     // MARK: - Photos
 
     private func imageRef(filename: String, uid: String) -> StorageReference {
         storage.reference().child("users/\(uid)/wardrobeImages/\(filename)")
     }
 
-    func uploadImage(filename: String, data: Data, uid: String) async throws {
-        _ = try await imageRef(filename: filename, uid: uid).putDataAsync(data)
+    /// `contentType` must be set explicitly — `putDataAsync` without a
+    /// `StorageMetadata` leaves the object's content type unset, which
+    /// `backend/storage.rules`' `request.resource.contentType.matches('image/.*')`
+    /// write check then rejects outright. Every upload silently failed this
+    /// way before this was added (verified via the Console: the bucket had
+    /// zero files despite every push otherwise "succeeding").
+    func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws {
+        AppLog.info(.sync, "uploadImage: \(filename) bytes=\(data.count) contentType=\(contentType.rawValue)")
+        let metadata = StorageMetadata()
+        metadata.contentType = contentType.rawValue
+        do {
+            _ = try await imageRef(filename: filename, uid: uid).putDataAsync(data, metadata: metadata)
+            AppLog.info(.sync, "uploadImage: \(filename) ok")
+        } catch {
+            AppLog.error(.sync, "uploadImage: \(filename) failed — \(String(describing: error))")
+            throw error
+        }
     }
 
     /// 15 MiB cap matches `backend/storage.rules`' upload-size limit.
     func downloadImage(filename: String, uid: String) async throws -> Data {
-        try await imageRef(filename: filename, uid: uid).data(maxSize: 15 * 1024 * 1024)
+        do {
+            let data = try await imageRef(filename: filename, uid: uid).data(maxSize: 15 * 1024 * 1024)
+            AppLog.info(.sync, "downloadImage: \(filename) ok bytes=\(data.count)")
+            return data
+        } catch {
+            AppLog.error(.sync, "downloadImage: \(filename) failed — \(String(describing: error))")
+            throw error
+        }
+    }
+
+    // MARK: - Portrait
+
+    private func portraitRef(uid: String) -> StorageReference {
+        storage.reference().child("users/\(uid)/portrait/base_portrait.jpg")
+    }
+
+    private func portraitMetaDoc(_ uid: String) -> DocumentReference {
+        usersDoc(uid).collection("meta").document("portrait")
+    }
+
+    func uploadPortrait(data: Data, uid: String) async throws {
+        AppLog.info(.sync, "uploadPortrait: bytes=\(data.count)")
+        let metadata = StorageMetadata()
+        metadata.contentType = SyncImageContentType.jpeg.rawValue
+        do {
+            _ = try await portraitRef(uid: uid).putDataAsync(data, metadata: metadata)
+            try await portraitMetaDoc(uid).setData(["updatedAt": FieldValue.serverTimestamp()], merge: true)
+            AppLog.info(.sync, "uploadPortrait: ok")
+        } catch {
+            AppLog.error(.sync, "uploadPortrait: failed — \(String(describing: error))")
+            throw error
+        }
+    }
+
+    func downloadPortrait(uid: String) async throws -> Data {
+        do {
+            let data = try await portraitRef(uid: uid).data(maxSize: 15 * 1024 * 1024)
+            AppLog.info(.sync, "downloadPortrait: ok bytes=\(data.count)")
+            return data
+        } catch {
+            AppLog.error(.sync, "downloadPortrait: failed — \(String(describing: error))")
+            throw error
+        }
+    }
+
+    func fetchPortraitUpdatedAt(uid: String) async throws -> Date? {
+        let snapshot = try await portraitMetaDoc(uid).getDocument()
+        guard snapshot.exists, let timestamp = snapshot.get("updatedAt") as? Timestamp else { return nil }
+        return timestamp.dateValue()
+    }
+}
+
+/// Routes every call to a real or mock `WardrobeSyncService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time. `ServiceFactory.makeWardrobeSyncService()` used to snapshot
+/// `isSignedIn` once and bake the choice into a `let` the caller held for its
+/// entire lifetime — fatal for `Vision_clotherApp.init()`'s app-root
+/// `WardrobeSyncCoordinator`/`SyncingWardrobeRepository`, which are
+/// constructed once at launch: a cold launch while signed out permanently
+/// froze them on `MockWardrobeSyncService`, silently no-op'ing every push for
+/// the rest of the process's life even after a later sign-in. Both
+/// `real`/`mock` are lazy so a guest/dev session with no Firebase project
+/// configured never touches `Firestore.firestore()`/`Storage.storage()`.
+@MainActor
+final class AuthGatedWardrobeSyncService: WardrobeSyncService {
+    private lazy var real = FirestoreWardrobeSyncService()
+    private lazy var mock = MockWardrobeSyncService()
+    private var current: WardrobeSyncService { AuthService.shared.isSignedIn ? real : mock }
+
+    func pushWardrobeItem(_ dto: WardrobeItemDTO, uid: String) async throws {
+        try await current.pushWardrobeItem(dto, uid: uid)
+    }
+    func pushOutfitFeedback(_ dto: OutfitFeedbackDTO, uid: String) async throws {
+        try await current.pushOutfitFeedback(dto, uid: uid)
+    }
+    func pushItemFeedback(_ dto: ItemFeedbackDTO, uid: String) async throws {
+        try await current.pushItemFeedback(dto, uid: uid)
+    }
+    func pushPairFeedback(_ dto: PairFeedbackDTO, uid: String) async throws {
+        try await current.pushPairFeedback(dto, uid: uid)
+    }
+    func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws {
+        try await current.pushItemRating(dto, uid: uid)
+    }
+    func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {
+        try await current.pushSavedCombination(dto, uid: uid)
+    }
+    func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {
+        try await current.pushUserStyleProfile(dto, uid: uid)
+    }
+    func pushSwipeEvent(_ dto: SwipeEventDTO, uid: String) async throws {
+        try await current.pushSwipeEvent(dto, uid: uid)
+    }
+    func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
+        try await current.pushVisualPreferenceState(dto, uid: uid)
+    }
+    func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
+        try await current.deleteEntity(type: type, id: id, uid: uid)
+    }
+    func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
+        try await current.pullChanges(uid: uid, since: since)
+    }
+    func fetchSyncStatus(uid: String) async throws -> SyncStatusDTO? {
+        try await current.fetchSyncStatus(uid: uid)
+    }
+    func initializeSyncStatus(uid: String) async throws {
+        try await current.initializeSyncStatus(uid: uid)
+    }
+    func updateLastPulledAt(uid: String, date: Date) async throws {
+        try await current.updateLastPulledAt(uid: uid, date: date)
+    }
+    func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws {
+        try await current.uploadImage(filename: filename, data: data, contentType: contentType, uid: uid)
+    }
+    func downloadImage(filename: String, uid: String) async throws -> Data {
+        try await current.downloadImage(filename: filename, uid: uid)
+    }
+    func uploadPortrait(data: Data, uid: String) async throws {
+        try await current.uploadPortrait(data: data, uid: uid)
+    }
+    func downloadPortrait(uid: String) async throws -> Data {
+        try await current.downloadPortrait(uid: uid)
+    }
+    func fetchPortraitUpdatedAt(uid: String) async throws -> Date? {
+        try await current.fetchPortraitUpdatedAt(uid: uid)
+    }
+    func fetchUsage(uid: String) async throws -> UsageDTO? {
+        try await current.fetchUsage(uid: uid)
+    }
+    func adjustItemCount(slot: Slot, delta: Int, uid: String) async throws {
+        try await current.adjustItemCount(slot: slot, delta: delta, uid: uid)
     }
 }
 
@@ -291,8 +511,15 @@ final class MockWardrobeSyncService: WardrobeSyncService {
     func fetchSyncStatus(uid: String) async throws -> SyncStatusDTO? { nil }
     func initializeSyncStatus(uid: String) async throws {}
     func updateLastPulledAt(uid: String, date: Date) async throws {}
-    func uploadImage(filename: String, data: Data, uid: String) async throws {}
+    func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws {}
     func downloadImage(filename: String, uid: String) async throws -> Data {
         throw CocoaError(.fileNoSuchFile)
     }
+    func uploadPortrait(data: Data, uid: String) async throws {}
+    func downloadPortrait(uid: String) async throws -> Data {
+        throw CocoaError(.fileNoSuchFile)
+    }
+    func fetchPortraitUpdatedAt(uid: String) async throws -> Date? { nil }
+    func fetchUsage(uid: String) async throws -> UsageDTO? { nil }
+    func adjustItemCount(slot: Slot, delta: Int, uid: String) async throws {}
 }

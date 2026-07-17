@@ -3,12 +3,20 @@ rules_version = '2';
 // Per-account wardrobe photo storage for Firestore-backed sync (see
 // docs/decisions/resolved-v1.md's "Cloud Sync" section). Each account's
 // photos live under users/{uid}/wardrobeImages/ and are only readable/
-// writable by that account.
+// writable by that account. users/{uid}/portrait/ is the same posture for
+// the user's own try-on base photo (Services/UserPortraitStorage.swift) —
+// a single fixed filename per account rather than one file per item.
 service firebase.storage {
   match /b/{bucket}/o {
     match /users/{uid}/wardrobeImages/{fileName} {
       // `request.resource` only exists on writes, not reads — a combined
       // `allow read, write` guarded by it would deny every read.
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+    match /users/{uid}/portrait/{fileName} {
       allow read: if request.auth != null && request.auth.uid == uid;
       allow write: if request.auth != null && request.auth.uid == uid
         && request.resource.size < 15 * 1024 * 1024

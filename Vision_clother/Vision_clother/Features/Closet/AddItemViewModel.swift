@@ -43,14 +43,28 @@ final class AddItemViewModel {
 
     /// Persists the manually entered item
     func saveItem() async {
+        AppLog.info(.viewModel, "AddItemViewModel.saveItem: starting")
         state = .saving
         do {
             let item = WardrobeItem.make(from: editor.makeMetadata(), imageAssetName: nil)
+
+            // Guest-first quota plan (Domain/EntitlementLimits.swift):
+            // client-side pre-check for immediate UX, backstopped
+            // server-side by backend/firestore.rules' meta/itemCounts cap.
+            let existingCount = (try? repository.fetchInventory())?.filter { $0.slot == item.slot }.count ?? 0
+            guard existingCount < EntitlementLimits.itemCap(for: item.slot, isAnonymous: AuthService.shared.isGuestTier) else {
+                AppLog.notice(.viewModel, "AddItemViewModel.saveItem: item cap reached for slot=\(item.slot.rawValue)")
+                state = .failed("You've reached the item limit for this category. Sign in to add more.")
+                return
+            }
+
             try repository.save(item)
 
+            AppLog.info(.viewModel, "AddItemViewModel.saveItem: ok id=\(item.id) slot=\(item.slot.rawValue)")
             state = .idle
             didSave = true
         } catch {
+            AppLog.error(.viewModel, "AddItemViewModel.saveItem: failed — \(String(describing: error))")
             state = .failed("Couldn't save that item. Try again.")
         }
     }

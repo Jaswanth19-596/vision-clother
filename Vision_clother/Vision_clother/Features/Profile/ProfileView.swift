@@ -21,6 +21,13 @@ import SwiftData
 
 struct ProfileView: View {
     @Environment(\.modelContext) private var modelContext
+    /// Account-switch reactivity: `viewModel` is constructed once for this
+    /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
+    /// nothing else tells it to re-read the portrait after a later account
+    /// switch — see `Data/WardrobeSyncCoordinator.swift`'s file header and
+    /// `ProfileViewModel.refreshPortrait()`'s doc comment.
+    @ObservedObject private var authService = AuthService.shared
+    @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Query private var items: [WardrobeItem]
     @Query private var outfitFeedbacks: [OutfitFeedback]
     @Query private var itemRatings: [ItemRating]
@@ -237,6 +244,13 @@ struct ProfileView: View {
         }
         .onAppear {
             viewModel?.refreshFeedbackHistory()
+            viewModel?.refreshPortrait()
+        }
+        .onChange(of: authService.uid) { _, _ in
+            viewModel?.refreshPortrait()
+        }
+        .onChange(of: syncCoordinator.photoRefreshTick) { _, _ in
+            viewModel?.refreshPortrait()
         }
         .fullScreenCover(isPresented: $isCameraPresented) {
             PortraitCameraCaptureView { data in
@@ -599,13 +613,13 @@ private struct PortraitCameraCaptureView: UIViewControllerRepresentable {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
+        SavedCombination.self, ItemRating.self, UserStyleProfile.self,
+        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
     ProfileView()
-        .modelContainer(
-            for: [
-                WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
-                SavedCombination.self, ItemRating.self, UserStyleProfile.self,
-                SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
-            ],
-            inMemory: true
-        )
+        .modelContainer(container)
+        .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
 }

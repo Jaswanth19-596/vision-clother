@@ -94,6 +94,7 @@ final class ManualPairingViewModel {
         currentGenerationID = generationID
         didSaveOutfit = false
         state = .validatingPhoto
+        AppLog.info(.viewModel, "ManualPairingViewModel.generatePreview: generationID=\(generationID) top=\(top.id) bottom=\(bottom.id)")
 
         generationTask = Task { [weak self] in
             await self?.runPipeline(top: top, bottom: bottom, generationID: generationID)
@@ -145,8 +146,10 @@ final class ManualPairingViewModel {
         case .submitting(let stage), .polling(let stage, _):
             state = .generatingPreview(stage)
         case .succeeded(let imageURL):
+            AppLog.info(.viewModel, "ManualPairingViewModel: generationID=\(generationID) succeeded")
             state = .success(imageURL: imageURL)
         case .failed(let error):
+            AppLog.error(.viewModel, "ManualPairingViewModel: generationID=\(generationID) failed — \(String(describing: error))")
             state = .failed(error.errorDescription ?? "Couldn't generate that preview.")
         }
     }
@@ -165,6 +168,7 @@ final class ManualPairingViewModel {
     func saveOutfit(liked: Bool) async {
         guard let top = selectedTop, let bottom = selectedBottom else { return }
         guard case .success(let imageURL) = state else { return }
+        AppLog.info(.viewModel, "ManualPairingViewModel.saveOutfit: top=\(top.id) bottom=\(bottom.id) liked=\(liked)")
 
         try? repository.recordPairFeedback(itemAID: top.id, itemBID: bottom.id, likedTogether: liked)
 

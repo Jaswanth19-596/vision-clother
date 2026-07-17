@@ -13,35 +13,52 @@
 import Foundation
 
 enum ServiceFactory {
+    /// `AuthGatedIntentExtractionService` re-checks `isSignedIn` on every
+    /// call rather than baking in a one-time snapshot — see that type's doc
+    /// comment in `Services/OpenRouterIntentExtractionService.swift` and
+    /// `AuthGatedWardrobeSyncService`'s original fix for this class of bug.
     static func makeIntentExtractionService() -> IntentExtractionService {
-        AuthService.shared.isSignedIn ? OpenRouterIntentExtractionService() : MockIntentExtractionService()
+        AuthGatedIntentExtractionService()
     }
 
     /// Wrapped in `CachedTryOnRenderService` so a request for an item set
     /// that already has a saved render (against the same base portrait)
     /// reuses that image instead of paying for a fresh AI generation — see
-    /// `Services/CachedTryOnRenderService.swift`.
+    /// `Services/CachedTryOnRenderService.swift`. `AuthGatedTryOnRenderService`
+    /// re-checks `isSignedIn` on every call rather than baking in a one-time
+    /// snapshot — see that type's doc comment.
     static func makeTryOnRenderService(repository: WardrobeRepository) -> TryOnRenderService {
-        let underlying: TryOnRenderService = AuthService.shared.isSignedIn ? OpenRouterTryOnRenderService() : MockTryOnRenderService()
-        return CachedTryOnRenderService(repository: repository, underlying: underlying)
+        CachedTryOnRenderService(repository: repository, underlying: AuthGatedTryOnRenderService())
     }
 
+    /// `AuthGatedVisionMetadataExtractionService` re-checks `isSignedIn` on
+    /// every call rather than baking in a one-time snapshot — see that
+    /// type's doc comment in `Services/VisionMetadataExtractionService.swift`.
+    /// A one-time snapshot here previously froze `JobQueueStore`'s upload
+    /// pipeline on the mock's fixed placeholder description for the rest of
+    /// the process's life whenever construction raced ahead of sign-in.
     static func makeVisionMetadataExtractionService() -> VisionMetadataExtractionService {
-        AuthService.shared.isSignedIn ? OpenRouterVisionMetadataExtractionService() : MockVisionMetadataExtractionService()
+        AuthGatedVisionMetadataExtractionService()
     }
 
     /// User Style Profile derivation (PRD §3.8) — sends the onboarding
     /// portrait once per derivation, never per recommendation request.
+    /// `AuthGatedUserProfileDerivationService` re-checks `isSignedIn` on
+    /// every call rather than baking in a one-time snapshot — see that
+    /// type's doc comment in `Services/UserProfileDerivationService.swift`.
     static func makeUserProfileDerivationService() -> UserProfileDerivationService {
-        AuthService.shared.isSignedIn ? OpenRouterUserProfileDerivationService() : MockUserProfileDerivationService()
+        AuthGatedUserProfileDerivationService()
     }
 
     /// Primary recommendation call (PRD §3.7) — the LLM-as-Recommender path.
     /// The mock reads the real catalog it's given, so the signed-out
     /// Simulator path still exercises `Domain/OutfitRecommendationValidator.swift`
-    /// with genuinely valid picks.
+    /// with genuinely valid picks. `AuthGatedOutfitRecommendationService`
+    /// re-checks `isSignedIn` on every call rather than baking in a one-time
+    /// snapshot — see that type's doc comment in
+    /// `Services/OutfitRecommendationService.swift`.
     static func makeOutfitRecommendationService() -> OutfitRecommendationService {
-        AuthService.shared.isSignedIn ? OpenRouterOutfitRecommendationService() : MockOutfitRecommendationService()
+        AuthGatedOutfitRecommendationService()
     }
 
     /// `OpenMeteoWeatherProvider` needs no API key/entitlement — CoreLocation
@@ -93,18 +110,34 @@ enum ServiceFactory {
         VisionFeaturePrintEmbeddingService()
     }
 
-    /// Swipe-to-Learn Visual Taste's photo deck — same sign-in-gated
-    /// mock/real swap as `makeIntentExtractionService`, so the swipe deck
-    /// stays interactive in Simulator with no Firebase sign-in.
+    /// Swipe-to-Learn Visual Taste's photo deck — `AuthGatedStockImageFeedService`
+    /// re-checks `isSignedIn` on every call rather than baking in a one-time
+    /// snapshot, so the swipe deck stays interactive in Simulator with no
+    /// Firebase sign-in and doesn't freeze on the mock after a later sign-in.
     static func makeStockImageFeedService() -> StockImageFeedService {
-        AuthService.shared.isSignedIn ? PexelsImageFeedService() : MockStockImageFeedService()
+        AuthGatedStockImageFeedService()
     }
 
     /// Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section) —
-    /// same sign-in-gated mock/real swap as `makeIntentExtractionService`, so
-    /// `Data/SyncingWardrobeRepository.swift`/`Data/WardrobeSyncCoordinator.swift`
-    /// stay interactive in Simulator/previews with no Firebase sign-in.
+    /// `AuthGatedWardrobeSyncService` re-checks sign-in state on every call
+    /// rather than baking it in at construction time, since some holders
+    /// (`Vision_clotherApp.init()`'s app-root `WardrobeSyncCoordinator`/
+    /// `SyncingWardrobeRepository`) are built once and held for the app's
+    /// entire lifetime — a one-time mock/real snapshot would go stale the
+    /// moment auth state changed after construction. See
+    /// `Services/WardrobeSyncService.swift`'s doc comment for the incident
+    /// this fixes.
     static func makeWardrobeSyncService() -> WardrobeSyncService {
-        AuthService.shared.isSignedIn ? FirestoreWardrobeSyncService() : MockWardrobeSyncService()
+        AuthGatedWardrobeSyncService()
+    }
+
+    /// Account deletion — a one-shot, user-triggered action constructed
+    /// fresh at the call site, so unlike the services above it doesn't need
+    /// an `AuthGated` wrapper (no long-lived holder to go stale). Real
+    /// implementation regardless of sign-in state is safe: the UI
+    /// (`AccountSectionView`) only ever offers deletion while signed in, and
+    /// a signed-out call would just fail with `.missingAPIKey`.
+    static func makeAccountDeletionService() -> AccountDeletionService {
+        RemoteAccountDeletionService()
     }
 }

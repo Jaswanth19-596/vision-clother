@@ -78,14 +78,17 @@ final class PexelsImageFeedService: StockImageFeedService {
     ]
 
     func fetchDeck(count: Int) async throws -> [StockPhoto] {
+        let requestID = AppLog.newRequestID()
         let proxyHeaders: [String: String]
         do {
             proxyHeaders = try await ProxyAuthHeaders.current()
         } catch {
+            AppLog.error(.network, "[\(requestID)] stockFeed: missing auth header — \(String(describing: error))")
             throw StockImageFeedError.missingAPIKey
         }
 
         let query = queryPool.randomElement() ?? "clothing outfit"
+        AppLog.info(.network, "[\(requestID)] stockFeed: GET pexels/search query=\"\(query)\" count=\(count)")
         var components = URLComponents(url: ProxyConfig.pexelsSearchURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "query", value: query),
@@ -111,18 +114,22 @@ final class PexelsImageFeedService: StockImageFeedService {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            AppLog.error(.network, "[\(requestID)] stockFeed: transport error — \(error.localizedDescription)")
             throw StockImageFeedError.requestFailed(reason: error.localizedDescription)
         }
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.error(.network, "[\(requestID)] stockFeed: HTTP \(statusCode)")
             throw StockImageFeedError.requestFailed(reason: "HTTP \(statusCode)")
         }
 
         guard let decoded = try? JSONDecoder().decode(PexelsSearchResponse.self, from: data) else {
+            AppLog.error(.network, "[\(requestID)] stockFeed: decode failed")
             throw StockImageFeedError.invalidResponse
         }
 
+        AppLog.info(.network, "[\(requestID)] stockFeed: ok photos=\(decoded.photos.count)")
         return decoded.photos.map { photo in
             StockPhoto(
                 id: String(photo.id),
@@ -177,5 +184,21 @@ struct MockStockImageFeedService: StockImageFeedService {
                 photographerURLString: nil
             )
         }
+    }
+}
+
+/// Routes each call to a real or mock `StockImageFeedService` based on
+/// `AuthService.shared.isSignedIn` **at call time**, not at construction
+/// time — same fix as `AuthGatedWardrobeSyncService` (see that type's doc
+/// comment in `Services/WardrobeSyncService.swift`) and
+/// `AuthGatedVisionMetadataExtractionService`.
+@MainActor
+final class AuthGatedStockImageFeedService: StockImageFeedService {
+    private lazy var real = PexelsImageFeedService()
+    private lazy var mock = MockStockImageFeedService()
+    private var current: StockImageFeedService { AuthService.shared.isSignedIn ? real : mock }
+
+    func fetchDeck(count: Int) async throws -> [StockPhoto] {
+        try await current.fetchDeck(count: count)
     }
 }

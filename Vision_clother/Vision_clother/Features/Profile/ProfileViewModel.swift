@@ -39,18 +39,39 @@ final class ProfileViewModel {
     private let repository: WardrobeRepository
     private let validationService: PersonPhotoValidationService
     private let profileDerivationService: UserProfileDerivationService
+    /// Portrait cloud sync (Cloud Sync, docs/decisions/resolved-v1.md) — held
+    /// directly rather than routed through `WardrobeRepository`, mirroring
+    /// `AccountSectionViewModel`'s existing precedent for a ViewModel calling
+    /// a Service straight (Features/CLAUDE.md's "never call Services
+    /// directly" applies to Views, not ViewModels). `UserPortraitStorage` has
+    /// no SwiftData row to hang a repository method off of.
+    private let syncService: WardrobeSyncService
     private var derivationTask: Task<Void, Never>?
 
     init(
         repository: WardrobeRepository,
         validationService: PersonPhotoValidationService = MockPersonPhotoValidationService(),
-        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService()
+        profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService(),
+        syncService: WardrobeSyncService = ServiceFactory.makeWardrobeSyncService()
     ) {
         self.repository = repository
         self.validationService = validationService
         self.profileDerivationService = profileDerivationService
+        self.syncService = syncService
         self.hasPortrait = UserPortraitStorage.exists
         self.portraitImageData = UserPortraitStorage.load()
+    }
+
+    /// Re-reads local portrait state from disk — called when the signed-in
+    /// account changes (`ProfileView`'s `authService.uid` observer) or when
+    /// `Data/WardrobeSyncCoordinator.swift`'s background prefetch downloads a
+    /// portrait for the newly-switched-to account. `init()` only reads this
+    /// once, which is stale the moment an account switch happens later in
+    /// the same app session (`ProfileView`'s viewModel is constructed once
+    /// for the tab's lifetime).
+    func refreshPortrait() {
+        hasPortrait = UserPortraitStorage.exists
+        portraitImageData = UserPortraitStorage.load()
     }
 
     func refreshFeedbackHistory() {
@@ -67,6 +88,7 @@ final class ProfileViewModel {
     /// used to be the only place this ran). That generate-time check stays
     /// in place too, as cheap on-device defense-in-depth.
     func savePortrait(_ data: Data) {
+        AppLog.info(.viewModel, "ProfileViewModel.savePortrait: starting, bytes=\(data.count)")
         photoUploadError = nil
         isValidatingPhoto = true
         Task { [weak self] in
@@ -74,21 +96,35 @@ final class ProfileViewModel {
             do {
                 try await self.validationService.validate(imageData: data)
             } catch let error as PersonPhotoValidationError {
+                AppLog.notice(.viewModel, "ProfileViewModel.savePortrait: validation rejected — \(error.errorDescription ?? "unknown")")
                 self.isValidatingPhoto = false
                 self.photoUploadError = error.errorDescription
                 return
             } catch {
+                AppLog.error(.viewModel, "ProfileViewModel.savePortrait: validation failed — \(String(describing: error))")
                 self.isValidatingPhoto = false
                 self.photoUploadError = "Couldn't check that photo. Try again."
                 return
             }
 
+            AppLog.info(.viewModel, "ProfileViewModel.savePortrait: validated ok")
             self.isValidatingPhoto = false
             try? UserPortraitStorage.save(data)
             self.hasPortrait = true
             self.portraitImageData = data
             self.deriveProfile(from: data)
+            self.uploadPortraitIfSignedIn(data)
         }
+    }
+
+    /// Best-effort, not part of the durable `SyncMetadata` outbox — same
+    /// posture as `SyncingWardrobeRepository.uploadImageIfNeeded`. A failed
+    /// upload just means this device's portrait isn't in Cloud Storage yet;
+    /// the next successful save (or a future explicit retry) covers it.
+    private func uploadPortraitIfSignedIn(_ data: Data) {
+        guard let uid = AuthService.shared.uid else { return }
+        let service = syncService
+        Task { try? await service.uploadPortrait(data: data, uid: uid) }
     }
 
     func retryDerivation() {
@@ -97,15 +133,18 @@ final class ProfileViewModel {
     }
 
     private func deriveProfile(from data: Data) {
+        AppLog.info(.viewModel, "ProfileViewModel.deriveProfile: starting")
         derivationTask?.cancel()
         derivationState = .deriving
         derivationTask = Task { [weak self] in
             guard let self else { return }
             guard let wire = try? await self.profileDerivationService.deriveProfile(portraitData: data) else {
+                AppLog.error(.viewModel, "ProfileViewModel.deriveProfile: failed")
                 self.derivationState = .failed("Couldn't build your style profile.")
                 return
             }
             try? self.repository.saveUserProfile(wire)
+            AppLog.info(.viewModel, "ProfileViewModel.deriveProfile: ok")
             self.derivationState = .idle
         }
     }

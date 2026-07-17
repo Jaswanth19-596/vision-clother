@@ -1,6 +1,7 @@
 import type { NextFunction, Response } from "express";
 import { getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
+import { logEvent } from "../logger";
 
 /** Coarse per-user daily quota, shared across all three proxy routes. */
 const DAILY_REQUEST_LIMIT = 500;
@@ -39,13 +40,15 @@ export async function rateLimit(
     });
 
     if (exceeded) {
+      logEvent("warn", "rateLimit.exceeded", { requestId: req.requestId, uid, limit: DAILY_REQUEST_LIMIT });
       res.status(429).json({ error: "rate_limit_exceeded" });
       return;
     }
     next();
-  } catch {
+  } catch (error) {
     // Firestore hiccup shouldn't take down the proxy — fail open on the
     // rate limiter itself, since App Check + Auth already gate access.
+    logEvent("error", "rateLimit.failOpen", { requestId: req.requestId, uid, error: String(error) });
     next();
   }
 }

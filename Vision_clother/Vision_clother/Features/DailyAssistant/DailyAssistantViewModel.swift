@@ -18,6 +18,21 @@ import os
 @MainActor
 final class DailyAssistantViewModel {
     private static let logger = Logger(subsystem: "com.visionclother", category: "DailyAssistant")
+
+    /// Answers "why did the LLM path yield fewer/zero outfits" from a log
+    /// line alone — `Domain/OutfitRecommendationValidator.swift`'s
+    /// `validateVerbose` already computes the per-outfit rejection reason,
+    /// it just had no caller until now. Logged through `MLLog` (not
+    /// `AppLog`) since this is exactly the AI-Stylist-ML diagnostic surface
+    /// that logger was already built for.
+    private static func logValidationOutcome(offered: Int, kept: Int, rejections: [OutfitRecommendationValidator.RejectionReason]) {
+        guard kept < offered || !rejections.isEmpty else {
+            MLLog.logger.notice("validation: offered=\(offered) kept=\(kept) — all outfits survived")
+            return
+        }
+        let histogram = Dictionary(grouping: rejections, by: { String(describing: $0) }).mapValues(\.count)
+        MLLog.logger.notice("validation: offered=\(offered) kept=\(kept) rejections=\(histogram)")
+    }
     /// Hard cap on the whole weather → profile → recommendation stretch.
     /// Neither `URLSession.shared` (used by every OpenRouter service in this
     /// chain) nor any call site configures its own request timeout, so a
@@ -394,8 +409,8 @@ final class DailyAssistantViewModel {
                     chips: response.suggestedChips
                 )
             }
-            let validated = await PerfLog.time("validation") {
-                OutfitRecommendationValidator.validate(
+            let (validated, rejections) = await PerfLog.time("validation") {
+                OutfitRecommendationValidator.validateVerbose(
                     response,
                     index: index,
                     // Self-reported by the same call, not a second
@@ -408,6 +423,7 @@ final class DailyAssistantViewModel {
                     history: history
                 )
             }
+            Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)
             guard !validated.isEmpty else {
                 return .failure("Couldn’t find outfits matching your request. Try rephrasing or adding more items to your wardrobe.")
             }
@@ -534,14 +550,15 @@ final class DailyAssistantViewModel {
                 )
             }
 
-            let validated = await PerfLog.time("validation") {
-                OutfitRecommendationValidator.validate(
+            let (validated, rejections) = await PerfLog.time("validation") {
+                OutfitRecommendationValidator.validateVerbose(
                     response, index: index,
                     constraints: response.resolvedConstraints,
                     profile: profile, weather: weather, history: history,
                     mustIncludeItemID: prospectiveItem.id
                 )
             }
+            Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)
 
             return .resolved(item: prospectiveItem, outfits: validated, note: validated.isEmpty ? response.followUpText : nil)
         } catch is CancellationError {

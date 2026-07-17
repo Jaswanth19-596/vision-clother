@@ -37,25 +37,47 @@ final class SyncOutboxWorker {
     /// `Data/SyncingWardrobeRepository.swift`'s note on why the uid must be
     /// captured synchronously at the mutation site, not re-read later after
     /// a possible account switch.
-    func drainNow(uid: String) async {
-        guard !isDraining else { return }
+    ///
+    /// Returns `true` iff zero dirty rows remain afterward — callers that
+    /// need to know sync actually finished (e.g.
+    /// `Data/WardrobeSyncCoordinator.swift`'s bootstrap push and
+    /// drain-before-wipe) use this instead of assuming a single pass always
+    /// succeeds; a row skipped due to backoff or a failed push leaves this
+    /// `false`.
+    @discardableResult
+    func drainNow(uid: String) async -> Bool {
+        guard !isDraining else {
+            AppLog.debug(.sync, "drainNow: already draining, skipped")
+            return false
+        }
         isDraining = true
         defer { isDraining = false }
 
         let descriptor = FetchDescriptor<SyncMetadata>(predicate: #Predicate { $0.isDirty })
-        guard let dirtyRows = try? modelContext.fetch(descriptor), !dirtyRows.isEmpty else { return }
+        guard let dirtyRows = try? modelContext.fetch(descriptor), !dirtyRows.isEmpty else {
+            AppLog.debug(.sync, "drainNow: no dirty rows")
+            return true
+        }
+        AppLog.info(.sync, "drainNow: starting, dirtyRows=\(dirtyRows.count)")
 
         let now = Date()
         var didChangeAnything = false
+        var allSucceeded = true
+        var pushedCount = 0
+        var backedOffCount = 0
+        var failedCount = 0
 
         for row in dirtyRows {
             if let lastAttemptAt = row.lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < Self.backoffSeconds(attemptCount: row.attemptCount) {
+                allSucceeded = false
+                backedOffCount += 1
                 continue
             }
 
             do {
                 try await push(row, uid: uid)
                 didChangeAnything = true
+                pushedCount += 1
                 if row.operation == .delete {
                     modelContext.delete(row)
                 } else {
@@ -65,14 +87,19 @@ final class SyncOutboxWorker {
                 }
             } catch {
                 didChangeAnything = true
+                allSucceeded = false
+                failedCount += 1
                 row.attemptCount += 1
                 row.lastAttemptAt = now
+                AppLog.error(.sync, "drainNow: push failed for \(row.entityType) \(row.entityID) (attempt \(row.attemptCount)) — \(String(describing: error))")
             }
         }
 
         if didChangeAnything {
             try? modelContext.save()
         }
+        AppLog.info(.sync, "drainNow: finished pushed=\(pushedCount) failed=\(failedCount) backedOff=\(backedOffCount) allSucceeded=\(allSucceeded)")
+        return allSucceeded
     }
 
     private func push(_ row: SyncMetadata, uid: String) async throws {

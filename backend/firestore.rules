@@ -8,14 +8,112 @@ rules_version = '2';
 // - users/{uid}/**: Cloud Sync's per-account wardrobe data
 //   (docs/decisions/resolved-v1.md's "Cloud Sync" section) — the iOS client
 //   talks to these directly, scoped so an account can only ever read/write
-//   its own subtree.
+//   its own subtree. Three server-authoritative meta docs (usage,
+//   entitlement, itemCounts) carve out stricter rules than plain ownership —
+//   see the guest-first quota plan in docs/timeline.md.
 service cloud.firestore {
   match /databases/{database}/documents {
     match /rateLimits/{document=**} {
       allow read, write: if false;
     }
-    match /users/{uid}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+    match /users/{uid} {
+      function isOwner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+
+      function isAnonymous() {
+        return request.auth.token.firebase.sign_in_provider == "anonymous";
+      }
+
+      // top/bottom/footwear are the "core" slots (higher cap); everything
+      // else is an "accessory" slot — mirrors Domain/EntitlementLimits.swift.
+      function itemCap(slot) {
+        return slot in ["top", "bottom", "footwear"]
+          ? (isAnonymous() ? 5 : 10)
+          : (isAnonymous() ? 2 : 4);
+      }
+
+      function itemCountsField(data, slot) {
+        return slot in data ? data[slot] : 0;
+      }
+
+      function currentItemCount(slot) {
+        return exists(/databases/$(database)/documents/users/$(uid)/meta/itemCounts)
+          ? itemCountsField(get(/databases/$(database)/documents/users/$(uid)/meta/itemCounts).data, slot)
+          : 0;
+      }
+
+      // meta/usage and meta/entitlement are written exclusively by Cloud
+      // Functions (quota.ts / a future billing webhook) via the Admin SDK,
+      // which bypasses these rules — client access is read-only, for
+      // showing usage/tier in the UI.
+      match /meta/usage {
+        allow read: if isOwner();
+        allow write: if false;
+      }
+      match /meta/entitlement {
+        allow read: if isOwner();
+        allow write: if false;
+      }
+
+      // meta/itemCounts: one field per Slot.rawValue. Client-writable, but
+      // only as a single-field, exactly-±1 delta in the same transaction as
+      // a wardrobeItems create/tombstone — never an arbitrary overwrite.
+      // Known limitation: this validates the delta's *shape*, not that it
+      // truly pairs 1:1 with an actual item create/delete, so drift is
+      // possible if a client misbehaves; a scheduled reconciliation function
+      // is a recommended follow-up, not implemented here.
+      function isValidItemCounts(data) {
+        return data.keys().hasOnly(["top", "bottom", "footwear", "outerwear", "headwear", "accessory", "bag"]) &&
+          itemCountsField(data, "top") is int && itemCountsField(data, "top") >= 0 &&
+          itemCountsField(data, "bottom") is int && itemCountsField(data, "bottom") >= 0 &&
+          itemCountsField(data, "footwear") is int && itemCountsField(data, "footwear") >= 0 &&
+          itemCountsField(data, "outerwear") is int && itemCountsField(data, "outerwear") >= 0 &&
+          itemCountsField(data, "headwear") is int && itemCountsField(data, "headwear") >= 0 &&
+          itemCountsField(data, "accessory") is int && itemCountsField(data, "accessory") >= 0 &&
+          itemCountsField(data, "bag") is int && itemCountsField(data, "bag") >= 0;
+      }
+
+      function itemCountsAbsDeltaSum(existing, incoming) {
+        return math.abs(itemCountsField(incoming, "top") - itemCountsField(existing, "top")) +
+          math.abs(itemCountsField(incoming, "bottom") - itemCountsField(existing, "bottom")) +
+          math.abs(itemCountsField(incoming, "footwear") - itemCountsField(existing, "footwear")) +
+          math.abs(itemCountsField(incoming, "outerwear") - itemCountsField(existing, "outerwear")) +
+          math.abs(itemCountsField(incoming, "headwear") - itemCountsField(existing, "headwear")) +
+          math.abs(itemCountsField(incoming, "accessory") - itemCountsField(existing, "accessory")) +
+          math.abs(itemCountsField(incoming, "bag") - itemCountsField(existing, "bag"));
+      }
+
+      match /meta/itemCounts {
+        allow read: if isOwner();
+        allow create: if isOwner() && isValidItemCounts(request.resource.data) &&
+          itemCountsAbsDeltaSum({}, request.resource.data) == 1;
+        allow update: if isOwner() && isValidItemCounts(request.resource.data) &&
+          itemCountsAbsDeltaSum(resource.data, request.resource.data) == 1;
+        allow delete: if false;
+      }
+
+      // Remaining single-row meta docs (styleProfile, visualPreferenceState,
+      // syncStatus) keep plain owner access — unaffected by the quota plan.
+      match /meta/{metaDoc} {
+        allow read: if isOwner();
+        allow write: if isOwner() && !(metaDoc in ["usage", "entitlement", "itemCounts"]);
+      }
+
+      // wardrobeItems creates are capped server-side as a backstop to the
+      // client-side pre-check (Domain/EntitlementLimits.swift) — reads the
+      // itemCounts doc as of the transaction's read snapshot, so it checks
+      // the pre-increment count even when the create and the itemCounts
+      // bump land in the same client transaction.
+      match /wardrobeItems/{itemId} {
+        allow read, update, delete: if isOwner();
+        allow create: if isOwner() && currentItemCount(request.resource.data.slot) < itemCap(request.resource.data.slot);
+      }
+
+      match /{collection}/{document} {
+        allow read, write: if isOwner() && collection != "meta" && collection != "wardrobeItems";
+      }
     }
   }
 }

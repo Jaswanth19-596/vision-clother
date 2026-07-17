@@ -14,7 +14,19 @@
 import Foundation
 
 enum ProxyAuthHeaders {
+    /// `X-Request-Id` (generated fresh per call, `AppLog.newRequestID()`) is
+    /// the join key between this client-side call's `AppLog` lines and the
+    /// matching `backend/functions/src/app.ts` request-logging middleware's
+    /// Cloud Logging line for the same request — echoed back verbatim by the
+    /// backend so a caller that logs it here can grep both sides by the same
+    /// short id.
     static func current() async throws -> [String: String] {
-        ["Authorization": "Bearer \(try await AuthService.shared.currentIDToken())"]
+        do {
+            let token = try await AuthService.shared.currentIDToken()
+            return ["Authorization": "Bearer \(token)", "X-Request-Id": AppLog.newRequestID()]
+        } catch {
+            AppLog.error(.network, "ProxyAuthHeaders.current: failed to build auth header — \(String(describing: error))")
+            throw error
+        }
     }
 }

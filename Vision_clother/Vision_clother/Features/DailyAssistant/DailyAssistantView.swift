@@ -19,6 +19,12 @@ import PhotosUI
 struct DailyAssistantView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(JobQueueStore.self) private var jobQueueStore
+    /// Account-switch reactivity: `viewModel` is constructed once for this
+    /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
+    /// without this the chat timeline from the previous account would just
+    /// keep showing after switching — see
+    /// `Data/WardrobeSyncCoordinator.swift`'s file header.
+    @ObservedObject private var authService = AuthService.shared
     @State private var viewModel: DailyAssistantViewModel?
     /// Which historical (non-latest) outfits rounds the user has manually
     /// expanded back open — the latest round is always expanded regardless
@@ -33,6 +39,12 @@ struct DailyAssistantView: View {
     /// empty `Data()` and the render request fails downstream with an opaque
     /// "Invalid image data-url" error from the render API.
     @State private var isMissingPortraitAlertPresented = false
+    /// Guest-first quota plan: try-on requires a linked account
+    /// (`backend/functions/src/middleware/quota.ts`'s `tryOn` cap is 0 for
+    /// guests) — this pre-flight guard avoids a round trip to the proxy just
+    /// to get the same 403 back. Checked before the portrait check below so
+    /// a guest sees "sign in" rather than "add a photo" first.
+    @State private var isGuestTryOnAlertPresented = false
 
     // Prospective Purchase Evaluation (2026-07-15) — "Buying something new?"
     // photo attach state, live only while `viewModel.isProspectivePurchaseMode`
@@ -76,10 +88,19 @@ struct DailyAssistantView: View {
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService()
             )
         }
+        .onChange(of: authService.uid) { _, _ in
+            viewModel?.resetConversation()
+            expandedRoundIDs.removeAll()
+        }
         .alert("Add a photo first", isPresented: $isMissingPortraitAlertPresented) {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Add a photo of yourself on your Profile tab to try on outfits.")
+        }
+        .alert("Sign in to try this on", isPresented: $isGuestTryOnAlertPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Try-on rendering needs a linked account. Sign in on your Profile tab — your closet comes with you.")
         }
         .fullScreenCover(isPresented: $isProspectiveCameraPresented) {
             CameraCaptureView { data in
@@ -192,6 +213,10 @@ struct DailyAssistantView: View {
                             }
                         },
                         onStartTryOn: { outfit in
+                            guard !AuthService.shared.isAnonymous else {
+                                isGuestTryOnAlertPresented = true
+                                return
+                            }
                             guard UserPortraitStorage.exists else {
                                 isMissingPortraitAlertPresented = true
                                 return
@@ -217,6 +242,10 @@ struct DailyAssistantView: View {
                             }
                         },
                         onStartTryOn: { outfit in
+                            guard !AuthService.shared.isAnonymous else {
+                                isGuestTryOnAlertPresented = true
+                                return
+                            }
                             guard UserPortraitStorage.exists else {
                                 isMissingPortraitAlertPresented = true
                                 return
