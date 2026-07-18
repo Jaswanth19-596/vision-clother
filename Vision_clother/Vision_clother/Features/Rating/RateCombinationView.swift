@@ -20,11 +20,23 @@ struct RateCombinationView: View {
     @Environment(\.dismiss) private var dismiss
 
     let combination: SavedCombination
+
     /// Real items resolved from `combination`'s slot ids — may be shorter
     /// than 4 if a source item was since deleted, or if the outfit never
     /// had footwear/outerwear resolved (Manual Pairing only selects a
-    /// top+bottom).
-    let items: [WardrobeItem]
+    /// top+bottom). Snapshotted once into `@State` (via `init`) rather than
+    /// read as a plain `let` from the caller: `CombinationDetailView`'s
+    /// `.sheet(item:)` closure re-calls `resolveItems(for:)` on every one of
+    /// its own re-renders (e.g. a background photo/sync tick) while this
+    /// sheet stays open, which would otherwise silently swap `items` out
+    /// from under `step`'s fixed index mid-flow — showing/submitting the
+    /// wrong item, or re-showing/skipping items across "Next Item" taps.
+    @State private var items: [WardrobeItem]
+
+    init(combination: SavedCombination, items: [WardrobeItem]) {
+        self.combination = combination
+        self._items = State(initialValue: items)
+    }
 
     private enum Step: Equatable {
         case outfit

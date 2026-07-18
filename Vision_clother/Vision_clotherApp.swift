@@ -61,7 +61,7 @@ struct Vision_clotherApp: App {
 
         let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
         syncCoordinator = WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: ServiceFactory.makeWardrobeSyncService())
-        usageTracker = UsageTracker(repository: repository, syncService: ServiceFactory.makeWardrobeSyncService())
+        usageTracker = UsageTracker(repository: repository, syncService: ServiceFactory.makeWardrobeSyncService(), entitlementLimitsService: ServiceFactory.makeEntitlementLimitsService())
         let tracker = usageTracker
         paymentManager = StoreKitPaymentManager(
             verificationService: { ServiceFactory.makeIAPVerificationService() },

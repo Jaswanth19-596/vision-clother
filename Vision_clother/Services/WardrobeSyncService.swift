@@ -126,9 +126,9 @@ protocol WardrobeSyncService {
     func fetchUsage(uid: String) async throws -> UsageDTO?
 
     /// Client-side counterpart to `backend/firestore.rules`'s
-    /// `meta/itemCounts` cap enforcement — `Domain/EntitlementLimits.swift`'s
-    /// `itemCap` pre-check is the fast, optimistic UX guard; this is what
-    /// actually moves the counter the rules validate against. Called
+    /// `meta/itemCounts` cap enforcement — `Data/UsageTracker.swift`'s
+    /// `itemCap(for:)` pre-check is the fast, optimistic UX guard; this is
+    /// what actually moves the counter the rules validate against. Called
     /// best-effort/fire-and-forget from `Data/SyncingWardrobeRepository.swift`'s
     /// `save`/`delete` (same posture as `uploadImageIfNeeded`) — not
     /// transactionally atomic with the item doc write itself, a documented

@@ -41,18 +41,24 @@ final class AddItemViewModel {
         state = .editingMetadata
     }
 
-    /// Persists the manually entered item
-    func saveItem() async {
+    /// Persists the manually entered item. `usageTracker` is the caller's —
+    /// this view model has no `UsageTracker` of its own (unlike
+    /// `JobQueueStore`, which is a long-lived app-root singleton
+    /// constructed with one), so `AddItemView` passes its
+    /// `@Environment(UsageTracker.self)` through per call.
+    func saveItem(usageTracker: UsageTracker) async {
         AppLog.info(.viewModel, "AddItemViewModel.saveItem: starting")
         state = .saving
         do {
             let item = WardrobeItem.make(from: editor.makeMetadata(), imageAssetName: nil)
 
-            // Guest-first quota plan (Domain/EntitlementLimits.swift):
-            // client-side pre-check for immediate UX, backstopped
-            // server-side by backend/firestore.rules' meta/itemCounts cap.
+            // Guest-first quota plan: client-side pre-check for immediate
+            // UX, backstopped server-side by backend/firestore.rules'
+            // meta/itemCounts cap. Cap number comes from
+            // `usageTracker.itemCap(for:)` — server-resolved, see
+            // `Data/UsageTracker.swift`'s doc comment.
             let existingCount = (try? repository.fetchInventory())?.filter { $0.slot == item.slot }.count ?? 0
-            guard existingCount < EntitlementLimits.itemCap(for: item.slot, isAnonymous: AuthService.shared.isGuestTier) else {
+            guard existingCount < usageTracker.itemCap(for: item.slot) else {
                 AppLog.notice(.viewModel, "AddItemViewModel.saveItem: item cap reached for slot=\(item.slot.rawValue)")
                 state = .failed("You've reached the item limit for this category. Sign in to add more.")
                 return

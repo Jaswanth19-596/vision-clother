@@ -155,4 +155,13 @@ enum ServiceFactory {
         }
         return MockIAPVerificationService()
     }
+
+    /// Resolved tier limits (`Services/EntitlementLimitsService.swift`).
+    /// `AuthGatedEntitlementLimitsService` re-checks `isSignedIn` per call —
+    /// required because `Data/UsageTracker.swift` holds this for the app's
+    /// entire lifetime, constructed once at launch (see that wrapper's doc
+    /// comment for why a construction-time snapshot would be wrong here).
+    static func makeEntitlementLimitsService() -> EntitlementLimitsService {
+        AuthGatedEntitlementLimitsService()
+    }
 }

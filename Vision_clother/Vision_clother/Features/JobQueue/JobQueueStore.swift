@@ -194,14 +194,16 @@ final class JobQueueStore {
 
         setStatus(jobID, .processing("Saving…"))
 
-        // Guest-first quota plan (Domain/EntitlementLimits.swift): same
-        // client-side pre-check as AddItemViewModel.saveItem(), backstopped
-        // server-side by backend/firestore.rules' meta/itemCounts cap.
-        // `WardrobeItem.make` slots the item by `metadata.slot` (the
-        // vision-tagged result), not `payload.defaultSlot` (only a tagging
-        // hint), so that's what's checked here too.
+        // Guest-first quota plan: same client-side pre-check as
+        // AddItemViewModel.saveItem(), backstopped server-side by
+        // backend/firestore.rules' meta/itemCounts cap. Cap number comes
+        // from `usageTracker.itemCap(for:)` — server-resolved, see
+        // `Data/UsageTracker.swift`'s doc comment. `WardrobeItem.make` slots
+        // the item by `metadata.slot` (the vision-tagged result), not
+        // `payload.defaultSlot` (only a tagging hint), so that's what's
+        // checked here too.
         let existingCount = (try? repository.fetchInventory())?.filter { $0.slot == metadata.slot }.count ?? 0
-        guard existingCount < EntitlementLimits.itemCap(for: metadata.slot, isAnonymous: AuthService.shared.isGuestTier) else {
+        guard existingCount < usageTracker.itemCap(for: metadata.slot) else {
             let message = "You've reached the item limit for this category. Sign in to add more."
             AppLog.notice(.jobQueue, "performUpload: job=\(jobID) item cap reached for slot=\(metadata.slot.rawValue)")
             finishJob(jobID, status: .failed(message))

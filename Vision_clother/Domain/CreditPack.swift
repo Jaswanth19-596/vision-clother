@@ -5,11 +5,15 @@
 //  Display-only mirror of the backend's server-authoritative consumable
 //  credit catalog (`backend/functions/src/iap/products.ts`'s
 //  `PRODUCT_GRANTS`) — the same "keep in sync by hand" posture as
-//  `EntitlementLimits` vs `quota.ts`'s `TIER_LIMITS`. The client uses this
-//  to know which product IDs to fetch from StoreKit and what credit amounts
-//  to show next to each price; the actual grant amount is always decided by
-//  the backend from the verified transaction's productId, so drift here can
-//  only ever mislabel a button, never change what a purchase grants.
+//  `backend/firestore.rules`' `itemCap()` vs `entitlementLimits.ts`'s
+//  `ITEM_CAP_LIMITS` (the one remaining case of that duplication — see
+//  docs/timeline.md). Unlike that one, this duplication genuinely can't be
+//  avoided: StoreKit requires product IDs to be known client-side to fetch
+//  them at all. The client uses this to know which product IDs to fetch
+//  from StoreKit and what credit amounts to show next to each price; the
+//  actual grant amount is always decided by the backend from the verified
+//  transaction's productId, so drift here can only ever mislabel a button,
+//  never change what a purchase grants.
 //
 //  Pure Domain type: no StoreKit, no I/O — unit-tested in
 //  `Vision_clotherTests/CreditCatalogTests.swift`.

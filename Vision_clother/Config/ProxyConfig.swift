@@ -47,4 +47,9 @@ enum ProxyConfig {
     /// balance on `users/{uid}/meta/usage`. See
     /// `Services/IAPVerificationService.swift`.
     static var iapVerifyURL: URL { baseURL.appendingPathComponent("iap/verify") }
+    /// Backed by `backend/functions/src/routes/entitlementLimits.ts` —
+    /// resolves the caller's tier into concrete recommendation/try-on/item
+    /// caps server-side, so the client never hardcodes its own copy of
+    /// those numbers. See `Services/EntitlementLimitsService.swift`.
+    static var entitlementLimitsURL: URL { baseURL.appendingPathComponent("entitlement/limits") }
 }

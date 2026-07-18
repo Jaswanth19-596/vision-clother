@@ -9,6 +9,7 @@ import { openrouterImagesRouter } from "./routes/openrouterImages";
 import { pexelsSearchRouter } from "./routes/pexelsSearch";
 import { accountDeleteRouter } from "./routes/accountDelete";
 import { iapVerifyRouter } from "./routes/iapVerify";
+import { entitlementLimitsRouter } from "./routes/entitlementLimits";
 import { logEvent } from "./logger";
 import type { AuthedRequest } from "./types";
 
@@ -44,13 +45,18 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
 /**
  * Every route is: verify Firebase Auth -> rate limit -> forward to the
  * provider verbatim. No business logic lives past this point — see
- * docs/backend/conventions.md — with two deliberate exceptions:
+ * docs/backend/conventions.md — with three deliberate exceptions:
  * `/account/delete` (see `routes/accountDelete.ts`'s doc comment) needs
  * Admin SDK privileges (bulk cross-collection Firestore delete, Storage
  * prefix wipe, deleting the Auth user) the client can never safely hold,
- * and `/iap/verify` (see `routes/iapVerify.ts`) verifies StoreKit 2
+ * `/iap/verify` (see `routes/iapVerify.ts`) verifies StoreKit 2
  * purchase JWS tokens and credits the server-only-write usage doc — the
- * one mutation that must never be client-reachable.
+ * one mutation that must never be client-reachable — and
+ * `/entitlement/limits` (see `routes/entitlementLimits.ts`) resolves the
+ * caller's tier into concrete numbers so the client never hardcodes a
+ * tier→number table that could drift from `middleware/quota.ts`'s (a real
+ * bug, not a security issue — see that route's doc comment for why this
+ * was never an enforcement mechanism either way).
  * App Check is deferred (needs a paid Apple Developer account for App
  * Attest) — see docs/decisions/resolved-v1.md.
  */
@@ -80,6 +86,7 @@ export function buildApp(): express.Express {
   app.use("/pexels/search", pexelsSearchRouter);
   app.use("/account/delete", accountDeleteRouter);
   app.use("/iap/verify", iapVerifyRouter);
+  app.use("/entitlement/limits", entitlementLimitsRouter);
 
   return app;
 }

@@ -273,6 +273,7 @@ private struct PairingItemCell: View {
         .modelContainer(container)
         .environment(UsageTracker(
             repository: SyncingWardrobeRepository(modelContext: container.mainContext),
-            syncService: MockWardrobeSyncService()
+            syncService: MockWardrobeSyncService(),
+            entitlementLimitsService: MockEntitlementLimitsService()
         ))
 }

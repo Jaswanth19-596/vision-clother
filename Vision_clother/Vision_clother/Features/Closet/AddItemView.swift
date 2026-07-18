@@ -92,7 +92,7 @@ struct AddItemView: View {
                 model: viewModel.editor,
                 previewImageData: nil,
                 saveButtonLabel: "Save to Closet",
-                onSave: { Task { await viewModel.saveItem() } },
+                onSave: { Task { await viewModel.saveItem(usageTracker: usageTracker) } },
                 capMessage: isSlotAtCap(viewModel.editor.slot) ? "You've reached the item limit for this category. Sign in to add more." : nil
             )
 
@@ -255,7 +255,7 @@ struct CameraCaptureView: UIViewControllerRepresentable {
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     let repository = SyncingWardrobeRepository(modelContext: container.mainContext)
-    let previewUsageTracker = UsageTracker(repository: repository, syncService: MockWardrobeSyncService())
+    let previewUsageTracker = UsageTracker(repository: repository, syncService: MockWardrobeSyncService(), entitlementLimitsService: MockEntitlementLimitsService())
     AddItemView(defaultSlot: nil)
         .modelContainer(container)
         .environment(JobQueueStore(

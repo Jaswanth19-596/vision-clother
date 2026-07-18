@@ -15,12 +15,11 @@ struct GarmentAttributesFormView: View {
     let saveButtonLabel: String
     let onSave: () -> Void
     /// Quota visibility feature: non-`nil` when the currently selected
-    /// `model.slot` category is at its item cap (`Data/UsageTracker.swift`)
-    /// — disables Save and shows the reason inline. `nil` for
-    /// `EditItemView`'s call site (re-slotting an already-owned item isn't
-    /// a net-new item, see `Domain/EntitlementLimits.swift`'s known gap
-    /// note), which is why this defaults to `nil` rather than being
-    /// required.
+    /// `model.slot` category is at its item cap (`Data/UsageTracker.swift`'s
+    /// `itemCap(for:)`) — disables Save and shows the reason inline. `nil`
+    /// for `EditItemView`'s call site (re-slotting an already-owned item
+    /// isn't a net-new item, so no cap check applies there), which is why
+    /// this defaults to `nil` rather than being required.
     var capMessage: String? = nil
 
     var body: some View {

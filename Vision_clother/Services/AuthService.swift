@@ -13,9 +13,9 @@
 //  `isSignedIn` (replacing the old API-key-presence gate now that those
 //  calls go through the Firebase proxy — see Services/ProxyAuthHeaders.swift);
 //  that's true for guests too by design, since `isAnonymous` (not
-//  `isSignedIn`) is what actually distinguishes guest vs. linked tiers now —
-//  see `isGuestTier` below. `currentIDToken()` supplies the bearer token
-//  every proxied request carries.
+//  `isSignedIn`) is what actually distinguishes guest vs. linked tiers now.
+//  `currentIDToken()` supplies the bearer token every proxied request
+//  carries.
 //
 
 import Combine
@@ -206,14 +206,6 @@ final class AuthService: NSObject, ObservableObject {
         try Auth.auth().signOut()
         GIDSignIn.sharedInstance.signOut()
     }
-
-    /// Anonymous, or not yet signed in at all (e.g. a dev/offline
-    /// environment with no Firebase project configured, where
-    /// `ensureGuestSession()` silently never completes) — both get the more
-    /// restrictive guest-tier caps (`Domain/EntitlementLimits.swift`), never
-    /// the signed-in free tier, so a not-yet-authenticated session can never
-    /// accidentally read as higher-limit than a real guest.
-    var isGuestTier: Bool { !isSignedIn || isAnonymous }
 
     /// Fresh (Firebase SDK auto-refreshes as needed) ID token for every
     /// proxy request — see `Services/ProxyAuthHeaders.swift`.

@@ -21,8 +21,18 @@
 //  vs-reconciled split the way recommendation/try-on counts need) —
 //  recomputed synchronously from the repository's live inventory, split by
 //  `Slot.isRequired` (core) vs. not (accessory), matching exactly how
-//  `Domain/EntitlementLimits.swift.itemCap` and the existing pre-save
-//  guards in `AddItemViewModel`/`JobQueueStore` already group slots.
+//  `limits.itemCap` and the existing pre-save guards in
+//  `AddItemViewModel`/`JobQueueStore` already group slots.
+//
+//  The actual cap/limit *numbers* (`limits` below) are fetched from
+//  `Services/EntitlementLimitsService.swift` — `backend/functions/src/routes/entitlementLimits.ts`
+//  resolves the caller's tier server-side and returns concrete numbers, so
+//  this file never hardcodes a tier→number table of its own (that used to
+//  live in the now-deleted `Domain/EntitlementLimits.swift`; see
+//  docs/timeline.md for why it moved server-side — not a security fix, the
+//  proxy/rules were always the sole enforcer either way, but it removes a
+//  hand-maintained duplicate that could silently drift from the real
+//  numbers).
 //
 //  Retained for the app's lifetime (constructed once in
 //  `Vision_clotherApp.swift`, alongside `WardrobeSyncCoordinator`) so its
@@ -40,9 +50,15 @@ final class UsageTracker {
     private(set) var usage: UsageDTO?
     private(set) var coreItemCount = 0
     private(set) var accessoryItemCount = 0
+    /// Server-resolved tier limits, refreshed alongside `usage` in
+    /// `refreshUsage()`. Starts at `.conservativeDefault` (the guest tier's
+    /// numbers) until the first successful fetch — same "don't assume
+    /// higher than proven" posture `usage` itself already had.
+    private(set) var limits = EntitlementLimitsResponse.conservativeDefault
 
     private let repository: WardrobeRepository
     private let syncService: WardrobeSyncService
+    private let entitlementLimitsService: EntitlementLimitsService
     private var uidCancellable: AnyCancellable?
 
     /// Guards against an older, slower `refreshUsage()` call resolving after
@@ -51,9 +67,10 @@ final class UsageTracker {
     /// result is ever committed.
     private var refreshGeneration = 0
 
-    init(repository: WardrobeRepository, syncService: WardrobeSyncService) {
+    init(repository: WardrobeRepository, syncService: WardrobeSyncService, entitlementLimitsService: EntitlementLimitsService) {
         self.repository = repository
         self.syncService = syncService
+        self.entitlementLimitsService = entitlementLimitsService
         refreshItemCounts()
         if let uid = AuthService.shared.uid {
             usage = Self.loadCachedUsage(uid: uid)
@@ -72,10 +89,10 @@ final class UsageTracker {
     /// "sign in for more" (guest) from "resets next month" (free tier
     /// already at its own cap) messaging without re-deriving auth state.
     var isAnonymousQuota: Bool { AuthService.shared.isAnonymous }
-    private var isAnonymous: Bool { isAnonymousQuota }
+    var isPremium: Bool { limits.tier == "premium" }
 
-    var recommendationLimit: Int { EntitlementLimits.recommendationLimit(isAnonymous: isAnonymous) }
-    var combinationLimit: Int { EntitlementLimits.tryOnLimit(isAnonymous: isAnonymous) }
+    var recommendationLimit: Int { limits.recommendationLimit }
+    var combinationLimit: Int { limits.tryOnLimit }
     var recommendationsUsed: Int { usage?.recommendationCount ?? 0 }
     var combinationsUsed: Int { usage?.tryOnCount ?? 0 }
     var recommendationsRemaining: Int { max(0, recommendationLimit - recommendationsUsed) }
@@ -91,8 +108,12 @@ final class UsageTracker {
     var totalRecommendationsRemaining: Int { recommendationsRemaining + purchasedRecommendationsRemaining }
     var totalCombinationsRemaining: Int { combinationsRemaining + purchasedCombinationsRemaining }
 
-    var coreItemCap: Int { EntitlementLimits.itemCap(for: .top, isAnonymous: isAnonymous) }
-    var accessoryItemCap: Int { EntitlementLimits.itemCap(for: .accessory, isAnonymous: isAnonymous) }
+    /// Per-slot cap lookup — `AddItemViewModel.saveItem`/`JobQueueStore.performUpload`'s
+    /// pre-save guards call this directly rather than re-deriving core vs.
+    /// accessory themselves.
+    func itemCap(for slot: Slot) -> Int { limits.itemCap[slot.rawValue] ?? 0 }
+    var coreItemCap: Int { itemCap(for: .top) }
+    var accessoryItemCap: Int { itemCap(for: .accessory) }
     var isCoreItemCapReached: Bool { coreItemCount >= coreItemCap }
     var isAccessoryItemCapReached: Bool { accessoryItemCount >= accessoryItemCap }
 
@@ -102,22 +123,39 @@ final class UsageTracker {
     /// decode error, ...) intentionally leaves `usage` untouched — collapsing
     /// errors into `nil` previously made any transient failure look like the
     /// quota had reset to maximum, which is the bug this guards against.
+    /// Fetches resolved tier limits alongside `meta/usage` in the same pass
+    /// — tier changes are rare enough that a dedicated refresh path isn't
+    /// worth it. A failed limits fetch degrades to "keep the last-known
+    /// `limits`" the same way a failed usage fetch does, independently of
+    /// whether the usage half of this call succeeded.
     func refreshUsage() async {
-        guard let uid = AuthService.shared.uid else { usage = nil; return }
+        guard let uid = AuthService.shared.uid else { usage = nil; limits = .conservativeDefault; return }
         refreshGeneration += 1
         let generation = refreshGeneration
+        async let usageFetch = syncService.fetchUsage(uid: uid)
+        async let limitsFetch = entitlementLimitsService.fetchLimits()
+
         do {
-            let fetched = try await syncService.fetchUsage(uid: uid)
+            let fetched = try await usageFetch
             guard generation == refreshGeneration else {
                 AppLog.debug(.viewModel, "UsageTracker.refreshUsage: superseded by a newer refresh, discarding")
                 return
             }
             usage = fetched
             Self.cacheUsage(fetched, uid: uid)
-            AppLog.info(.viewModel, "UsageTracker.refreshUsage: recommendations=\(self.recommendationsUsed)/\(self.recommendationLimit) combinations=\(self.combinationsUsed)/\(self.combinationLimit)")
         } catch {
-            AppLog.error(.viewModel, "UsageTracker.refreshUsage: fetch failed, keeping last-known usage — \(error.localizedDescription)")
+            AppLog.error(.viewModel, "UsageTracker.refreshUsage: usage fetch failed, keeping last-known usage — \(error.localizedDescription)")
         }
+
+        do {
+            let fetchedLimits = try await limitsFetch
+            guard generation == refreshGeneration else { return }
+            limits = fetchedLimits
+        } catch {
+            AppLog.error(.viewModel, "UsageTracker.refreshUsage: limits fetch failed, keeping last-known limits — \(error.localizedDescription)")
+        }
+
+        AppLog.info(.viewModel, "UsageTracker.refreshUsage: recommendations=\(self.recommendationsUsed)/\(self.recommendationLimit) combinations=\(self.combinationsUsed)/\(self.combinationLimit) tier=\(self.limits.tier)")
     }
 
     /// Local-only, synchronous — call after any wardrobe mutation

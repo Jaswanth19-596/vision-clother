@@ -826,7 +826,7 @@ private struct ConditionalElevatedShadow: ViewModifier {
             tryOnService: MockTryOnRenderService(),
             photoLibrarySaver: MockPhotoLibrarySaver(),
             notificationService: MockJobNotificationService(),
-            usageTracker: UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService())
+            usageTracker: UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService(), entitlementLimitsService: MockEntitlementLimitsService())
         ))
-        .environment(UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService()))
+        .environment(UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService(), entitlementLimitsService: MockEntitlementLimitsService()))
 }

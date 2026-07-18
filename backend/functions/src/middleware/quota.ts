@@ -2,24 +2,9 @@ import type { NextFunction, Response } from "express";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
+import { TIER_LIMITS, type Tier } from "../entitlementLimits";
 
 type QuotaFeature = "recommendation" | "tryOn";
-type Tier = "guest" | "free" | "premium";
-
-interface TierLimits {
-  recommendation: number;
-  tryOn: number;
-}
-
-/**
- * Premium is intentionally absent — pricing isn't designed yet. Reaching it
- * (an entitlement doc with tier: "premium") falls through to an explicit
- * "not available yet" 403 rather than silently defaulting to unlimited.
- */
-const TIER_LIMITS: Partial<Record<Tier, TierLimits>> = {
-  guest: { recommendation: 20, tryOn: 0 },
-  free: { recommendation: 100, tryOn: 10 },
-};
 
 const COUNT_FIELD: Record<QuotaFeature, "recommendationCount" | "tryOnCount"> = {
   recommendation: "recommendationCount",

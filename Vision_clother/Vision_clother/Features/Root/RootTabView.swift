@@ -46,7 +46,7 @@ struct RootTabView: View {
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)
-    let previewUsageTracker = UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService())
+    let previewUsageTracker = UsageTracker(repository: previewRepository, syncService: MockWardrobeSyncService(), entitlementLimitsService: MockEntitlementLimitsService())
     RootTabView()
         .modelContainer(container)
         .environment(JobQueueStore(

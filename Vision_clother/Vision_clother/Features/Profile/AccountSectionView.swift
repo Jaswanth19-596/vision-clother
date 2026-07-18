@@ -416,7 +416,8 @@ struct AccountSectionView: View {
     .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
     .environment(UsageTracker(
         repository: SyncingWardrobeRepository(modelContext: container.mainContext),
-        syncService: MockWardrobeSyncService()
+        syncService: MockWardrobeSyncService(),
+        entitlementLimitsService: MockEntitlementLimitsService()
     ))
     // Mock-backed so opening the Buy Credits sheet in a preview never hits
     // the real proxy — same posture as every other preview environment here.

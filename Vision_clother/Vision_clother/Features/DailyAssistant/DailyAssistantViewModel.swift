@@ -399,7 +399,7 @@ final class DailyAssistantViewModel {
             let weather = await weatherResult
             let profile = await profileResult
 
-            let (catalog, index) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
+            let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
             guard !catalog.isEmpty else {
                 return .failure("Your wardrobe appears to be empty. Add some items and try again.")
             }
@@ -431,10 +431,30 @@ final class DailyAssistantViewModel {
                     chips: response.suggestedChips
                 )
             }
+            // Re-fetch rather than reuse `index`: `recommendationService
+            // .recommendOutfits` above is a multi-second network `await`, a
+            // suspension point during which this MainActor is reentrant —
+            // `WardrobeSyncCoordinator.reconcileIfSignedIn()` (fired on every
+            // `scenePhase -> .active`, e.g. a photo picker dismissing while
+            // adding an item) can run `applyWardrobeItemChange` in that
+            // window, which does `modelContext.delete` + re-`insert` on any
+            // wardrobe item a pull touches — including a self-echo of an
+            // item this device just pushed. That invalidates the exact
+            // `WardrobeItem` objects `index` was holding, and reading a
+            // property (e.g. `.slot`) on an invalidated SwiftData object
+            // traps. `fetchInventory()` is version-cached (`Data/WardrobeRepository.swift`),
+            // so this is cheap when no such reconcile happened and only does
+            // real work when one did — the ids the LLM returned still
+            // resolve identically, just to live objects.
+            let freshIndex: [String: WardrobeItem] = Dictionary(
+                uniqueKeysWithValues: (try repository.fetchInventory())
+                    .filter { !$0.isGhostElement }
+                    .map { ($0.id.uuidString, $0) }
+            )
             let (validated, rejections) = await PerfLog.time("validation") {
                 OutfitRecommendationValidator.validateVerbose(
                     response,
-                    index: index,
+                    index: freshIndex,
                     // Self-reported by the same call, not a second
                     // intent-extraction round-trip (Stylist Intelligence
                     // Engine ADR) — closes the gap where Tier 1 dress-code
@@ -563,7 +583,7 @@ final class DailyAssistantViewModel {
             let weather = await weatherResult
             let profile = await profileResult
 
-            let (catalog, index) = await PerfLog.time("catalogBuild") {
+            let (catalog, _) = await PerfLog.time("catalogBuild") {
                 WardrobeCatalogBuilder.build(
                     from: inventory + [prospectiveItem], history: history, prospectiveItemID: prospectiveItem.id
                 )
@@ -578,9 +598,20 @@ final class DailyAssistantViewModel {
             }
             usageTracker.recordRecommendationUsed()
 
+            // Same re-fetch-don't-reuse fix as `resolveOutfits` (see its
+            // comment) — the LLM call above is a long `await` that a
+            // concurrent `reconcileIfSignedIn()` can land inside, invalidating
+            // `index`'s real-wardrobe `WardrobeItem` objects. `prospectiveItem`
+            // itself is never persisted to `ModelContext` (only saved if the
+            // user later taps "Add to Closet"), so it can't have been
+            // invalidated by sync — carry the same in-memory instance forward.
+            let freshIndex: [String: WardrobeItem] = Dictionary(
+                uniqueKeysWithValues: ((try repository.fetchInventory()).filter { !$0.isGhostElement } + [prospectiveItem])
+                    .map { ($0.id.uuidString, $0) }
+            )
             let (validated, rejections) = await PerfLog.time("validation") {
                 OutfitRecommendationValidator.validateVerbose(
-                    response, index: index,
+                    response, index: freshIndex,
                     constraints: response.resolvedConstraints,
                     profile: profile, weather: weather, history: history,
                     mustIncludeItemID: prospectiveItem.id

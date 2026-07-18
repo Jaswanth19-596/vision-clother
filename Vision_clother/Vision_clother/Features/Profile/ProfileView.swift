@@ -663,6 +663,7 @@ private struct PortraitCameraCaptureView: UIViewControllerRepresentable {
         .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
         .environment(UsageTracker(
             repository: SyncingWardrobeRepository(modelContext: container.mainContext),
-            syncService: MockWardrobeSyncService()
+            syncService: MockWardrobeSyncService(),
+            entitlementLimitsService: MockEntitlementLimitsService()
         ))
 }

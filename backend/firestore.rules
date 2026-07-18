@@ -33,12 +33,25 @@ service cloud.firestore {
         return request.auth.token.firebase.sign_in_provider == "anonymous";
       }
 
+      // Mirrors quota.ts's tier resolution: anonymous is always "guest"
+      // regardless of any entitlement doc; otherwise "premium" only if the
+      // entitlement doc says so, else "free". Placeholder premium numbers —
+      // see quota.ts's TIER_LIMITS comment.
+      function isPremium() {
+        return !isAnonymous() &&
+          exists(/databases/$(database)/documents/users/$(uid)/meta/entitlement) &&
+          get(/databases/$(database)/documents/users/$(uid)/meta/entitlement).data.get('tier', 'free') == 'premium';
+      }
+
       // top/bottom/footwear are the "core" slots (higher cap); everything
-      // else is an "accessory" slot — mirrors Domain/EntitlementLimits.swift.
+      // else is an "accessory" slot. Numbers must match
+      // `backend/functions/src/entitlementLimits.ts`'s `ITEM_CAP_LIMITS` by
+      // hand — Firestore Rules has no module system, so this is the one
+      // place that constants file can't be imported from directly.
       function itemCap(slot) {
         return slot in ["top", "bottom", "footwear"]
-          ? (isAnonymous() ? 5 : 10)
-          : (isAnonymous() ? 2 : 4);
+          ? (isAnonymous() ? 5 : (isPremium() ? 50 : 10))
+          : (isAnonymous() ? 2 : (isPremium() ? 25 : 4));
       }
 
       function itemCountsField(data, slot) {
