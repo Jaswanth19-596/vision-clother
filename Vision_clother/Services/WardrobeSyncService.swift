@@ -66,7 +66,16 @@ struct PulledWardrobeDelta {
     var queryStartTime: Date
 }
 
-@MainActor
+/// Pure network I/O (Firestore/Storage transport) — deliberately *not*
+/// `@MainActor` (see HIGH-3 in `docs/decisions/resolved-v1.md`'s Cloud Sync
+/// section): forcing every push/pull/photo transfer onto the main actor
+/// serializes work that has no UI dependency until it completes. Every
+/// caller (`Data/SyncOutboxWorker.swift`, `Data/WardrobeSyncCoordinator.swift`,
+/// `Data/SyncingWardrobeRepository.swift`) is itself `@MainActor` and is the
+/// only place allowed to touch `ModelContext`; those callers already do all
+/// their local SwiftData mutations directly (not through this protocol), so
+/// removing this annotation only frees the network legs to run off the main
+/// actor's serial executor, not any local persistence.
 protocol WardrobeSyncService {
     // Pure DTO transport, deliberately not `@Model` types — the caller is
     // `Data/SyncOutboxWorker.swift`, draining `SyncMetadata.payload` (a
@@ -128,7 +137,10 @@ protocol WardrobeSyncService {
     func adjustItemCount(slot: Slot, delta: Int, uid: String) async throws
 }
 
-@MainActor
+/// Not `@MainActor` — see the protocol's doc comment above. `db`/`storage`
+/// are immutable references into thread-safe Firebase SDK singletons, and
+/// every method here is pure network I/O with no local persistence, so
+/// nothing in this type needs main-actor isolation.
 final class FirestoreWardrobeSyncService: WardrobeSyncService {
     private let db = Firestore.firestore()
     private let storage = Storage.storage()

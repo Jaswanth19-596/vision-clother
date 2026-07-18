@@ -2,6 +2,16 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-18 — Fix: `WardrobeSyncService` forced every push/pull/photo transfer onto the main actor (HIGH-3)
+
+**Status:** Implemented. `xcodebuild clean build` — BUILD SUCCEEDED.
+
+**Problem:** Code review (HIGH-3) flagged `Services/WardrobeSyncService.swift`'s `@MainActor` annotation on both the `WardrobeSyncService` protocol and its concrete `FirestoreWardrobeSyncService` implementation. None of this type's methods are UI-bound — every one is pure Firestore/Cloud Storage network I/O — but the `@MainActor` isolation meant every non-suspended stretch of code inside those async methods (request setup, DTO encode/decode, response handling between `await`s) ran on the main actor's serial executor rather than being free to run concurrently on background threads, serializing what should be independent network work. Under load (`SyncOutboxWorker.drainNow`'s bounded-fan-out concurrent pushes, `WardrobeSyncCoordinator.pullAndApply`'s parallel `async let` collection fetches, background photo prefetch) this main-actor saturation is measurable and gets harder to unwind the more code builds on top of it.
+
+**Fix:** Removed `@MainActor` from the `WardrobeSyncService` protocol declaration and from `FirestoreWardrobeSyncService`'s class declaration in `Vision_clother/Services/WardrobeSyncService.swift`. Verified safe before landing: this type is documented "pure DTO transport, deliberately not `@Model` types" and never touches `ModelContext` — every caller (`Data/SyncOutboxWorker.swift`, `Data/WardrobeSyncCoordinator.swift`, `Data/SyncingWardrobeRepository.swift`) is itself `@MainActor`-isolated (per `Data/CLAUDE.md`'s "only place that touches `ModelContext`" rule) and already performs all local SwiftData mutations directly in its own method bodies, not by delegating through this protocol — so there was no local-persistence code inside this file needing an explicit `await MainActor.run { ... }` wrap. `AuthGatedWardrobeSyncService`/`MockWardrobeSyncService` (the routing wrapper and signed-out fallback) were deliberately left `@MainActor`: a `@MainActor` type can satisfy a non-isolated protocol requirement, and since their wrapper methods are trivial one-line forwards, the actual network `await` inside the callee (`FirestoreWardrobeSyncService`, now non-isolated) still runs off the main actor — only the negligible pre/post-`await` wrapper code stays on it. Confirmed via `xcodebuild clean build`.
+
+**File changes:** `Vision_clother/Services/WardrobeSyncService.swift` (`@MainActor` removed from the `WardrobeSyncService` protocol and `FirestoreWardrobeSyncService`; doc comments added explaining why removing it is safe here).
+
 ## 2026-07-18 — Fix: `fetchFeedbackHistory` had no cache, re-scanned full feedback history on every recommendation (HIGH-2)
 
 **Status:** Implemented. `xcodebuild clean build` — BUILD SUCCEEDED.
