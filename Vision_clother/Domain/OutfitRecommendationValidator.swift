@@ -77,8 +77,15 @@ enum OutfitRecommendationValidator {
         var combinations: [OutfitCombination] = []
         var rejections: [RejectionReason] = []
 
+        // The wardrobe's real slot coverage (Domain/WardrobeCatalogBuilder.swift
+        // excludes ghosts before building `index`, so this is exactly what the
+        // LLM's catalog offered it). A required slot absent here means the
+        // catalog had nothing valid to fill it with — `resolve` treats that as
+        // "not owned yet," not as a rejection-worthy LLM error.
+        let availableSlots = Set(index.values.map(\.slot))
+
         for wire in response.outfits {
-            switch resolve(wire, index: index) {
+            switch resolve(wire, index: index, availableSlots: availableSlots) {
             case .success(let combo):
                 combinations.append(combo)
             case .failure(let reason):
@@ -117,18 +124,32 @@ enum OutfitRecommendationValidator {
     /// - each id must resolve to an item in the slot it was placed in
     ///   (`top_id` -> `.top`, etc.);
     /// - no id may be reused across slots in the same outfit.
-    private static func resolve(_ wire: RecommendedOutfitWire, index: [String: WardrobeItem]) -> Result<OutfitCombination, RejectionReason> {
+    ///
+    /// A required slot (top/bottom/footwear, `Slot.isRequired`) missing or
+    /// unresolvable is only a hard rejection when `availableSlots` says the
+    /// wardrobe actually had a candidate for it — i.e. the LLM had a real
+    /// option and either skipped it or sent a garbage id. When the wardrobe
+    /// has zero real items in that slot, there was nothing valid to offer,
+    /// so the slot is simply left absent from `itemsBySlot` (same treatment
+    /// as an ordinary optional slot) instead of failing the whole outfit.
+    private static func resolve(
+        _ wire: RecommendedOutfitWire, index: [String: WardrobeItem], availableSlots: Set<Slot>
+    ) -> Result<OutfitCombination, RejectionReason> {
         var itemsBySlot: [Slot: WardrobeItem] = [:]
 
         for slot in Slot.allCases {
             guard let idString = wire.itemIDsBySlot[slot] else {
-                if slot.isRequired {
+                if slot.isRequired && availableSlots.contains(slot) {
                     return .failure(.unknownID(slot: slot))
                 }
                 continue
             }
             switch item(for: idString, expectedSlot: slot, index: index) {
-            case .failure(let reason): return .failure(reason)
+            case .failure(let reason):
+                if case .unknownID = reason, !availableSlots.contains(slot) {
+                    continue
+                }
+                return .failure(reason)
             case .success(let resolved): itemsBySlot[slot] = resolved
             }
         }

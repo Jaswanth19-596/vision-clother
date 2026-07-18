@@ -175,7 +175,25 @@ enum WardrobeCatalogBuilder {
             )
         }
 
-        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil)")
+        let slotCounts = Slot.allCases
+            .map { slot in "\(slot.rawValue)=\(candidates.filter { $0.slot == slot }.count)" }
+            .joined(separator: " ")
+        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil) slotCounts=[\(slotCounts, privacy: .public)]")
+
+        // Diagnostic for OutfitRecommendationValidator's unknownID rejections
+        // (Domain/CLAUDE.md's isRequired guardrail): a required slot with zero
+        // real candidates here is exactly why the LLM can't fill it and the
+        // validator has to treat that slot as absent rather than fail the
+        // whole outfit — surfaced explicitly so this doesn't have to be
+        // re-derived from a bare `unknownID(slot:)` rejection reason.
+        let emptyRequiredSlots = Slot.allCases.filter { slot in
+            slot.isRequired && !candidates.contains { $0.slot == slot }
+        }
+        if !emptyRequiredSlots.isEmpty {
+            let names = emptyRequiredSlots.map(\.rawValue).joined(separator: ",")
+            MLLog.logger.notice("catalogBuild: required slot(s) with zero catalog items: \(names, privacy: .public) — recommendation will proceed with those slots empty instead of failing")
+        }
+
         return (entries, index)
     }
 

@@ -2,6 +2,22 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-18 — Fix: a wardrobe gap in one required slot (e.g. zero footwear) rejected every recommended outfit, not just that slot
+
+**Status:** Implemented. `xcodebuild clean build` — BUILD SUCCEEDED.
+
+**Problem:** User reported logs showing `recommend: ok outfits=3` immediately followed by `validation: offered=3 kept=0 rejections=["unknownID(slot: footwear)": 3]` — the LLM answered successfully, but the deterministic validator (`Domain/OutfitRecommendationValidator.swift`) hard-rejected all 3 outfits, discarding perfectly valid top/bottom picks along with the bad footwear pick. Root cause: `footwear` is a required slot (`Slot.isRequired`), the user's wardrobe had zero real (non-ghost) footwear items, so `Domain/WardrobeCatalogBuilder.swift` sent the LLM a catalog with 0 footwear entries — yet the JSON schema (`Services/OutfitRecommendationService.swift`) still forced a non-null `footwear_id`, so the model fabricated one, which then failed validation and killed the whole outfit. User feedback: the app shouldn't require the user to own a complete wardrobe (top+bottom+footwear+etc.) before it can recommend anything — a gap in one category should degrade gracefully, not block every recommendation.
+
+**Fix:**
+1. `Domain/WardrobeCatalogBuilder.swift`: `build()` now logs a per-slot candidate count (`catalogBuild: slotCounts=[...]`) and an explicit warning when a required slot has zero real items, so this is diagnosable from a log line instead of reverse-engineering a bare `unknownID` rejection.
+2. `Domain/OutfitRecommendationValidator.swift`: `validateVerbose` now computes `availableSlots` (the wardrobe's real slot coverage, from `index`) and threads it into `resolve`. A required slot with a missing/unresolvable id is now only a hard rejection when the wardrobe actually had a candidate for it (a real LLM error); when the wardrobe has zero items in that slot, the slot is simply left absent from the outfit instead of failing the whole thing. `.wrongSlot`/`.duplicateID`/`.ghostElement` rejections are unaffected — those are never wardrobe-scarcity related.
+3. `Models/OutfitCombination.swift`: dropped the `init` assertion requiring all `isRequired` slots to be non-nil (no longer universally true); `top`/`bottom`/`footwear` are now `WardrobeItem?` like every other slot accessor instead of force-unwrapping.
+4. `Features/DailyAssistant/OutfitCardView.swift`: top/bottom/footwear rows are now conditionally rendered (`if let`, matching the existing outerwear/headwear/accessory/bag pattern), plus a new subtle "No footwear in your closet yet" hint when a required slot is absent, nudging the user to add one.
+5. `Services/OutfitRecommendationService.swift`: `schemaProperty(for:)` now makes top/bottom/footwear required-but-nullable (same pattern as the other four slots) instead of plain non-nullable strings, with guidance telling the model to fill them whenever the catalog has a match, null only when the catalog is truly empty for that slot, and never fabricate an id outside the catalog's own listed ids.
+6. `Domain/StylistBrain.swift`: softened the `OUTPUT FORMAT` prompt section's "every outfit must include top_id, bottom_id, and footwear_id" instruction to state the null-when-catalog-empty exception explicitly and forbid inventing ids — targets the observed hallucination directly, on top of the validator-side fix.
+
+**File changes:** `Vision_clother/Domain/WardrobeCatalogBuilder.swift`, `Vision_clother/Domain/OutfitRecommendationValidator.swift`, `Vision_clother/Models/OutfitCombination.swift`, `Vision_clother/Vision_clother/Features/DailyAssistant/OutfitCardView.swift`, `Vision_clother/Services/OutfitRecommendationService.swift`, `Vision_clother/Domain/StylistBrain.swift`.
+
 ## 2026-07-18 — Fix: `WardrobeSyncService` forced every push/pull/photo transfer onto the main actor (HIGH-3)
 
 **Status:** Implemented. `xcodebuild clean build` — BUILD SUCCEEDED.

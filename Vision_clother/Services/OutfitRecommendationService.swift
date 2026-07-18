@@ -401,10 +401,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     ]
 
     /// Per-slot `{slot}_id` JSON Schema properties, shared by the per-outfit
-    /// item schema above — required-but-nullable for optional slots (the
-    /// same pattern `outerwear_id` originally used by hand), plain required
-    /// string for top/bottom/footwear. Adding a future `Slot` case needs no
-    /// change here.
+    /// item schema above — required-but-nullable for every slot, including
+    /// top/bottom/footwear (the same pattern `outerwear_id` originally used
+    /// by hand): the key must always be present, but null is the correct
+    /// value whenever the wardrobe catalog has nothing to offer for that
+    /// slot. Adding a future `Slot` case needs no change here.
     private static var itemIDSchemaProperties: (properties: [String: Any], required: [String]) {
         var properties: [String: Any] = [:]
         var required: [String] = []
@@ -429,11 +430,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
     /// `StylistBrain`'s prompt gives in prose — this is the schema-level
     /// backstop for it.
     private static func schemaProperty(for slot: Slot) -> [String: Any] {
-        guard !slot.isRequired else { return ["type": "string"] }
-
         let omissionNote = "This key must always be present in your JSON output, but that does not mean it should be filled — set it to null whenever the slot doesn't apply. Do not search the catalog for a plausible item just because the key exists."
         let guidance: String
         switch slot {
+        case .top, .bottom, .footwear:
+            guidance = "Pick the best-matching catalog item for this slot whenever the catalog above contains at least one item with this slot — do not leave it null just because nothing is a perfect match. Set this to null ONLY if the catalog contains zero items with this slot at all (the user's wardrobe has none), in which case build the rest of the outfit around what they do own. Never invent, guess, or reuse an id that is not one of this exact catalog's own \"id\" values — an id that doesn't appear verbatim in the catalog above is always wrong."
         case .outerwear:
             guidance = "Only set when the scenario/weather genuinely calls for a layer (cold, rain, or a formal blazer/jacket). \(omissionNote)"
         case .headwear:
@@ -442,8 +443,6 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             guidance = "A single signature accessory piece, only when it genuinely enhances the outfit. \(omissionNote)"
         case .bag:
             guidance = "CRITICAL: only set when carrying a bag is typical for the scenario (errands, commute, travel) and a formality-appropriate option exists in the catalog. For interviews, formal business, or black-tie scenarios this must be null unless a structured/formal bag (e.g. a briefcase) is present in the catalog. \(omissionNote)"
-        case .top, .bottom, .footwear:
-            preconditionFailure("unreachable — isRequired slots return above before this switch")
         }
         return ["type": ["string", "null"], "description": guidance]
     }

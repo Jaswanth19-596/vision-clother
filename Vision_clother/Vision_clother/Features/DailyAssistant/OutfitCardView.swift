@@ -34,6 +34,18 @@ struct OutfitCardView: View {
         cardContent
     }
 
+    /// Required slots (top/bottom/footwear) the wardrobe had nothing to fill
+    /// (`Domain/OutfitRecommendationValidator.swift` leaves these absent
+    /// rather than rejecting the whole outfit) — drives the "no X in your
+    /// closet yet" hint below the slot list.
+    private var missingRequiredSlotNames: [String] {
+        var names: [String] = []
+        if outfit.top == nil { names.append("top") }
+        if outfit.bottom == nil { names.append("bottom") }
+        if outfit.footwear == nil { names.append("footwear") }
+        return names
+    }
+
     private var cardContent: some View {
         VStack(spacing: 12) {
             if outfit.containsGhostElements {
@@ -46,9 +58,15 @@ struct OutfitCardView: View {
             }
 
             VStack(spacing: 8) {
-                slotRow(title: "Top", item: outfit.top)
-                slotRow(title: "Bottom", item: outfit.bottom)
-                slotRow(title: "Footwear", item: outfit.footwear)
+                if let top = outfit.top {
+                    slotRow(title: "Top", item: top)
+                }
+                if let bottom = outfit.bottom {
+                    slotRow(title: "Bottom", item: bottom)
+                }
+                if let footwear = outfit.footwear {
+                    slotRow(title: "Footwear", item: footwear)
+                }
                 if let outerwear = outfit.outerwear {
                     slotRow(title: "Outerwear", item: outerwear)
                 }
@@ -66,6 +84,12 @@ struct OutfitCardView: View {
                 }
             }
             .premiumCard(radius: VCRadius.prominent, material: .regularMaterial)
+
+            if !missingRequiredSlotNames.isEmpty {
+                Text("No \(missingRequiredSlotNames.joined(separator: " or ")) in your closet yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Text("Match score \(Int(outfit.score * 100))%")
                 .font(.footnote)
