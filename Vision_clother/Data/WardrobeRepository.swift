@@ -150,13 +150,37 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     /// keeps compiling unchanged; tests inject `MockImageEmbeddingService`.
     private let embeddingWorker: WardrobeEmbeddingWorker
 
+    /// HIGH-2 perf fix: `fetchInventory`/`fetchFeedbackHistory` used to be
+    /// cached ad hoc per-caller (`DailyAssistantViewModel`'s now-removed
+    /// `inventoryCache`/`feedbackHistoryCache`) — moved down here so every
+    /// caller sharing one repository instance (any `SyncingWardrobeRepository`
+    /// held across multiple calls, e.g. a long-lived view model) gets the
+    /// fast path for free, not just the one view model that happened to
+    /// implement its own cache. Invalidated the same way that cache was:
+    /// comparing against `WardrobeMutationTracker.shared.version`, which every
+    /// `WardrobeItem`/feedback-mutating call site in the app already bumps.
+    /// Call sites that construct a fresh repository per call (`ItemDetailView`,
+    /// `ClosetView`, `ProfileViewModel`) are unaffected either way — a fresh
+    /// instance always starts with an empty cache, same as before this change.
+    private var inventoryCache: [WardrobeItem]?
+    private var cachedInventoryVersion: UUID?
+    private var feedbackHistoryCache: FeedbackHistory?
+    private var cachedFeedbackHistoryVersion: UUID?
+
     init(modelContext: ModelContext, embeddingService: ImageEmbeddingService = VisionFeaturePrintEmbeddingService()) {
         self.modelContext = modelContext
         self.embeddingWorker = WardrobeEmbeddingWorker(embeddingService: embeddingService)
     }
 
     func fetchInventory() throws -> [WardrobeItem] {
-        try modelContext.fetch(FetchDescriptor<WardrobeItem>())
+        let currentVersion = WardrobeMutationTracker.shared.version
+        if let inventoryCache, cachedInventoryVersion == currentVersion {
+            return inventoryCache
+        }
+        let inventory = try modelContext.fetch(FetchDescriptor<WardrobeItem>())
+        self.inventoryCache = inventory
+        self.cachedInventoryVersion = currentVersion
+        return inventory
     }
 
     func save(_ item: WardrobeItem) throws {
@@ -182,6 +206,11 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     }
 
     func fetchFeedbackHistory() async throws -> FeedbackHistory {
+        let currentVersion = WardrobeMutationTracker.shared.version
+        if let feedbackHistoryCache, cachedFeedbackHistoryVersion == currentVersion {
+            return feedbackHistoryCache
+        }
+
         let now = Date.now
         let cutoffDate = now.addingTimeInterval(-180 * 24 * 60 * 60)
         let pairFeedbacks = try modelContext.fetch(FetchDescriptor<PairFeedback>(
@@ -495,6 +524,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             history.itemEmbeddings[result.itemID] = result.vector
         }
 
+        self.feedbackHistoryCache = history
+        self.cachedFeedbackHistoryVersion = currentVersion
         return history
     }
 

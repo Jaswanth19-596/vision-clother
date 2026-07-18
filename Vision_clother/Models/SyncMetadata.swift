@@ -20,8 +20,8 @@
 //  `payload` makes the outbox self-contained: it stores the JSON-encoded DTO
 //  captured at mutation time, rather than a bare pointer the worker would
 //  need to re-fetch from SwiftData at drain time. That re-fetch isn't always
-//  possible — `ItemFeedback`, `PairFeedback`, `OutfitFeedback`, `ItemRating`,
-//  and `SwipeEvent` are only queryable through `WardrobeRepository` by a
+//  possible — `ItemFeedback`, `PairFeedback`, `OutfitFeedback`, and
+//  `ItemRating` are only queryable through `WardrobeRepository` by a
 //  foreign key (e.g. `fetchItemRatings(for itemID:)`), never by their own
 //  row id. Capturing the payload up front sidesteps that gap entirely and is
 //  also more crash-safe: the exact write is captured atomically alongside
@@ -46,6 +46,12 @@ enum SyncEntityType: String, Codable {
     case itemRating
     case savedCombination
     case userStyleProfile
+    /// Legacy-only — `SwipeEvent` is no longer synced (see
+    /// `Data/SyncingWardrobeRepository.swift`). Kept only so a row a
+    /// pre-update install already queued still decodes to something known
+    /// rather than falling back to `.wardrobeItem` (`entityType` getter
+    /// below) and retry-failing forever; `Data/SyncOutboxWorker.swift`
+    /// drains it as a silent no-op.
     case swipeEvent
     case visualPreferenceState
 }

@@ -371,38 +371,6 @@ struct UserStyleProfileDTO: Codable {
     }
 }
 
-struct SwipeEventDTO: Codable {
-    var id: String
-    var sourcePhotoID: String
-    var imageURLString: String
-    var liked: Bool
-    var embedding: [Float]
-    var recordedAt: Date
-
-    static func from(_ model: SwipeEvent) -> SwipeEventDTO {
-        SwipeEventDTO(
-            id: model.id.uuidString,
-            sourcePhotoID: model.sourcePhotoID,
-            imageURLString: model.imageURLString,
-            liked: model.liked,
-            embedding: model.embedding,
-            recordedAt: model.recordedAt
-        )
-    }
-
-    func toModel() -> SwipeEvent? {
-        guard let uuid = UUID(uuidString: id) else { return nil }
-        return SwipeEvent(
-            id: uuid,
-            sourcePhotoID: sourcePhotoID,
-            imageURLString: imageURLString,
-            liked: liked,
-            embedding: embedding,
-            recordedAt: recordedAt
-        )
-    }
-}
-
 struct VisualCentroidDTO: Codable {
     var vector: [Float]
     var weight: Double

@@ -20,14 +20,16 @@
 //  through an existing query method when one exists (`recordItemRating` via
 //  `fetchItemRatings(for:)`), or builds the DTO directly from its own input
 //  parameters when no such method exists (`recordItemFeedback`,
-//  `recordPairFeedback`, `recordSwipe`'s `SwipeEvent`) — safe because
-//  nothing in this codebase ever looks up those three types by their own
-//  row id, only by the foreign keys already present as inputs.
+//  `recordPairFeedback`) — safe because nothing in this codebase ever looks
+//  up those types by their own row id, only by the foreign keys already
+//  present as inputs.
 //
-//  `WardrobeItemEmbedding` and `RecommendationImpressionEvent` are
-//  deliberately never marked dirty here — the Cloud Sync architecture keeps
-//  both local-only (cheap to recompute / meaningless across an account
-//  switch, respectively).
+//  `WardrobeItemEmbedding`, `RecommendationImpressionEvent`, and `SwipeEvent`
+//  are deliberately never marked dirty here — the Cloud Sync architecture
+//  keeps all three local-only (cheap to recompute / meaningless across an
+//  account switch / superseded by the compact `VisualPreferenceState`
+//  centroids it feeds, respectively). `recordSwipe` below still pushes the
+//  mutated `VisualPreferenceState` — just not the raw per-swipe event.
 //
 
 import Foundation
@@ -198,9 +200,6 @@ final class SyncingWardrobeRepository: WardrobeRepository {
     @discardableResult
     func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? {
         let drift = try underlying.recordSwipe(sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, liked: liked, embedding: embedding)
-        let entityID = UUID()
-        let dto = SwipeEventDTO(id: entityID.uuidString, sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, liked: liked, embedding: embedding, recordedAt: .now)
-        markDirty(.swipeEvent, entityID: entityID, dto: dto)
         if let state = try? underlying.fetchVisualPreferenceState() {
             markDirty(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
         }

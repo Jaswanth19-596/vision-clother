@@ -57,7 +57,6 @@ struct PulledWardrobeDelta {
     var pairFeedback: [PulledChange<PairFeedbackDTO>] = []
     var itemRatings: [PulledChange<ItemRatingDTO>] = []
     var savedCombinations: [PulledChange<SavedCombinationDTO>] = []
-    var swipeEvents: [PulledChange<SwipeEventDTO>] = []
     var userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>?
     var visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>?
     /// Captured before this pull's queries ran — the candidate new
@@ -80,10 +79,9 @@ protocol WardrobeSyncService {
     func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws
     func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws
     func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws
-    func pushSwipeEvent(_ dto: SwipeEventDTO, uid: String) async throws
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws
 
-    /// Soft-deletes (tombstones) an entity — only meaningful for the 7
+    /// Soft-deletes (tombstones) an entity — only meaningful for the 6
     /// event/row-per-entity types, not the 2 single-row `meta` docs (nothing
     /// in `WardrobeRepository` ever deletes those).
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws
@@ -181,10 +179,6 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         try await setDocument(usersDoc(uid).collection("meta").document("styleProfile"), dto: dto)
     }
 
-    func pushSwipeEvent(_ dto: SwipeEventDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("swipeEvents").document(dto.id), dto: dto)
-    }
-
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
         try await setDocument(usersDoc(uid).collection("meta").document("visualPreferenceState"), dto: dto)
     }
@@ -205,9 +199,9 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         case .pairFeedback: return "pairFeedback"
         case .itemRating: return "itemRatings"
         case .savedCombination: return "savedCombinations"
-        case .swipeEvent: return "swipeEvents"
-        // Single-row meta docs are never deleted.
-        case .userStyleProfile, .visualPreferenceState: return nil
+        // Single-row meta docs are never deleted; `swipeEvent` is legacy-only
+        // (see `Models/SyncMetadata.swift`) and never pushed/deleted either.
+        case .userStyleProfile, .visualPreferenceState, .swipeEvent: return nil
         }
     }
 
@@ -224,7 +218,6 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         async let pairFeedback: [PulledChange<PairFeedbackDTO>] = Self.fetchCollection(usersRef.collection("pairFeedback"), since: since)
         async let itemRatings: [PulledChange<ItemRatingDTO>] = Self.fetchCollection(usersRef.collection("itemRatings"), since: since)
         async let savedCombinations: [PulledChange<SavedCombinationDTO>] = Self.fetchCollection(usersRef.collection("savedCombinations"), since: since)
-        async let swipeEvents: [PulledChange<SwipeEventDTO>] = Self.fetchCollection(usersRef.collection("swipeEvents"), since: since)
         async let userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("styleProfile"), since: since)
         async let visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("visualPreferenceState"), since: since)
 
@@ -236,12 +229,11 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
                 pairFeedback: try await pairFeedback,
                 itemRatings: try await itemRatings,
                 savedCombinations: try await savedCombinations,
-                swipeEvents: try await swipeEvents,
                 userStyleProfile: try await userStyleProfile,
                 visualPreferenceState: try await visualPreferenceState,
                 queryStartTime: queryStartTime
             )
-            AppLog.info(.sync, "pullChanges: ok items=\(delta.wardrobeItems.count) outfitFeedback=\(delta.outfitFeedback.count) itemFeedback=\(delta.itemFeedback.count) pairFeedback=\(delta.pairFeedback.count) itemRatings=\(delta.itemRatings.count) savedCombinations=\(delta.savedCombinations.count) swipeEvents=\(delta.swipeEvents.count)")
+            AppLog.info(.sync, "pullChanges: ok items=\(delta.wardrobeItems.count) outfitFeedback=\(delta.outfitFeedback.count) itemFeedback=\(delta.itemFeedback.count) pairFeedback=\(delta.pairFeedback.count) itemRatings=\(delta.itemRatings.count) savedCombinations=\(delta.savedCombinations.count)")
             return delta
         } catch {
             AppLog.error(.sync, "pullChanges: failed — \(String(describing: error))")
@@ -254,7 +246,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
     /// than one page, but a full/bootstrap pull (`since == nil`, a
     /// fresh-device sign-in) previously issued one unbounded
     /// `getDocuments()` per collection — fine for a new account, but
-    /// unbounded for an engaged user's `swipeEvents`/`wardrobeItems`
+    /// unbounded for an engaged user's `wardrobeItems`/`itemRatings`
     /// history. `.order(by: "updatedAt")` paired with the `since` range
     /// filter on that same field is a single-field index Firestore
     /// maintains automatically, so this needs no `firestore.indexes.json`
@@ -467,9 +459,6 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
     func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {
         try await current.pushUserStyleProfile(dto, uid: uid)
     }
-    func pushSwipeEvent(_ dto: SwipeEventDTO, uid: String) async throws {
-        try await current.pushSwipeEvent(dto, uid: uid)
-    }
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
         try await current.pushVisualPreferenceState(dto, uid: uid)
     }
@@ -524,7 +513,6 @@ final class MockWardrobeSyncService: WardrobeSyncService {
     func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws {}
     func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {}
     func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {}
-    func pushSwipeEvent(_ dto: SwipeEventDTO, uid: String) async throws {}
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {}
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {}
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {

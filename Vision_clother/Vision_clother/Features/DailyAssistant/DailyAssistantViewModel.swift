@@ -179,17 +179,6 @@ final class DailyAssistantViewModel {
     /// shown.
     private var currentRequestID: UUID?
 
-    /// In-memory snapshot cache for `wardrobeSnapshot()` — avoids re-running
-    /// `repository.fetchInventory()`/`fetchFeedbackHistory()` (a full-table
-    /// SwiftData scan plus Vision embedding work) on every conversation turn.
-    /// Invalidated by comparing `cachedSnapshotVersion` against
-    /// `WardrobeMutationTracker.shared.version`, which only changes on an
-    /// actual add/edit/delete of a `WardrobeItem` — never on a timer or a
-    /// new conversation starting.
-    private var inventoryCache: [WardrobeItem]?
-    private var feedbackHistoryCache: FeedbackHistory?
-    private var cachedSnapshotVersion: UUID?
-
     /// Mirrors of `AuthService.shared`'s `@Published` auth state — added so
     /// `DailyAssistantView` (Features/CLAUDE.md: "Views never call Services
     /// directly — always go through a ViewModel") can read auth state here
@@ -381,22 +370,18 @@ final class DailyAssistantViewModel {
         }.joined(separator: "\n")
     }
 
-    /// Reuses the last fetched inventory/feedback-history pair across
-    /// conversation turns (and across conversations) unless a wardrobe
-    /// mutation has bumped `WardrobeMutationTracker.shared.version` since —
-    /// the first call after launch, or after any add/edit/delete, pays the
-    /// real fetch; every other call is a dictionary lookup.
+    /// HIGH-2 perf fix: the inventory/feedback-history cache that used to
+    /// live here as `inventoryCache`/`feedbackHistoryCache` moved down into
+    /// `SwiftDataWardrobeRepository` (`Data/WardrobeRepository.swift`) itself
+    /// — this repository instance is held for this view model's whole
+    /// lifetime (`DailyAssistantView`'s `.task { viewModel == nil ... }`
+    /// guard constructs it once per tab), so it gets the exact same
+    /// first-call-pays / every-later-call-is-cached behavior this used to
+    /// implement locally, and any other long-lived repository holder gets it
+    /// for free too instead of reimplementing this cache per call site.
     private func wardrobeSnapshot() async throws -> (inventory: [WardrobeItem], history: FeedbackHistory) {
-        let currentVersion = WardrobeMutationTracker.shared.version
-        if let inventoryCache, let feedbackHistoryCache, cachedSnapshotVersion == currentVersion {
-            return (inventoryCache, feedbackHistoryCache)
-        }
-
         let inventory = try repository.fetchInventory()
         let history = try await repository.fetchFeedbackHistory()
-        self.inventoryCache = inventory
-        self.feedbackHistoryCache = history
-        self.cachedSnapshotVersion = currentVersion
         return (inventory, history)
     }
 

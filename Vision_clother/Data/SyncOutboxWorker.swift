@@ -166,7 +166,14 @@ final class SyncOutboxWorker {
         case .userStyleProfile:
             try await syncService.pushUserStyleProfile(decoder.decode(UserStyleProfileDTO.self, from: payload), uid: uid)
         case .swipeEvent:
-            try await syncService.pushSwipeEvent(decoder.decode(SwipeEventDTO.self, from: payload), uid: uid)
+            // Legacy no-op: `SwipeEvent` is no longer synced (see
+            // `Data/SyncingWardrobeRepository.swift`'s "Swipe-to-Learn Visual
+            // Taste" section) — nothing constructs a `.swipeEvent` row
+            // anymore. This case only exists to safely drain any row a
+            // pre-update install already queued, rather than letting
+            // `SyncEntityType`'s rawValue decode fallback (`Models/SyncMetadata.swift`)
+            // misroute it to `.wardrobeItem` and retry-fail forever.
+            AppLog.debug(.sync, "push: dropping legacy swipeEvent outbox row \(row.entityID)")
         case .visualPreferenceState:
             try await syncService.pushVisualPreferenceState(decoder.decode(VisualPreferenceStateDTO.self, from: payload), uid: uid)
         }

@@ -392,9 +392,6 @@ final class WardrobeSyncCoordinator {
         for combination in (try? repository.fetchSavedCombinations()) ?? [] {
             markDirtyForBootstrap(.savedCombination, entityID: combination.id, dto: SavedCombinationDTO.from(combination))
         }
-        await pushAllInBatches(SwipeEvent.self, sortBy: [SortDescriptor(\.recordedAt)]) { event in
-            markDirtyForBootstrap(.swipeEvent, entityID: event.id, dto: SwipeEventDTO.from(event))
-        }
         if let profile = try? repository.fetchUserProfile() {
             markDirtyForBootstrap(.userStyleProfile, entityID: profile.id, dto: UserStyleProfileDTO.from(profile))
         }
@@ -411,7 +408,7 @@ final class WardrobeSyncCoordinator {
     }
 
     /// Batch size for the per-entity-table fetches below — event/log tables
-    /// (`OutfitFeedback`/`ItemFeedback`/`PairFeedback`/`ItemRating`/`SwipeEvent`)
+    /// (`OutfitFeedback`/`ItemFeedback`/`PairFeedback`/`ItemRating`)
     /// can run into the thousands of rows for a long-time user, and this
     /// bootstrap still needs every one of them (it's what establishes the
     /// cloud mirror), so a time-window predicate isn't an option here the way
@@ -512,7 +509,6 @@ final class WardrobeSyncCoordinator {
         await applyBatched(delta.pairFeedback) { applyPairFeedbackChange($0) }
         await applyBatched(delta.itemRatings) { applyItemRatingChange($0) }
         await applyBatched(delta.savedCombinations) { applySavedCombinationChange($0) }
-        await applyBatched(delta.swipeEvents) { applySwipeEventChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -679,17 +675,6 @@ final class WardrobeSyncCoordinator {
         upsertCleanSyncMetadata(entityType: .savedCombination, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
     }
 
-    private func applySwipeEventChange(_ change: PulledChange<SwipeEventDTO>) {
-        let (idString, remoteUpdatedAt, dto) = unpack(change)
-        guard let entityID = UUID(uuidString: idString) else { return }
-        guard !shouldSkipDueToLocalDirty(.swipeEvent, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
-
-        let descriptor = FetchDescriptor<SwipeEvent>(predicate: #Predicate { $0.id == entityID })
-        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
-        if let dto, let model = dto.toModel() { modelContext.insert(model) }
-        upsertCleanSyncMetadata(entityType: .swipeEvent, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
-    }
-
     /// Splits a `PulledChange` into its common parts — `dto` is `nil` for
     /// `.deleted`, since a tombstone has nothing to materialize.
     private func unpack<DTO>(_ change: PulledChange<DTO>) -> (id: String, updatedAt: Date, dto: DTO?) {
@@ -799,7 +784,7 @@ final class WardrobeSyncCoordinator {
 }
 
 /// Lets `WardrobeSyncCoordinator.unpack(_:)` read a pulled DTO's `id`
-/// generically across all 7 row-per-entity DTO types without a per-type switch.
+/// generically across all 6 row-per-entity DTO types without a per-type switch.
 private protocol IdentifiableDTOField {
     var idValue: String { get }
 }
@@ -809,4 +794,3 @@ extension ItemFeedbackDTO: IdentifiableDTOField { var idValue: String { id } }
 extension PairFeedbackDTO: IdentifiableDTOField { var idValue: String { id } }
 extension ItemRatingDTO: IdentifiableDTOField { var idValue: String { id } }
 extension SavedCombinationDTO: IdentifiableDTOField { var idValue: String { id } }
-extension SwipeEventDTO: IdentifiableDTOField { var idValue: String { id } }
