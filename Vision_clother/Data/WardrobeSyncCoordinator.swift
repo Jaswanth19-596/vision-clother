@@ -506,13 +506,13 @@ final class WardrobeSyncCoordinator {
             return false
         }
 
-        for change in delta.wardrobeItems { applyWardrobeItemChange(change) }
-        for change in delta.outfitFeedback { applyOutfitFeedbackChange(change) }
-        for change in delta.itemFeedback { applyItemFeedbackChange(change) }
-        for change in delta.pairFeedback { applyPairFeedbackChange(change) }
-        for change in delta.itemRatings { applyItemRatingChange(change) }
-        for change in delta.savedCombinations { applySavedCombinationChange(change) }
-        for change in delta.swipeEvents { applySwipeEventChange(change) }
+        await applyBatched(delta.wardrobeItems) { applyWardrobeItemChange($0) }
+        await applyBatched(delta.outfitFeedback) { applyOutfitFeedbackChange($0) }
+        await applyBatched(delta.itemFeedback) { applyItemFeedbackChange($0) }
+        await applyBatched(delta.pairFeedback) { applyPairFeedbackChange($0) }
+        await applyBatched(delta.itemRatings) { applyItemRatingChange($0) }
+        await applyBatched(delta.savedCombinations) { applySavedCombinationChange($0) }
+        await applyBatched(delta.swipeEvents) { applySwipeEventChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -550,6 +550,37 @@ final class WardrobeSyncCoordinator {
         Task { await self.downloadMissingPhotos(uid: uid, syncService: service) }
 
         return true
+    }
+
+    /// Applications-between-yields for `applyBatched` below — same value and
+    /// rationale as `pushAllInBatches`'s `bootstrapBatchSize`: `pullChanges`
+    /// already pages its Firestore round trips (see
+    /// `FirestoreWardrobeSyncService.fetchCollection`'s `pullPageSize`), but
+    /// the *accumulated* `PulledWardrobeDelta` arrays it returns are not
+    /// capped — a reconcile after a long offline gap, or a bootstrap
+    /// `fullPull` for an engaged multi-thousand-row account, can still hand
+    /// `pullAndApply` thousands of entries in one collection. Applying every
+    /// one back-to-back with no suspension point (the previous behavior)
+    /// held the main actor — the only actor allowed to touch `ModelContext`,
+    /// per this directory's `CLAUDE.md` — for that entire stretch, freezing
+    /// the UI and risking a watchdog kill on a slow device. Saving before
+    /// each yield (rather than yielding alone) also bounds how many unsaved
+    /// mutations `modelContext` accumulates at once, matching
+    /// `pushAllInBatches`'s save-then-yield shape.
+    private static let pullApplyBatchSize = 500
+
+    /// Applies every pulled change in `changes` via `apply`, yielding to the
+    /// run loop every `pullApplyBatchSize` entries — see that constant's
+    /// comment. Order is unchanged from a plain `for` loop; only *when* the
+    /// main actor gets a chance to service other work changes.
+    private func applyBatched<T>(_ changes: [T], _ apply: (T) -> Void) async {
+        for (index, change) in changes.enumerated() {
+            apply(change)
+            if (index + 1).isMultiple(of: Self.pullApplyBatchSize) {
+                try? modelContext.save()
+                await Task.yield()
+            }
+        }
     }
 
     /// `true` if an unpushed local edit for this entity is at least as new

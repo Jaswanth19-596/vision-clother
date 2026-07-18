@@ -1,5 +1,5 @@
 import type { NextFunction, Response } from "express";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
 
@@ -43,14 +43,36 @@ function periodKey(): string {
 }
 
 /**
- * Must run after verifyAuth (needs req.uid/isAnonymous). Atomically checks
- * and increments a per-uid monthly usage counter in Firestore, lazily
- * resetting it when the calendar month rolls over — no cron needed, mirrors
+ * Below this many requests of headroom under the tier limit, quotaGate falls
+ * back to the transactional slow path instead of the non-transactional fast
+ * path. Must stay comfortably under the smallest positive tier limit (free
+ * tryOn = 10) so the slow path reliably takes over before a request could
+ * actually cross the cap without the transaction's atomic guarantee.
+ */
+const QUOTA_SAFETY_MARGIN = 3;
+
+/**
+ * Must run after verifyAuth (needs req.uid/isAnonymous). Checks and
+ * increments a per-uid monthly usage counter in Firestore, lazily resetting
+ * it when the calendar month rolls over — no cron needed, mirrors
  * rateLimit.ts's per-day doc approach at monthly granularity. When the
  * monthly free tier is exhausted, a request instead draws one credit from
  * the feature's lifetime purchased balance (StoreKit top-ups, granted by
  * routes/iapVerify.ts) before the 429 fires — so a 429 always means "free
  * tier used AND no purchased credits".
+ *
+ * Two paths, chosen by a non-transactional pre-read:
+ *  - Fast path (comfortably under the cap, no rollover due): a single
+ *    non-transactional atomic FieldValue.increment write. This doc is keyed
+ *    per uid, so the only possible contention is one account's own
+ *    overlapping requests — not cross-user load — and this path never
+ *    touches the purchased-balance field, so it can't race iapVerify.ts's
+ *    grant transaction.
+ *  - Slow path (within QUOTA_SAFETY_MARGIN of the cap, over it, or a
+ *    monthly rollover is due): the original transaction, re-reading fresh
+ *    state (never reusing the pre-read, which may be stale by now) —
+ *    required because the purchased-credit drawdown is real money and must
+ *    stay serialized against iapVerify.ts's concurrent grant.
  *
  * On a Firestore hiccup: fails open for linked accounts, fails closed for
  * anonymous/guest requests — see `rateLimit.ts`'s matching posture and
@@ -72,6 +94,50 @@ export function quotaGate(feature: QuotaFeature) {
     const currentPeriod = periodKey();
 
     try {
+      const [preUsageSnap, preEntitlementSnap] = await Promise.all([
+        usageRef.get(),
+        entitlementRef.get(),
+      ]);
+
+      const preTier: Tier = req.isAnonymous
+        ? "guest"
+        : preEntitlementSnap.exists && preEntitlementSnap.data()?.tier === "premium"
+          ? "premium"
+          : "free";
+      const preLimits = TIER_LIMITS[preTier];
+      if (!preLimits) {
+        logEvent("warn", "quota.tierUnavailable", { requestId: req.requestId, uid, feature });
+        res.status(403).json({ error: "tier_unavailable" });
+        return;
+      }
+
+      const preLimit = preLimits[feature];
+      if (preLimit <= 0) {
+        logEvent("info", "quota.signInRequired", { requestId: req.requestId, uid, feature });
+        res.status(403).json({ error: "sign_in_required" });
+        return;
+      }
+
+      const preUsageData = preUsageSnap.exists ? preUsageSnap.data() : undefined;
+      const preSamePeriod = preUsageData?.periodKey === currentPeriod;
+      const preCurrentCount = preSamePeriod
+        ? ((preUsageData?.[COUNT_FIELD[feature]] as number) ?? 0)
+        : 0;
+      const needsSlowPath = !preSamePeriod || preCurrentCount + QUOTA_SAFETY_MARGIN >= preLimit;
+
+      if (!needsSlowPath) {
+        // FAST PATH — plenty of headroom, no rollover due.
+        await usageRef.set(
+          { [COUNT_FIELD[feature]]: FieldValue.increment(1), updatedAt: Date.now() },
+          { merge: true }
+        );
+        logEvent("debug", "quota.ok", { requestId: req.requestId, uid, feature });
+        next();
+        return;
+      }
+
+      // SLOW PATH — near/at the cap, or a rollover is due. Re-read fresh
+      // inside the transaction; do not reuse the pre-read above.
       const result = await db.runTransaction(async (tx) => {
         const [usageSnap, entitlementSnap] = await Promise.all([
           tx.get(usageRef),

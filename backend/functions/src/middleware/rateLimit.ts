@@ -1,5 +1,5 @@
 import type { NextFunction, Response } from "express";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
 
@@ -11,9 +11,18 @@ function todayKey(): string {
 }
 
 /**
- * Must run after verifyAuth (needs req.uid). Atomically increments a
- * per-uid-per-day counter in Firestore and rejects once DAILY_REQUEST_LIMIT
- * is exceeded — cheap abuse guardrail, not a billing/metering system.
+ * Must run after verifyAuth (needs req.uid). Increments a per-uid-per-day
+ * counter in Firestore and rejects once DAILY_REQUEST_LIMIT is exceeded —
+ * cheap abuse guardrail, not a billing/metering system.
+ *
+ * Deliberately non-transactional: this doc is keyed per uid, so the only
+ * possible contention is a single account's own overlapping requests, not
+ * cross-user load. The read (limit check) and the atomic FieldValue.increment
+ * write aren't paired atomically, so a same-uid burst can overshoot the limit
+ * by a small, bounded amount — an acceptable trade for a coarse guardrail
+ * that explicitly isn't a hard billing boundary, in exchange for never
+ * throwing ABORTED under contention (which previously tripped the fail-open
+ * path below for ordinary concurrent traffic, not just genuine outages).
  *
  * On a Firestore hiccup: fails open for linked accounts (an outage
  * shouldn't take down the whole AI feature set for real users) but fails
@@ -35,21 +44,16 @@ export async function rateLimit(
   const docRef = getFirestore().collection("rateLimits").doc(`${uid}_${todayKey()}`);
 
   try {
-    const exceeded = await getFirestore().runTransaction(async (tx) => {
-      const snap = await tx.get(docRef);
-      const count = (snap.exists ? (snap.data()?.count as number) : 0) ?? 0;
-      if (count >= DAILY_REQUEST_LIMIT) {
-        return true;
-      }
-      tx.set(docRef, { count: count + 1, updatedAt: Date.now() }, { merge: true });
-      return false;
-    });
+    const snap = await docRef.get();
+    const count = (snap.exists ? (snap.data()?.count as number) : 0) ?? 0;
 
-    if (exceeded) {
+    if (count >= DAILY_REQUEST_LIMIT) {
       logEvent("warn", "rateLimit.exceeded", { requestId: req.requestId, uid, limit: DAILY_REQUEST_LIMIT });
       res.status(429).json({ error: "rate_limit_exceeded" });
       return;
     }
+
+    await docRef.set({ count: FieldValue.increment(1), updatedAt: Date.now() }, { merge: true });
     next();
   } catch (error) {
     if (req.isAnonymous) {
