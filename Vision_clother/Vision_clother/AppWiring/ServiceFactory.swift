@@ -164,4 +164,12 @@ enum ServiceFactory {
     static func makeEntitlementLimitsService() -> EntitlementLimitsService {
         AuthGatedEntitlementLimitsService()
     }
+
+    /// Analytics & Insights confidence/unlock thresholds
+    /// (`Services/AnalyticsConfigService.swift`). `AuthGatedAnalyticsConfigService`
+    /// re-checks `isSignedIn` per call — same rationale as
+    /// `makeEntitlementLimitsService` above.
+    static func makeAnalyticsConfigService() -> AnalyticsConfigService {
+        AuthGatedAnalyticsConfigService()
+    }
 }

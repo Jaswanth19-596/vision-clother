@@ -427,6 +427,132 @@ enum SchemaV9: VersionedSchema {
     }
 }
 
+/// V9 -> V10 adds two brand-new, independent tables (`AnalyticsSnapshot`,
+/// `RecommendationAnalyticsSnapshot` — Analytics & Insights, Phase 2) with
+/// zero changes to any existing V9 type, so like V3 -> V4, V5 -> V6, and
+/// V8 -> V9 this needs no `.custom` stage; `.lightweight` lets SwiftData
+/// infer the migration.
+enum SchemaV10: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(10, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+        ]
+    }
+
+    /// Frozen pre-Phase-3 snapshot — same reason `SchemaV6.OutfitFeedback`
+    /// exists: this schema version already shipped (Analytics & Insights
+    /// Phase 2), so its checksum must keep reflecting the shape actually on
+    /// disk. Must never be edited to track the live `OutfitFeedback` type.
+    /// Nested (not top-level), same as `SchemaV1.SavedCombination` — Swift
+    /// resolves the unqualified `OutfitFeedback.self` reference in `models`
+    /// above to *this* nested type, not the live top-level one.
+    @Model
+    final class OutfitFeedback {
+        @Attribute(.unique) var id: UUID
+        var outfitID: UUID
+        var likedOverall: Bool
+        var recordedAt: Date
+        var overallSatisfaction: Int?
+        var wearAgainRaw: String?
+        var confidence: Int?
+        var comfort: Int?
+        var occasionMatch: Int?
+        var styleMatch: Int?
+        var colorHarmony: Int?
+        var silhouette: Int?
+        var weatherSuitability: Int?
+        var practicality: Int?
+        var favoriteItemID: UUID?
+        var weakestItemID: UUID?
+        var changeReasonsRaw: [String] = []
+
+        init(
+            id: UUID = UUID(),
+            outfitID: UUID,
+            likedOverall: Bool,
+            recordedAt: Date = .now,
+            overallSatisfaction: Int? = nil,
+            wearAgainRaw: String? = nil,
+            confidence: Int? = nil,
+            comfort: Int? = nil,
+            occasionMatch: Int? = nil,
+            styleMatch: Int? = nil,
+            colorHarmony: Int? = nil,
+            silhouette: Int? = nil,
+            weatherSuitability: Int? = nil,
+            practicality: Int? = nil,
+            favoriteItemID: UUID? = nil,
+            weakestItemID: UUID? = nil,
+            changeReasonsRaw: [String] = []
+        ) {
+            self.id = id
+            self.outfitID = outfitID
+            self.likedOverall = likedOverall
+            self.recordedAt = recordedAt
+            self.overallSatisfaction = overallSatisfaction
+            self.wearAgainRaw = wearAgainRaw
+            self.confidence = confidence
+            self.comfort = comfort
+            self.occasionMatch = occasionMatch
+            self.styleMatch = styleMatch
+            self.colorHarmony = colorHarmony
+            self.silhouette = silhouette
+            self.weatherSuitability = weatherSuitability
+            self.practicality = practicality
+            self.favoriteItemID = favoriteItemID
+            self.weakestItemID = weakestItemID
+            self.changeReasonsRaw = changeReasonsRaw
+        }
+    }
+}
+
+/// V10 -> V11 adds five `OutfitFeedback` columns (Analytics & Insights Phase
+/// 3 — Better Feedback Collection: like-reason chips, occasion tag, would-buy/
+/// save-for-inspiration, replacement suggestion) and one brand-new,
+/// independent table (`WornLogEntry` — the "Wore this" quick action). Every
+/// new `OutfitFeedback` column is optional/defaulted, so like V6 -> V7 this
+/// needs no `.custom` stage; `.lightweight` lets SwiftData infer the
+/// migration and every pre-existing row reads as "nothing flagged," which is
+/// correct (they predate these fields entirely).
+enum SchemaV11: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(11, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+            WornLogEntry.self,
+        ]
+    }
+}
+
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
 /// `.custom` stage below: `willMigrate` runs against the still-V1-shaped
 /// store (old columns present, new ones absent), `didMigrate` runs after the
@@ -438,9 +564,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -510,5 +636,15 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV8toV9 = MigrationStage.lightweight(
         fromVersion: SchemaV8.self,
         toVersion: SchemaV9.self
+    )
+
+    static let migrateV9toV10 = MigrationStage.lightweight(
+        fromVersion: SchemaV9.self,
+        toVersion: SchemaV10.self
+    )
+
+    static let migrateV10toV11 = MigrationStage.lightweight(
+        fromVersion: SchemaV10.self,
+        toVersion: SchemaV11.self
     )
 }

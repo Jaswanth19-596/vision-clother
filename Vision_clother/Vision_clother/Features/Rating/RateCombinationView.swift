@@ -218,6 +218,18 @@ private struct RateCombinationQuestionsView: View {
                 StarRatingRow(rating: $viewModel.practicality)
             }
 
+            if viewModel.overallSatisfaction >= 4 {
+                Section("What Did You Like?") {
+                    Text("Select anything that stood out — optional.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LikeReasonChecklist(
+                        selection: viewModel.selectedLikeReasons,
+                        onToggle: viewModel.toggleLikeReason
+                    )
+                }
+            }
+
             Section("What Would You Change?") {
                 Text("Select anything that didn't work — optional.")
                     .font(.caption)
@@ -226,6 +238,21 @@ private struct RateCombinationQuestionsView: View {
                     selection: viewModel.selectedChangeReasons,
                     onToggle: viewModel.toggleChangeReason
                 )
+            }
+
+            Section("Occasion") {
+                Text("What was this outfit for? — optional.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                OccasionPicker(selection: $viewModel.selectedOccasion)
+            }
+
+            Section("Would You Buy Something Similar?") {
+                TriStateChip(selection: $viewModel.wouldBuySimilar)
+            }
+
+            Section {
+                Toggle("Save for inspiration", isOn: $viewModel.savedForInspiration)
             }
 
             if !viewModel.items.isEmpty {
@@ -249,6 +276,18 @@ private struct RateCombinationQuestionsView: View {
                         selection: viewModel.weakestItemID,
                         onSelect: viewModel.selectWeakest
                     )
+                }
+
+                if viewModel.weakestItemID != nil {
+                    Section("What Would Replace It?") {
+                        Text("Optional.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ReplacementSuggestionChecklist(
+                            selection: viewModel.selectedReplacementSuggestion,
+                            onSelect: { viewModel.selectedReplacementSuggestion = $0 }
+                        )
+                    }
                 }
             }
 
@@ -329,6 +368,102 @@ private struct ChangeReasonChecklist: View {
                         .foregroundStyle(.primary)
                     Spacer()
                     if selection.contains(reason) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.tint)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// "Why did you like this?" chips (Analytics & Insights, Phase 3) — same
+/// plain toggleable-row style as `ChangeReasonChecklist`, its positive-side
+/// counterpart.
+private struct LikeReasonChecklist: View {
+    let selection: Set<OutfitLikeReason>
+    let onToggle: (OutfitLikeReason) -> Void
+
+    var body: some View {
+        ForEach(OutfitLikeReason.allCases) { reason in
+            Button {
+                onToggle(reason)
+            } label: {
+                HStack {
+                    Text(reason.label)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if selection.contains(reason) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.tint)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Single-select occasion tag (Analytics & Insights, Phase 3) — a plain
+/// segmented picker with a "None" option, since unlike Wear Again this
+/// question has no sensible non-nil default.
+private struct OccasionPicker: View {
+    @Binding var selection: OutfitOccasion?
+
+    var body: some View {
+        Picker("Occasion", selection: $selection) {
+            Text("Not sure").tag(OutfitOccasion?.none)
+            ForEach(OutfitOccasion.allCases) { occasion in
+                Text(occasion.label).tag(OutfitOccasion?.some(occasion))
+            }
+        }
+        .pickerStyle(.menu)
+    }
+}
+
+/// Yes/No chip pair for "Would you buy something similar?" — deliberately
+/// not a `Toggle` (which forces a false default); `nil` means genuinely
+/// unanswered, distinct from "No."
+private struct TriStateChip: View {
+    @Binding var selection: Bool?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            chip("Yes", isSelected: selection == true) { selection = selection == true ? nil : true }
+            chip("No", isSelected: selection == false) { selection = selection == false ? nil : false }
+        }
+    }
+
+    private func chip(_ title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.thinMaterial), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Single-select replacement-suggestion chip (Analytics & Insights, Phase 3)
+/// — same toggleable-row style as `ChangeReasonChecklist`, but single-select
+/// (picking a new one replaces the old, matching Favorite/Weakest's
+/// single-choice picker style rather than a checklist).
+private struct ReplacementSuggestionChecklist: View {
+    let selection: ReplacementSuggestion?
+    let onSelect: (ReplacementSuggestion?) -> Void
+
+    var body: some View {
+        ForEach(ReplacementSuggestion.allCases) { suggestion in
+            Button {
+                onSelect(selection == suggestion ? nil : suggestion)
+            } label: {
+                HStack {
+                    Text(suggestion.label)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if selection == suggestion {
                         Image(systemName: "checkmark")
                             .foregroundStyle(.tint)
                     }

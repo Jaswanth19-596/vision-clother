@@ -67,6 +67,71 @@ enum OutfitChangeReason: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// "Why did you like this?" chips (Analytics & Insights, Phase 3) — the
+/// positive-side counterpart to `OutfitChangeReason`, kept deliberately
+/// symmetric (per the Stylist Intelligence Engine's "symmetric taste
+/// injection" precedent: likes and dislikes are both surfaced, never just
+/// one) so `Domain/AttributePreferenceProfile.swift` can eventually read a
+/// positive reason with the same weight it already gives a negative one.
+/// Multi-select, optional — empty when nothing was flagged.
+enum OutfitLikeReason: String, Codable, CaseIterable, Identifiable {
+    case greatColors, veryComfortable, perfectForOccasion, boostedConfidence, feltLikeMe, versatile
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .greatColors: return "Great colors"
+        case .veryComfortable: return "Very comfortable"
+        case .perfectForOccasion: return "Perfect for the occasion"
+        case .boostedConfidence: return "Boosted my confidence"
+        case .feltLikeMe: return "Felt like me"
+        case .versatile: return "Versatile — works for a lot"
+        }
+    }
+}
+
+/// Lightweight occasion tag (Analytics & Insights, Phase 3) — distinct from
+/// `occasionMatch` (a 1-5 satisfaction rating of how well the outfit suited
+/// whatever the occasion was); this instead records *what* the occasion was,
+/// feeding "Wardrobe Insights"/"Style Trends" occasion-mix breakdowns.
+/// Single-select, optional.
+enum OutfitOccasion: String, Codable, CaseIterable, Identifiable {
+    case work, casual, date, specialEvent, weekend, travel
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .work: return "Work"
+        case .casual: return "Casual"
+        case .date: return "Date"
+        case .specialEvent: return "Special event"
+        case .weekend: return "Weekend"
+        case .travel: return "Travel"
+        }
+    }
+}
+
+/// "What would replace it?" chip for the Weakest Piece pick (Analytics &
+/// Insights, Phase 3) — a structured, bounded alternative to a free-text
+/// suggestion box, matching this feature's "avoid long forms" posture.
+/// Single-select, optional, only meaningful when `weakestItemID` is set.
+enum ReplacementSuggestion: String, Codable, CaseIterable, Identifiable {
+    case differentColor, differentFit, differentStyle, differentFabric
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .differentColor: return "A different color"
+        case .differentFit: return "A different fit"
+        case .differentStyle: return "A different style"
+        case .differentFabric: return "A different fabric"
+        }
+    }
+}
+
 /// Outfit-Level Event — dimension-based feedback on a whole saved outfit
 /// (Stylist Intelligence Engine Phase 1, superseding the earlier blended
 /// Fit/Comfort/Confidence/Wear-again form). Every Level 2 question exists
@@ -118,6 +183,21 @@ final class OutfitFeedback {
     // as `wearAgainRaw`.
     var changeReasonsRaw: [String] = []
 
+    // Analytics & Insights, Phase 3 — Better Feedback Collection. All
+    // optional/defaulted (additive-only `SchemaV11` migration, see
+    // `Models/SchemaMigrations.swift`): every pre-existing row reads as
+    // "nothing flagged," which is correct (they predate these chips).
+    /// "Why did you like this?" — only meaningful when `likedOverall`, but
+    /// not enforced (the UI only shows the chips on the positive path).
+    var likeReasonsRaw: [String] = []
+    var occasionRaw: String?
+    /// `nil` = not answered; the chip UI is a tri-state Yes/No/unanswered,
+    /// not a plain toggle defaulting to false.
+    var wouldBuySimilar: Bool?
+    var savedForInspiration: Bool = false
+    /// Only meaningful when `weakestItemID` is set.
+    var replacementSuggestionRaw: String?
+
     init(
         id: UUID = UUID(),
         outfitID: UUID,
@@ -135,7 +215,12 @@ final class OutfitFeedback {
         practicality: Int? = nil,
         favoriteItemID: UUID? = nil,
         weakestItemID: UUID? = nil,
-        changeReasons: [OutfitChangeReason] = []
+        changeReasons: [OutfitChangeReason] = [],
+        likeReasons: [OutfitLikeReason] = [],
+        occasion: OutfitOccasion? = nil,
+        wouldBuySimilar: Bool? = nil,
+        savedForInspiration: Bool = false,
+        replacementSuggestion: ReplacementSuggestion? = nil
     ) {
         self.id = id
         self.outfitID = outfitID
@@ -154,6 +239,11 @@ final class OutfitFeedback {
         self.favoriteItemID = favoriteItemID
         self.weakestItemID = weakestItemID
         self.changeReasonsRaw = changeReasons.map(\.rawValue)
+        self.likeReasonsRaw = likeReasons.map(\.rawValue)
+        self.occasionRaw = occasion?.rawValue
+        self.wouldBuySimilar = wouldBuySimilar
+        self.savedForInspiration = savedForInspiration
+        self.replacementSuggestionRaw = replacementSuggestion?.rawValue
     }
 
     var wearAgain: WearAgainAnswer? {
@@ -162,6 +252,18 @@ final class OutfitFeedback {
 
     var changeReasons: [OutfitChangeReason] {
         changeReasonsRaw.compactMap(OutfitChangeReason.init(rawValue:))
+    }
+
+    var likeReasons: [OutfitLikeReason] {
+        likeReasonsRaw.compactMap(OutfitLikeReason.init(rawValue:))
+    }
+
+    var occasion: OutfitOccasion? {
+        occasionRaw.flatMap(OutfitOccasion.init(rawValue:))
+    }
+
+    var replacementSuggestion: ReplacementSuggestion? {
+        replacementSuggestionRaw.flatMap(ReplacementSuggestion.init(rawValue:))
     }
 
     /// Mean of every Level 1 + Level 2 question, normalized to `[0,1]`:

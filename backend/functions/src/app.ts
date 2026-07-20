@@ -10,6 +10,7 @@ import { pexelsSearchRouter } from "./routes/pexelsSearch";
 import { accountDeleteRouter } from "./routes/accountDelete";
 import { iapVerifyRouter } from "./routes/iapVerify";
 import { entitlementLimitsRouter } from "./routes/entitlementLimits";
+import { analyticsConfigRouter } from "./routes/analyticsConfig";
 import { logEvent } from "./logger";
 import type { AuthedRequest } from "./types";
 
@@ -56,7 +57,9 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
  * caller's tier into concrete numbers so the client never hardcodes a
  * tier→number table that could drift from `middleware/quota.ts`'s (a real
  * bug, not a security issue — see that route's doc comment for why this
- * was never an enforcement mechanism either way).
+ * was never an enforcement mechanism either way), and `/analytics/config`
+ * (see `routes/analyticsConfig.ts`) resolves Analytics & Insights confidence/
+ * unlock thresholds for the same reason.
  * App Check is deferred (needs a paid Apple Developer account for App
  * Attest) — see docs/decisions/resolved-v1.md.
  */
@@ -87,6 +90,7 @@ export function buildApp(): express.Express {
   app.use("/account/delete", accountDeleteRouter);
   app.use("/iap/verify", iapVerifyRouter);
   app.use("/entitlement/limits", entitlementLimitsRouter);
+  app.use("/analytics/config", responseCache("analyticsConfig"), analyticsConfigRouter);
 
   return app;
 }

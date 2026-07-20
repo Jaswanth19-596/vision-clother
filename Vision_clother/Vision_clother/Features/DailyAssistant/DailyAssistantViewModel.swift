@@ -92,6 +92,41 @@ final class DailyAssistantViewModel {
         }
     }
 
+    /// Which concrete step of `resolveOutfits`/`resolveProspectivePurchase`
+    /// is currently in flight — drives the themed inline loading indicator
+    /// (`DailyAssistantView`'s `LoadingStageView`) that replaced the old
+    /// generic "Thinking through your closet…" spinner. Set synchronously at
+    /// each stage boundary from those two methods, which already run on this
+    /// `@MainActor` class, so no extra hop is needed to make the UI observe
+    /// each transition.
+    enum LoadingStage: Equatable {
+        case analyzingPhoto
+        case fetchingWardrobe
+        case buildingCatalog
+        case consultingStylist
+        case validatingPicks
+
+        var label: String {
+            switch self {
+            case .analyzingPhoto: return "Analyzing your photo…"
+            case .fetchingWardrobe: return "Gathering your wardrobe…"
+            case .buildingCatalog: return "Matching items to the occasion…"
+            case .consultingStylist: return "Consulting your stylist…"
+            case .validatingPicks: return "Double-checking the fit…"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .analyzingPhoto: return "camera.viewfinder"
+            case .fetchingWardrobe: return "tshirt"
+            case .buildingCatalog: return "square.grid.2x2"
+            case .consultingStylist: return "sparkles"
+            case .validatingPicks: return "checkmark.seal"
+            }
+        }
+    }
+
     /// Conversational Refinement Loop (Stylist Intelligence Engine ADR,
     /// Phase 2 addendum): one full request/response cycle in the chat
     /// timeline the UI renders — distinct from `ConversationTurn`, which is
@@ -99,6 +134,14 @@ final class DailyAssistantViewModel {
     /// question or a resolved set of outfits.
     struct ConversationRound: Identifiable {
         enum Outcome {
+            /// The user's message is showing but the assistant side hasn't
+            /// resolved yet — appended synchronously (`sendTurn`/
+            /// `performProspectivePurchaseCheck`) the instant the user hits
+            /// send, before any network work starts, so the message never
+            /// waits on the response to become visible. Replaced in place
+            /// with the real outcome once one arrives, or removed entirely
+            /// if the turn fails/times out or is superseded by a newer one.
+            case pending
             case clarification(followUpText: String, chips: [String])
             case outfits([OutfitCombination])
             /// Prospective Purchase Evaluation (2026-07-15): the result of
@@ -119,6 +162,9 @@ final class DailyAssistantViewModel {
 
     var prompt: String = ""
     var extractionState: ExtractionState = .idle
+    /// Read by `DailyAssistantView`'s `LoadingStageView` while a `.pending`
+    /// round is showing — see `LoadingStage`.
+    var loadingStage: LoadingStage = .fetchingWardrobe
     /// Full chat-timeline history for the conversation currently in
     /// progress — reset by `requestOutfitIdeas()` (a brand-new topic) and by
     /// `resetConversation()`; appended to, never reset, by
@@ -302,6 +348,16 @@ final class DailyAssistantViewModel {
         lastProspectiveRawImageData = nil
 
         extractionState = .loading
+        loadingStage = .fetchingWardrobe
+
+        // Shows the user's own message immediately, before any network work
+        // starts — previously `rounds` (the UI-facing chat timeline) wasn't
+        // appended to until the whole response came back, so the user's
+        // message and the AI's reply popped in together. This pending round
+        // is mutated in place (success/clarification) or removed
+        // (failure/timeout/superseded) once `workTask` resolves below.
+        rounds.append(ConversationRound(userText: userText, outcome: .pending))
+        let pendingRoundID = rounds[rounds.count - 1].id
 
         let requestID = UUID()
         currentRequestID = requestID
@@ -327,27 +383,36 @@ final class DailyAssistantViewModel {
 
         // A newer call to requestOutfitIdeas()/replyToClarification() (or
         // the retry button) already superseded this one — don't clobber its
-        // state with our late result.
-        guard currentRequestID == requestID else { return }
+        // state with our late result, and don't leave our own pending round
+        // stuck showing a loading indicator forever.
+        guard currentRequestID == requestID else {
+            rounds.removeAll { $0.id == pendingRoundID }
+            return
+        }
 
         switch outcome {
         case .success(let resolved):
-            let round = ConversationRound(userText: userText, outcome: .outfits(resolved))
-            rounds.append(round)
+            if let index = rounds.firstIndex(where: { $0.id == pendingRoundID }) {
+                rounds[index].outcome = .outfits(resolved)
+            }
             conversationHistory.append(ConversationTurn(role: .assistant, text: Self.assistantSummaryText(for: resolved)))
             extractionState = .idle
             // Impression/Selection Event Capture (Stylist Intelligence Engine
             // ADR): best-effort — a logging/audit trail, never a gate on the
             // conversation flow.
-            try? repository.recordImpressions(roundID: round.id, outfits: resolved)
+            try? repository.recordImpressions(roundID: pendingRoundID, outfits: resolved)
         case .clarification(let followUpText, let chips):
-            rounds.append(ConversationRound(userText: userText, outcome: .clarification(followUpText: followUpText, chips: chips)))
+            if let index = rounds.firstIndex(where: { $0.id == pendingRoundID }) {
+                rounds[index].outcome = .clarification(followUpText: followUpText, chips: chips)
+            }
             conversationHistory.append(ConversationTurn(role: .assistant, text: followUpText))
             clarificationTurnCount += 1
             extractionState = .awaitingClarification(followUpText: followUpText, chips: chips)
         case .failure(let message):
+            rounds.removeAll { $0.id == pendingRoundID }
             extractionState = .failed(message)
         case .timedOut:
+            rounds.removeAll { $0.id == pendingRoundID }
             extractionState = .failed("This is taking too long. Check your connection and try again.")
         }
     }
@@ -399,11 +464,13 @@ final class DailyAssistantViewModel {
             let weather = await weatherResult
             let profile = await profileResult
 
+            loadingStage = .buildingCatalog
             let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
             guard !catalog.isEmpty else {
                 return .failure("Your wardrobe appears to be empty. Add some items and try again.")
             }
 
+            loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
                 try await recommendationService.recommendOutfits(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
@@ -451,6 +518,7 @@ final class DailyAssistantViewModel {
                     .filter { !$0.isGhostElement }
                     .map { ($0.id.uuidString, $0) }
             )
+            loadingStage = .validatingPicks
             let (validated, rejections) = await PerfLog.time("validation") {
                 OutfitRecommendationValidator.validateVerbose(
                     response,
@@ -510,6 +578,13 @@ final class DailyAssistantViewModel {
     private func performProspectivePurchaseCheck(rawImageData: Data) async {
         lastProspectiveRawImageData = rawImageData
         extractionState = .loading
+        loadingStage = .analyzingPhoto
+
+        // Same immediate-visibility fix as `sendTurn`: show the user's side
+        // of this round before any network work starts, then resolve it in
+        // place (or remove it on failure/timeout/supersession).
+        rounds.append(ConversationRound(userText: "Is this a good buy?", outcome: .pending))
+        let pendingRoundID = rounds[rounds.count - 1].id
 
         let requestID = UUID()
         currentRequestID = requestID
@@ -527,21 +602,27 @@ final class DailyAssistantViewModel {
         let outcome = await workTask.value
         timeoutTask.cancel()
 
-        guard currentRequestID == requestID else { return }
+        guard currentRequestID == requestID else {
+            rounds.removeAll { $0.id == pendingRoundID }
+            return
+        }
 
         switch outcome {
         case .resolved(let item, let outfits, let note):
-            let round = ConversationRound(userText: "Is this a good buy?", outcome: .purchaseCheck(item: item, outfits: outfits, note: note))
-            rounds.append(round)
+            if let index = rounds.firstIndex(where: { $0.id == pendingRoundID }) {
+                rounds[index].outcome = .purchaseCheck(item: item, outfits: outfits, note: note)
+            }
             extractionState = .idle
             if !outfits.isEmpty {
                 // Impression/Selection Event Capture: same best-effort
                 // logging every ordinary recommendation round gets.
-                try? repository.recordImpressions(roundID: round.id, outfits: outfits)
+                try? repository.recordImpressions(roundID: pendingRoundID, outfits: outfits)
             }
         case .failure(let message):
+            rounds.removeAll { $0.id == pendingRoundID }
             extractionState = .failed(message)
         case .timedOut:
+            rounds.removeAll { $0.id == pendingRoundID }
             extractionState = .failed("This is taking too long. Check your connection and try again.")
         }
     }
@@ -570,6 +651,7 @@ final class DailyAssistantViewModel {
 
             let (imageData, metadata) = try await taggedResult
             guard !Task.isCancelled else { return .timedOut }
+            loadingStage = .fetchingWardrobe
 
             let filename = try ImageStorage.save(imageData)
             let prospectiveItem = WardrobeItem.make(from: metadata, imageAssetName: filename)
@@ -583,12 +665,14 @@ final class DailyAssistantViewModel {
             let weather = await weatherResult
             let profile = await profileResult
 
+            loadingStage = .buildingCatalog
             let (catalog, _) = await PerfLog.time("catalogBuild") {
                 WardrobeCatalogBuilder.build(
                     from: inventory + [prospectiveItem], history: history, prospectiveItemID: prospectiveItem.id
                 )
             }
 
+            loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
                 try await recommendationService.recommendOutfits(
                     conversationHistory: [ConversationTurn(role: .user, text: Self.prospectivePurchaseScenarioText)],
@@ -609,6 +693,7 @@ final class DailyAssistantViewModel {
                 uniqueKeysWithValues: ((try repository.fetchInventory()).filter { !$0.isGhostElement } + [prospectiveItem])
                     .map { ($0.id.uuidString, $0) }
             )
+            loadingStage = .validatingPicks
             let (validated, rejections) = await PerfLog.time("validation") {
                 OutfitRecommendationValidator.validateVerbose(
                     response, index: freshIndex,

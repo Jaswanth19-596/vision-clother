@@ -85,6 +85,19 @@ struct CombinationsView: View {
                             Label("Delete", systemImage: "trash")
                         }
                     }
+                    .swipeActions(edge: .leading) {
+                        // Analytics & Insights, Phase 3 — the lightest-friction
+                        // real-world wear signal the app has (see
+                        // `Models/WornLogEntry.swift`'s doc comment on the gap
+                        // this fills). Tint matches the destructive action's
+                        // opposite-edge convention, not semantics.
+                        Button {
+                            viewModel.logWorn(combination)
+                        } label: {
+                            Label("Wore This", systemImage: "checkmark.circle")
+                        }
+                        .tint(.green)
+                    }
                 }
             }
             .id(syncCoordinator.photoRefreshTick)

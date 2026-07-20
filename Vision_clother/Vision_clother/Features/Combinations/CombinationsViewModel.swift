@@ -27,6 +27,20 @@ final class CombinationsViewModel {
         self.repository = repository
     }
 
+    /// The "Wore this" quick action (Analytics & Insights, Phase 3) — logs a
+    /// `WornLogEntry` for every item in the outfit. Deliberately no undo/dedupe:
+    /// wearing the same outfit twice today, or logging it retroactively via a
+    /// repeated tap, both just add another row — see `Models/WornLogEntry.swift`.
+    func logWorn(_ combination: SavedCombination) {
+        let itemIDs = Array(combination.itemIDsBySlot.values) + combination.supplementaryAccessoryItemIDs
+        do {
+            try repository.logWorn(savedCombinationID: combination.id, itemIDs: itemIDs)
+            AppLog.info(.viewModel, "CombinationsViewModel.logWorn: ok id=\(combination.id) items=\(itemIDs.count)")
+        } catch {
+            AppLog.error(.viewModel, "CombinationsViewModel.logWorn: failed id=\(combination.id) — \(String(describing: error))")
+        }
+    }
+
     func delete(_ combination: SavedCombination) {
         do {
             try repository.deleteCombination(combination)

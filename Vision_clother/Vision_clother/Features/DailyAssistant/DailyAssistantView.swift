@@ -182,6 +182,16 @@ struct DailyAssistantView: View {
             userBubble(round.userText)
 
             switch round.outcome {
+            case .pending:
+                // Only ever the latest round — mutated in place or removed
+                // by the ViewModel the instant its request resolves (see
+                // `DailyAssistantViewModel.sendTurn`/
+                // `performProspectivePurchaseCheck`), so no extra
+                // `isLatest`/loading guard is needed here.
+                assistantRow {
+                    LoadingStageView(stage: viewModel.loadingStage)
+                }
+
             case .clarification(let followUpText, let chips):
                 if isLatest, isAwaitingClarification(viewModel) {
                     assistantRow {
@@ -296,20 +306,14 @@ struct DailyAssistantView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The current in-flight status, trailing the timeline — loading
-    /// spinner or a failed-with-Retry row. Idle/awaiting-clarification need
-    /// nothing extra here since the latest round already shows it.
+    /// The current in-flight status, trailing the timeline — a
+    /// failed-with-Retry row. Loading now renders inline as the latest
+    /// round's own `.pending` outcome (`LoadingStageView`), and
+    /// idle/awaiting-clarification need nothing extra here since the latest
+    /// round already shows it.
     @ViewBuilder
     private func statusView(viewModel: DailyAssistantViewModel) -> some View {
         switch viewModel.extractionState {
-        case .loading:
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("Thinking through your closet…")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Label(message, systemImage: "exclamationmark.bubble")
@@ -321,7 +325,7 @@ struct DailyAssistantView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-        case .idle, .awaitingClarification:
+        case .idle, .loading, .awaitingClarification:
             EmptyView()
         }
     }
@@ -484,6 +488,38 @@ struct DailyAssistantView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Themed, multi-stage inline replacement for the old generic
+/// `ProgressView` + static caption — reflects which concrete step of
+/// `DailyAssistantViewModel.resolveOutfits`/`resolveProspectivePurchase`
+/// (fetch wardrobe → build catalog → consult stylist → validate picks) is
+/// currently running, via `DailyAssistantViewModel.LoadingStage`. Rendered
+/// as the assistant side of the latest round's `.pending` outcome, right
+/// under the user's own message, so the "thinking" state reads as a live
+/// reply to what they just sent rather than a floating spinner.
+private struct LoadingStageView: View {
+    let stage: DailyAssistantViewModel.LoadingStage
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: stage.systemImage)
+                .font(.subheadline)
+                .foregroundStyle(VCAccentColor.brand)
+                .symbolEffect(.pulse, options: .repeating)
+                .contentTransition(.symbolEffect(.replace))
+
+            Text(stage.label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .premiumCard()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeInOut(duration: 0.25), value: stage)
     }
 }
 

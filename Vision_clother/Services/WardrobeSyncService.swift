@@ -57,6 +57,9 @@ struct PulledWardrobeDelta {
     var pairFeedback: [PulledChange<PairFeedbackDTO>] = []
     var itemRatings: [PulledChange<ItemRatingDTO>] = []
     var savedCombinations: [PulledChange<SavedCombinationDTO>] = []
+    var analyticsSnapshots: [PulledChange<AnalyticsSnapshotDTO>] = []
+    var recommendationAnalyticsSnapshots: [PulledChange<RecommendationAnalyticsSnapshotDTO>] = []
+    var wornLogEntries: [PulledChange<WornLogEntryDTO>] = []
     var userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>?
     var visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>?
     /// Captured before this pull's queries ran — the candidate new
@@ -89,6 +92,13 @@ protocol WardrobeSyncService {
     func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws
     func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws
+    /// Analytics & Insights (Phase 2) — see `Models/AnalyticsSnapshot.swift`.
+    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws
+    /// Analytics & Insights, internal-only (Phase 2) — see
+    /// `Models/RecommendationAnalyticsSnapshot.swift`.
+    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws
+    /// Analytics & Insights (Phase 3) — see `Models/WornLogEntry.swift`.
+    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws
 
     /// Soft-deletes (tombstones) an entity — only meaningful for the 6
     /// event/row-per-entity types, not the 2 single-row `meta` docs (nothing
@@ -195,6 +205,18 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         try await setDocument(usersDoc(uid).collection("meta").document("visualPreferenceState"), dto: dto)
     }
 
+    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {
+        try await setDocument(usersDoc(uid).collection("analyticsSnapshots").document(dto.id), dto: dto)
+    }
+
+    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {
+        try await setDocument(usersDoc(uid).collection("recommendationAnalyticsSnapshots").document(dto.id), dto: dto)
+    }
+
+    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {
+        try await setDocument(usersDoc(uid).collection("wornLogEntries").document(dto.id), dto: dto)
+    }
+
     // MARK: - Delete (tombstone)
 
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
@@ -211,6 +233,9 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         case .pairFeedback: return "pairFeedback"
         case .itemRating: return "itemRatings"
         case .savedCombination: return "savedCombinations"
+        case .analyticsSnapshot: return "analyticsSnapshots"
+        case .recommendationAnalyticsSnapshot: return "recommendationAnalyticsSnapshots"
+        case .wornLogEntry: return "wornLogEntries"
         // Single-row meta docs are never deleted; `swipeEvent` is legacy-only
         // (see `Models/SyncMetadata.swift`) and never pushed/deleted either.
         case .userStyleProfile, .visualPreferenceState, .swipeEvent: return nil
@@ -230,6 +255,9 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         async let pairFeedback: [PulledChange<PairFeedbackDTO>] = Self.fetchCollection(usersRef.collection("pairFeedback"), since: since)
         async let itemRatings: [PulledChange<ItemRatingDTO>] = Self.fetchCollection(usersRef.collection("itemRatings"), since: since)
         async let savedCombinations: [PulledChange<SavedCombinationDTO>] = Self.fetchCollection(usersRef.collection("savedCombinations"), since: since)
+        async let analyticsSnapshots: [PulledChange<AnalyticsSnapshotDTO>] = Self.fetchCollection(usersRef.collection("analyticsSnapshots"), since: since)
+        async let recommendationAnalyticsSnapshots: [PulledChange<RecommendationAnalyticsSnapshotDTO>] = Self.fetchCollection(usersRef.collection("recommendationAnalyticsSnapshots"), since: since)
+        async let wornLogEntries: [PulledChange<WornLogEntryDTO>] = Self.fetchCollection(usersRef.collection("wornLogEntries"), since: since)
         async let userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("styleProfile"), since: since)
         async let visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("visualPreferenceState"), since: since)
 
@@ -241,6 +269,9 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
                 pairFeedback: try await pairFeedback,
                 itemRatings: try await itemRatings,
                 savedCombinations: try await savedCombinations,
+                analyticsSnapshots: try await analyticsSnapshots,
+                recommendationAnalyticsSnapshots: try await recommendationAnalyticsSnapshots,
+                wornLogEntries: try await wornLogEntries,
                 userStyleProfile: try await userStyleProfile,
                 visualPreferenceState: try await visualPreferenceState,
                 queryStartTime: queryStartTime
@@ -474,6 +505,15 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
         try await current.pushVisualPreferenceState(dto, uid: uid)
     }
+    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {
+        try await current.pushAnalyticsSnapshot(dto, uid: uid)
+    }
+    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {
+        try await current.pushRecommendationAnalyticsSnapshot(dto, uid: uid)
+    }
+    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {
+        try await current.pushWornLogEntry(dto, uid: uid)
+    }
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
         try await current.deleteEntity(type: type, id: id, uid: uid)
     }
@@ -526,6 +566,9 @@ final class MockWardrobeSyncService: WardrobeSyncService {
     func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {}
     func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {}
     func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {}
+    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {}
+    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {}
+    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {}
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {}
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
         PulledWardrobeDelta(queryStartTime: Date())

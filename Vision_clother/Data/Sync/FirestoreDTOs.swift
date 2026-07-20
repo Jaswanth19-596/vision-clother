@@ -141,6 +141,12 @@ struct OutfitFeedbackDTO: Codable {
     var favoriteItemID: String?
     var weakestItemID: String?
     var changeReasonsRaw: [String]
+    /// Analytics & Insights, Phase 3 — Better Feedback Collection.
+    var likeReasonsRaw: [String] = []
+    var occasionRaw: String?
+    var wouldBuySimilar: Bool?
+    var savedForInspiration: Bool = false
+    var replacementSuggestionRaw: String?
 
     static func from(_ model: OutfitFeedback) -> OutfitFeedbackDTO {
         OutfitFeedbackDTO(
@@ -160,7 +166,12 @@ struct OutfitFeedbackDTO: Codable {
             practicality: model.practicality,
             favoriteItemID: model.favoriteItemID?.uuidString,
             weakestItemID: model.weakestItemID?.uuidString,
-            changeReasonsRaw: model.changeReasonsRaw
+            changeReasonsRaw: model.changeReasonsRaw,
+            likeReasonsRaw: model.likeReasonsRaw,
+            occasionRaw: model.occasionRaw,
+            wouldBuySimilar: model.wouldBuySimilar,
+            savedForInspiration: model.savedForInspiration,
+            replacementSuggestionRaw: model.replacementSuggestionRaw
         )
     }
 
@@ -184,7 +195,12 @@ struct OutfitFeedbackDTO: Codable {
             practicality: practicality,
             favoriteItemID: favoriteItemID.flatMap(UUID.init(uuidString:)),
             weakestItemID: weakestItemID.flatMap(UUID.init(uuidString:)),
-            changeReasons: changeReasonsRaw.compactMap(OutfitChangeReason.init(rawValue:))
+            changeReasons: changeReasonsRaw.compactMap(OutfitChangeReason.init(rawValue:)),
+            likeReasons: likeReasonsRaw.compactMap(OutfitLikeReason.init(rawValue:)),
+            occasion: occasionRaw.flatMap(OutfitOccasion.init(rawValue:)),
+            wouldBuySimilar: wouldBuySimilar,
+            savedForInspiration: savedForInspiration,
+            replacementSuggestion: replacementSuggestionRaw.flatMap(ReplacementSuggestion.init(rawValue:))
         )
     }
 }
@@ -419,6 +435,79 @@ struct VisualPreferenceStateDTO: Codable {
             updatedAt: stateUpdatedAt,
             totalSwipes: totalSwipes
         )
+    }
+}
+
+/// Analytics & Insights (Phase 2) — one row per computed period, pushed to
+/// `users/{uid}/analyticsSnapshots/{id}`. See `Models/AnalyticsSnapshot.swift`'s
+/// doc comment for why `payloadJSON` is an opaque blob rather than typed
+/// fields here.
+struct AnalyticsSnapshotDTO: Codable {
+    var id: String
+    var periodKey: String
+    var payloadJSON: String
+    var computedAt: Date
+
+    static func from(_ model: AnalyticsSnapshot) -> AnalyticsSnapshotDTO {
+        AnalyticsSnapshotDTO(id: model.id.uuidString, periodKey: model.periodKey, payloadJSON: model.payloadJSON, computedAt: model.computedAt)
+    }
+
+    func toModel() -> AnalyticsSnapshot? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        return AnalyticsSnapshot(id: uuid, periodKey: periodKey, payloadJSON: payloadJSON, computedAt: computedAt)
+    }
+}
+
+/// Analytics & Insights, internal-only Recommendation Analytics rollup (Phase
+/// 2) — one row per period, pushed to
+/// `users/{uid}/recommendationAnalyticsSnapshots/{id}`. See
+/// `Models/RecommendationAnalyticsSnapshot.swift`'s doc comment for why this
+/// is a small aggregate row rather than syncing raw impression events.
+struct RecommendationAnalyticsSnapshotDTO: Codable {
+    var id: String
+    var periodKey: String
+    var shownCount: Int
+    var selectedCount: Int
+    var computedAt: Date
+
+    static func from(_ model: RecommendationAnalyticsSnapshot) -> RecommendationAnalyticsSnapshotDTO {
+        RecommendationAnalyticsSnapshotDTO(
+            id: model.id.uuidString,
+            periodKey: model.periodKey,
+            shownCount: model.shownCount,
+            selectedCount: model.selectedCount,
+            computedAt: model.computedAt
+        )
+    }
+
+    func toModel() -> RecommendationAnalyticsSnapshot? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        return RecommendationAnalyticsSnapshot(
+            id: uuid, periodKey: periodKey, shownCount: shownCount, selectedCount: selectedCount, computedAt: computedAt
+        )
+    }
+}
+
+/// Analytics & Insights (Phase 3) — the "Wore this" quick action log, pushed
+/// to `users/{uid}/wornLogEntries/{id}`. See `Models/WornLogEntry.swift`.
+struct WornLogEntryDTO: Codable {
+    var id: String
+    var savedCombinationID: String
+    var itemIDs: [String]
+    var wornAt: Date
+
+    static func from(_ model: WornLogEntry) -> WornLogEntryDTO {
+        WornLogEntryDTO(
+            id: model.id.uuidString,
+            savedCombinationID: model.savedCombinationID.uuidString,
+            itemIDs: model.itemIDs.map(\.uuidString),
+            wornAt: model.wornAt
+        )
+    }
+
+    func toModel() -> WornLogEntry? {
+        guard let uuid = UUID(uuidString: id), let combinationUUID = UUID(uuidString: savedCombinationID) else { return nil }
+        return WornLogEntry(id: uuid, savedCombinationID: combinationUUID, itemIDs: itemIDs.compactMap(UUID.init(uuidString:)), wornAt: wornAt)
     }
 }
 

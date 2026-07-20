@@ -47,6 +47,15 @@ final class RateCombinationViewModel {
     // Level 3 — "What would you change?" checklist
     var selectedChangeReasons: Set<OutfitChangeReason> = []
 
+    // Analytics & Insights, Phase 3 — Better Feedback Collection. All
+    // optional; the view only shows the like-reason chips on the positive
+    // path (see `RateCombinationQuestionsView`'s `wouldRecommend` check).
+    var selectedLikeReasons: Set<OutfitLikeReason> = []
+    var selectedOccasion: OutfitOccasion?
+    var wouldBuySimilar: Bool?
+    var savedForInspiration: Bool = false
+    var selectedReplacementSuggestion: ReplacementSuggestion?
+
     private(set) var state: RatingSaveState = .idle
 
     private let repository: WardrobeRepository
@@ -89,6 +98,14 @@ final class RateCombinationViewModel {
         }
     }
 
+    func toggleLikeReason(_ reason: OutfitLikeReason) {
+        if selectedLikeReasons.contains(reason) {
+            selectedLikeReasons.remove(reason)
+        } else {
+            selectedLikeReasons.insert(reason)
+        }
+    }
+
     func submit() async {
         AppLog.info(.viewModel, "RateCombinationViewModel.submit: outfitID=\(outfitID)")
         state = .saving
@@ -106,7 +123,12 @@ final class RateCombinationViewModel {
                 practicality: practicality,
                 favoriteItemID: favoriteItemID,
                 weakestItemID: weakestItemID,
-                changeReasons: selectedChangeReasons
+                changeReasons: selectedChangeReasons,
+                likeReasons: selectedLikeReasons,
+                occasion: selectedOccasion,
+                wouldBuySimilar: wouldBuySimilar,
+                savedForInspiration: savedForInspiration,
+                replacementSuggestion: selectedReplacementSuggestion
             )
             try repository.recordOutfitRating(outfitID: outfitID, submission: submission)
             state = .saved

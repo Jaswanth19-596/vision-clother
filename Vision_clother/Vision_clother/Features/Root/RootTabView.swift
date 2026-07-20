@@ -28,6 +28,9 @@ struct RootTabView: View {
 
             CombinationsView()
                 .tabItem { Label("Combinations", systemImage: "square.grid.2x2") }
+
+            InsightsView()
+                .tabItem { Label("Insights", systemImage: "chart.bar.xaxis") }
         }
         // Single source of truth for the Activity panel — hosted once here
         // (rather than per-tab) so a notification tap can open it regardless

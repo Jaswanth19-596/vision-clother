@@ -310,6 +310,7 @@ final class WardrobeSyncCoordinator {
             WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
             ItemRating.self, SavedCombination.self, UserStyleProfile.self, SwipeEvent.self,
             VisualPreferenceState.self, WardrobeItemEmbedding.self, RecommendationImpressionEvent.self,
+            AnalyticsSnapshot.self, RecommendationAnalyticsSnapshot.self, WornLogEntry.self,
             SyncMetadata.self,
         ]
         for type in syncedAndLocalOnlyTypes {
@@ -397,6 +398,15 @@ final class WardrobeSyncCoordinator {
         }
         if let state = try? repository.fetchVisualPreferenceState() {
             markDirtyForBootstrap(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
+        }
+        for snapshot in (try? repository.fetchAnalyticsSnapshots()) ?? [] {
+            markDirtyForBootstrap(.analyticsSnapshot, entityID: snapshot.id, dto: AnalyticsSnapshotDTO.from(snapshot))
+        }
+        for snapshot in (try? repository.fetchRecommendationAnalyticsSnapshots()) ?? [] {
+            markDirtyForBootstrap(.recommendationAnalyticsSnapshot, entityID: snapshot.id, dto: RecommendationAnalyticsSnapshotDTO.from(snapshot))
+        }
+        for entry in (try? repository.fetchWornLogEntries()) ?? [] {
+            markDirtyForBootstrap(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
         }
         try? modelContext.save()
 
@@ -509,6 +519,9 @@ final class WardrobeSyncCoordinator {
         await applyBatched(delta.pairFeedback) { applyPairFeedbackChange($0) }
         await applyBatched(delta.itemRatings) { applyItemRatingChange($0) }
         await applyBatched(delta.savedCombinations) { applySavedCombinationChange($0) }
+        await applyBatched(delta.analyticsSnapshots) { applyAnalyticsSnapshotChange($0) }
+        await applyBatched(delta.recommendationAnalyticsSnapshots) { applyRecommendationAnalyticsSnapshotChange($0) }
+        await applyBatched(delta.wornLogEntries) { applyWornLogEntryChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -675,6 +688,60 @@ final class WardrobeSyncCoordinator {
         upsertCleanSyncMetadata(entityType: .savedCombination, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
     }
 
+    /// Unlike the other `apply*Change` methods, this also drops any other
+    /// local row sharing the incoming `periodKey` — two devices can each
+    /// independently mint their own fresh id for the same not-yet-synced
+    /// period (`WardrobeRepository.upsertAnalyticsSnapshot` only dedupes
+    /// against what's already local), so a plain id-keyed apply could
+    /// otherwise leave two rows claiming the same period after a pull.
+    /// Snapshot rows are a recomputed cache, not user-authored data, so
+    /// resolving this by simply keeping the incoming (server-confirmed) row
+    /// is an acceptable simplification — no multi-writer merge needed.
+    private func applyAnalyticsSnapshotChange(_ change: PulledChange<AnalyticsSnapshotDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.analyticsSnapshot, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<AnalyticsSnapshot>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto {
+            let periodKey = dto.periodKey
+            let staleDescriptor = FetchDescriptor<AnalyticsSnapshot>(predicate: #Predicate { $0.periodKey == periodKey })
+            for stale in (try? modelContext.fetch(staleDescriptor)) ?? [] { modelContext.delete(stale) }
+            if let model = dto.toModel() { modelContext.insert(model) }
+        }
+        upsertCleanSyncMetadata(entityType: .analyticsSnapshot, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
+    /// Same "one row per period" reconciliation as `applyAnalyticsSnapshotChange`
+    /// above.
+    private func applyRecommendationAnalyticsSnapshotChange(_ change: PulledChange<RecommendationAnalyticsSnapshotDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.recommendationAnalyticsSnapshot, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<RecommendationAnalyticsSnapshot>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto {
+            let periodKey = dto.periodKey
+            let staleDescriptor = FetchDescriptor<RecommendationAnalyticsSnapshot>(predicate: #Predicate { $0.periodKey == periodKey })
+            for stale in (try? modelContext.fetch(staleDescriptor)) ?? [] { modelContext.delete(stale) }
+            if let model = dto.toModel() { modelContext.insert(model) }
+        }
+        upsertCleanSyncMetadata(entityType: .recommendationAnalyticsSnapshot, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
+    private func applyWornLogEntryChange(_ change: PulledChange<WornLogEntryDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.wornLogEntry, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<WornLogEntry>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto, let model = dto.toModel() { modelContext.insert(model) }
+        upsertCleanSyncMetadata(entityType: .wornLogEntry, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
     /// Splits a `PulledChange` into its common parts — `dto` is `nil` for
     /// `.deleted`, since a tombstone has nothing to materialize.
     private func unpack<DTO>(_ change: PulledChange<DTO>) -> (id: String, updatedAt: Date, dto: DTO?) {
@@ -794,3 +861,6 @@ extension ItemFeedbackDTO: IdentifiableDTOField { var idValue: String { id } }
 extension PairFeedbackDTO: IdentifiableDTOField { var idValue: String { id } }
 extension ItemRatingDTO: IdentifiableDTOField { var idValue: String { id } }
 extension SavedCombinationDTO: IdentifiableDTOField { var idValue: String { id } }
+extension AnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id } }
+extension RecommendationAnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id } }
+extension WornLogEntryDTO: IdentifiableDTOField { var idValue: String { id } }

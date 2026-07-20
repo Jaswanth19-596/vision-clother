@@ -52,4 +52,8 @@ enum ProxyConfig {
     /// caps server-side, so the client never hardcodes its own copy of
     /// those numbers. See `Services/EntitlementLimitsService.swift`.
     static var entitlementLimitsURL: URL { baseURL.appendingPathComponent("entitlement/limits") }
+    /// Backed by `backend/functions/src/routes/analyticsConfig.ts` —
+    /// resolves Analytics & Insights confidence/unlock thresholds
+    /// server-side. See `Services/AnalyticsConfigService.swift`.
+    static var analyticsConfigURL: URL { baseURL.appendingPathComponent("analytics/config") }
 }

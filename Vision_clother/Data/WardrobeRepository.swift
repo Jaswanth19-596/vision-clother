@@ -31,6 +31,13 @@ struct OutfitRatingSubmission {
     /// "What would you change?" checklist (Level 3, Stylist Intelligence
     /// Engine ADR) — empty when nothing was flagged.
     var changeReasons: Set<OutfitChangeReason> = []
+    /// Analytics & Insights, Phase 3 — Better Feedback Collection. All
+    /// optional/defaulted, same "don't force it" posture as `changeReasons`.
+    var likeReasons: Set<OutfitLikeReason> = []
+    var occasion: OutfitOccasion?
+    var wouldBuySimilar: Bool?
+    var savedForInspiration: Bool = false
+    var replacementSuggestion: ReplacementSuggestion?
 }
 
 @MainActor
@@ -137,6 +144,24 @@ protocol WardrobeRepository {
     /// the user acted on, e.g. via `startTryOn`) as selected. No-ops if no
     /// matching impression row exists.
     func recordSelection(outfitID: UUID) throws
+
+    // MARK: - Analytics & Insights (Phase 2)
+
+    /// Every locally-known snapshot, most recent period first —
+    /// `Domain/AnalyticsAggregator.swift` (later phase) reads this for
+    /// cross-device first-paint before its own on-device recompute lands.
+    func fetchAnalyticsSnapshots() throws -> [AnalyticsSnapshot]
+    /// Upserts by `periodKey` — one row per computed period, never a
+    /// duplicate for an already-computed one.
+    func upsertAnalyticsSnapshot(periodKey: String, payloadJSON: String) throws
+    /// Internal-only Recommendation Analytics rollup — see
+    /// `Models/RecommendationAnalyticsSnapshot.swift`.
+    func fetchRecommendationAnalyticsSnapshots() throws -> [RecommendationAnalyticsSnapshot]
+    func upsertRecommendationAnalyticsSnapshot(periodKey: String, shownCount: Int, selectedCount: Int) throws
+
+    /// The "Wore this" quick action — see `Models/WornLogEntry.swift`.
+    func fetchWornLogEntries() throws -> [WornLogEntry]
+    func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws
 }
 
 @MainActor
@@ -650,7 +675,12 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             practicality: submission.practicality,
             favoriteItemID: submission.favoriteItemID,
             weakestItemID: submission.weakestItemID,
-            changeReasons: Array(submission.changeReasons)
+            changeReasons: Array(submission.changeReasons),
+            likeReasons: Array(submission.likeReasons),
+            occasion: submission.occasion,
+            wouldBuySimilar: submission.wouldBuySimilar,
+            savedForInspiration: submission.savedForInspiration,
+            replacementSuggestion: submission.replacementSuggestion
         ))
         try modelContext.save()
     }
@@ -825,5 +855,47 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         event.selectedAt = .now
         try modelContext.save()
         MLLog.logger.notice("[AI-Stylist-ML] selection recorded: outfit=\(outfitID, privacy: .public) rank=\(event.rank, privacy: .public)")
+    }
+
+    // MARK: - Analytics & Insights (Phase 2)
+
+    func fetchAnalyticsSnapshots() throws -> [AnalyticsSnapshot] {
+        try modelContext.fetch(FetchDescriptor<AnalyticsSnapshot>(sortBy: [SortDescriptor(\.periodKey, order: .reverse)]))
+    }
+
+    func upsertAnalyticsSnapshot(periodKey: String, payloadJSON: String) throws {
+        let descriptor = FetchDescriptor<AnalyticsSnapshot>(predicate: #Predicate { $0.periodKey == periodKey })
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.payloadJSON = payloadJSON
+            existing.computedAt = .now
+        } else {
+            modelContext.insert(AnalyticsSnapshot(periodKey: periodKey, payloadJSON: payloadJSON))
+        }
+        try modelContext.save()
+    }
+
+    func fetchRecommendationAnalyticsSnapshots() throws -> [RecommendationAnalyticsSnapshot] {
+        try modelContext.fetch(FetchDescriptor<RecommendationAnalyticsSnapshot>(sortBy: [SortDescriptor(\.periodKey, order: .reverse)]))
+    }
+
+    func upsertRecommendationAnalyticsSnapshot(periodKey: String, shownCount: Int, selectedCount: Int) throws {
+        let descriptor = FetchDescriptor<RecommendationAnalyticsSnapshot>(predicate: #Predicate { $0.periodKey == periodKey })
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.shownCount = shownCount
+            existing.selectedCount = selectedCount
+            existing.computedAt = .now
+        } else {
+            modelContext.insert(RecommendationAnalyticsSnapshot(periodKey: periodKey, shownCount: shownCount, selectedCount: selectedCount))
+        }
+        try modelContext.save()
+    }
+
+    func fetchWornLogEntries() throws -> [WornLogEntry] {
+        try modelContext.fetch(FetchDescriptor<WornLogEntry>(sortBy: [SortDescriptor(\.wornAt, order: .reverse)]))
+    }
+
+    func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws {
+        modelContext.insert(WornLogEntry(savedCombinationID: savedCombinationID, itemIDs: itemIDs))
+        try modelContext.save()
     }
 }

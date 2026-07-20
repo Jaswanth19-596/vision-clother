@@ -531,7 +531,7 @@ struct ProfileView: View {
                     ForEach(Array(buckets.enumerated()), id: \.offset) { index, bucket in
                         if bucket.count > 0 {
                             Capsule()
-                                .fill(ProfileChartPalette.categorical[index % ProfileChartPalette.categorical.count])
+                                .fill(VCChartPalette.categorical[index % VCChartPalette.categorical.count])
                                 .frame(width: CGFloat(bucket.count) / CGFloat(total) * 240, height: 8)
                         }
                     }
@@ -541,7 +541,7 @@ struct ProfileView: View {
                     ForEach(Array(buckets.enumerated()), id: \.offset) { index, bucket in
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(ProfileChartPalette.categorical[index % ProfileChartPalette.categorical.count])
+                                .fill(VCChartPalette.categorical[index % VCChartPalette.categorical.count])
                                 .frame(width: 8, height: 8)
                             Text("\(bucket.label) (\(bucket.count))")
                                 .font(.caption)
@@ -571,7 +571,7 @@ struct ProfileView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Capsule()
-                            .fill(ProfileChartPalette.barFill)
+                            .fill(VCChartPalette.barFill)
                             .frame(width: max(20, CGFloat(pair.score) * 200), height: 5)
                         if pair.recentlyDisliked {
                             Text("Recently disliked in an outfit")

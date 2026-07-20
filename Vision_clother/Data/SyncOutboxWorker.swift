@@ -176,6 +176,12 @@ final class SyncOutboxWorker {
             AppLog.debug(.sync, "push: dropping legacy swipeEvent outbox row \(row.entityID)")
         case .visualPreferenceState:
             try await syncService.pushVisualPreferenceState(decoder.decode(VisualPreferenceStateDTO.self, from: payload), uid: uid)
+        case .analyticsSnapshot:
+            try await syncService.pushAnalyticsSnapshot(decoder.decode(AnalyticsSnapshotDTO.self, from: payload), uid: uid)
+        case .recommendationAnalyticsSnapshot:
+            try await syncService.pushRecommendationAnalyticsSnapshot(decoder.decode(RecommendationAnalyticsSnapshotDTO.self, from: payload), uid: uid)
+        case .wornLogEntry:
+            try await syncService.pushWornLogEntry(decoder.decode(WornLogEntryDTO.self, from: payload), uid: uid)
         }
     }
 

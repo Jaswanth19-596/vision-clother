@@ -241,6 +241,47 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.recordSelection(outfitID: outfitID)
     }
 
+    // MARK: - Analytics & Insights (Phase 2)
+
+    func fetchAnalyticsSnapshots() throws -> [AnalyticsSnapshot] {
+        try underlying.fetchAnalyticsSnapshots()
+    }
+
+    func upsertAnalyticsSnapshot(periodKey: String, payloadJSON: String) throws {
+        try underlying.upsertAnalyticsSnapshot(periodKey: periodKey, payloadJSON: payloadJSON)
+        if let snapshot = try underlying.fetchAnalyticsSnapshots().first(where: { $0.periodKey == periodKey }) {
+            markDirty(.analyticsSnapshot, entityID: snapshot.id, dto: AnalyticsSnapshotDTO.from(snapshot))
+        }
+    }
+
+    func fetchRecommendationAnalyticsSnapshots() throws -> [RecommendationAnalyticsSnapshot] {
+        try underlying.fetchRecommendationAnalyticsSnapshots()
+    }
+
+    func upsertRecommendationAnalyticsSnapshot(periodKey: String, shownCount: Int, selectedCount: Int) throws {
+        try underlying.upsertRecommendationAnalyticsSnapshot(periodKey: periodKey, shownCount: shownCount, selectedCount: selectedCount)
+        if let snapshot = try underlying.fetchRecommendationAnalyticsSnapshots().first(where: { $0.periodKey == periodKey }) {
+            markDirty(.recommendationAnalyticsSnapshot, entityID: snapshot.id, dto: RecommendationAnalyticsSnapshotDTO.from(snapshot))
+        }
+    }
+
+    // MARK: - Wore This quick action
+
+    func fetchWornLogEntries() throws -> [WornLogEntry] {
+        try underlying.fetchWornLogEntries()
+    }
+
+    func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws {
+        try underlying.logWorn(savedCombinationID: savedCombinationID, itemIDs: itemIDs)
+        // `fetchWornLogEntries()` is newest-first (`wornAt` descending) — the
+        // row `underlying` just inserted (`wornAt: .now`) is reliably
+        // `.first`, same technique `recordItemRating` uses via
+        // `fetchItemRatings(for:)` to recover the id SwiftData minted.
+        if let entry = try underlying.fetchWornLogEntries().first {
+            markDirty(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
+        }
+    }
+
     // MARK: - Outbox bookkeeping
 
     private func markDirty(_ type: SyncEntityType, entityID: UUID, dto: some Encodable) {

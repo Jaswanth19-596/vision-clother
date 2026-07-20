@@ -2,6 +2,546 @@
 
 ---
 
+## 2026-07-19 — Analytics & Insights, Phase 10: Style DNA (Style sub-tab) — feature complete
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Ninth and final implementation slice of Analytics & Insights, closing out
+the approved Phase 1 plan's execution order. All 10 phases (architecture →
+backend/infra → feedback improvements → Overview → Favorite Colors →
+interactive charts → Trends → Wardrobe Insights → Shopping Insights → Style
+DNA) are now shipped.
+
+### What shipped
+1. **`Domain/StyleDNAScorer.swift`** — 12 named 0-100 spectrum scores (50 =
+   neutral/no lean), each derived from a specific real signal, never an
+   invented number: Color Boldness, Pattern Adventurousness, Formality
+   Lean, Silhouette Consistency, and Fabric Weight Lean all read from
+   `AttributePreferenceProfile`'s learned affinity maps (two computation
+   shapes: "difference" dimensions default a missing affinity to neutral
+   0.5, same convention `affinityBonus` already uses; "weighted centroid"
+   dimensions use only affinity keys with real data, since defaulting
+   missing bands to neutral would flatten the centroid regardless of how
+   lopsided the real signal is); Signature Style Strength and Color
+   Palette Breadth also read `AttributePreferenceProfile`; Wear Loyalty
+   reads raw `WornLogEntry` concentration (top-20%-of-worn-items' share of
+   total wears); Practicality Orientation, Confidence Boost, and Occasion
+   Versatility read detailed `OutfitFeedback` fields (the latter from
+   Phase 3's `occasionRaw`); Comfort Priority reads raw `ItemRating`. The
+   whole section is gated behind `AnalyticsConfigResponse.styleDNAMinRatings`
+   (added in Phase 2, unused until now) — locked with an honest "rate N
+   more" nudge below threshold, all 12 scores plus a stored real "why"
+   sentence per score above it.
+2. **`StyleViewModel.swift`** — now computes a `styleDNASnapshot` in the
+   same pass as the color snapshot, reusing the `attributeProfile` already
+   fetched via `WardrobeRepository.fetchFeedbackHistory()` — no duplicate
+   computation.
+3. **`StyleView.swift`** — new "Style DNA" card appended below Favorite
+   Colors (added a `wornLogEntries` `@Query`, since Style DNA needed it and
+   nothing on this screen had queried it before): all 12 dimensions as a
+   `RankedBarShareChart` (reusing Phase 6's chart component — each score
+   passed as `score/100`), plus the "why" text for the 3 most distinctive
+   dimensions (largest deviation from neutral 50) surfaced below it.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. One thing caught and fixed during implementation: `styleDNACard`'s locked-state nudge initially referenced the view's `viewModel` property directly, but that property is `StyleViewModel?` (optional) at the call site inside a helper method — not the body's locally-shadowed non-optional `viewModel` — fixed with `viewModel?.thresholds ?? .conservativeDefault`. Simulator walkthrough of the full Insights tab (all 5 phases 4–10 of UI) is still deferred at the user's request across this entire session — recommended as the first thing to do next, now that every phase is shipped and there's a complete surface to exercise end-to-end. Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 9: Shopping Insights (folded into the Wardrobe sub-tab)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Eighth implementation slice of Analytics & Insights, continuing the
+approved Phase 1 plan's execution order right after Phase 8's Wardrobe
+Insights. Per the plan, Shopping Insights isn't a separate sub-tab — it
+folds into the same Wardrobe screen as a new card, since suggestions are
+derived directly from the wardrobe-balance data Phase 8 already computes.
+
+### What shipped
+1. **`Domain/ShoppingInsightsAggregator.swift`** — pure, NaN-safe
+   (Domain/CLAUDE.md) aggregation that takes Phase 8's already-computed
+   `WardrobeInsightsSnapshot` as input rather than recomputing wear
+   counts/redundancy itself. Every suggestion is a literal count-based
+   fact, never a guess at what the user "needs": (1) seasonal coverage gaps
+   — for each of the 3 required slots (top/bottom/footwear) × 3 seasons,
+   zero real items tagged for that combination is a real, reportable gap;
+   (2) the bottleneck slot Phase 8 already identifies, rephrased as an
+   actionable "consider adding X" line; (3) a "don't overbuy" suggestion
+   from Phase 8's largest redundant group (≥3 items), only surfaced when
+   there's enough wear data to know the duplicates are genuinely underused,
+   not just "you own multiples." Capped at 4 suggestions, gated on the same
+   `wardrobeInsightsMinItems` threshold Phase 8 already uses — no new
+   config fields needed.
+2. **`WardrobeInsightsViewModel.swift`** — now computes the shopping
+   snapshot right after the wardrobe snapshot each recompute, passing the
+   latter in directly (no redundant work).
+3. **`WardrobeInsightsView.swift`** — new "Shopping Suggestions" card,
+   appended after Closet Balance, shown only when there's at least one real
+   suggestion.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Simulator walkthrough still deferred at the user's request. Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 8: Wardrobe Insights (Wardrobe sub-tab)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Seventh implementation slice of Analytics & Insights, continuing the
+approved Phase 1 plan's execution order after Phase 7's Trends. Phase 9
+(Shopping Insights) stays a separate follow-up phase even though it shares
+this same sub-tab, per the plan's numbered ordering.
+
+### What shipped
+1. **`Domain/WardrobeInsightsAggregator.swift`** — pure, NaN-safe
+   (Domain/CLAUDE.md) aggregation over `WardrobeItem` + `WornLogEntry` only:
+   utilization rate (% of real items with ≥1 logged wear), most-worn /
+   least-worn item lists, redundant-item groups (items sharing the same
+   slot + color vibe + pattern — a real attribute-duplication signal, not
+   an invented similarity score — sorted most-worn-first within each group
+   so the view can call out "only 1 of these 3 gets worn"), and closet
+   balance (per-slot counts via the existing `AnalyticsAggregator.shareBreakdown`,
+   plus a bottleneck callout: the required slot — top/bottom/footwear, via
+   the existing `Slot.isRequired` — with the fewest items, since that's
+   what actually caps how many complete outfits the wardrobe can produce).
+   Utilization/most-worn/least-worn are all gated on
+   `AnalyticsConfigResponse.wardrobeInsightsMinWornLogs`; the whole screen
+   is gated on `wardrobeInsightsMinItems` — both config fields added in
+   Phase 2 for exactly this, unused until now.
+2. **`Features/Insights/WardrobeInsightsView.swift` + `WardrobeInsightsViewModel.swift`**
+   — utilization stat, most-worn/rarely-worn thumbnail lists (reusing
+   `ClosetView`'s `CachedWardrobeImage`-with-color-fallback pattern),
+   redundant-items list, and a closet-balance chart (reusing Phase 6's
+   `RankedBarShareChart`) with the bottleneck text callout. Two distinct
+   honest empty states: no items at all, vs. items present but below
+   `wardrobeInsightsMinItems`.
+3. **`InsightsView.swift`** — wired the Wardrobe segment.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Simulator walkthrough still deferred at the user's request. Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 7: Style Trends (Trends sub-tab)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Sixth implementation slice of Analytics & Insights, continuing straight
+through the approved Phase 1 plan's execution order after Phase 6's chart
+infrastructure.
+
+### Design decision: trends track engagement frequency, not per-bucket rating averages
+The spec asks for "evolution charts (color/category/pattern/style)."
+`WardrobeItem` has no acquisition date, so wardrobe *composition* still
+isn't time-series data (same scope cut as Phases 4/5) — only real per-event
+timestamps can be plotted. Considered two honest options: (a) per-bucket
+average rating (e.g. "average color-harmony star for earth-tone items in
+June"), or (b) per-bucket engagement count (how often you rated/wore
+items of that color/category/pattern/style in June). Went with (b):
+per-bucket sample sizes are typically tiny for most users, and averaging a
+handful of stars per bucket would produce a noisier, less honest line than
+a plain count. Every point plotted traces to a real `ItemRating.recordedAt`,
+detailed `OutfitFeedback.recordedAt` (joined to its `SavedCombination`'s
+items), or `WornLogEntry.wornAt` — the same three signals Phase 4's
+Overview activity deltas already draw from.
+
+### What shipped
+1. **`Domain/TrendsAggregator.swift`** — pure, NaN-safe (Domain/CLAUDE.md)
+   aggregation: flattens the three engagement sources into timestamped
+   `(date, item)` events, divides the selected `AnalyticsTimeRange` into 6
+   equal-width buckets (`.allTime` anchors its start to the earliest real
+   event instead of `.distantPast`, avoiding one degenerate final bucket),
+   picks the top 3 most-frequent values per dimension (color vibe / slot /
+   pattern / style tag) over the whole interval — fixed draw order, never
+   re-sorted per bucket — and counts each series' engagement events per
+   bucket. Gated on the existing `AnalyticsConfigResponse.trendsMinDataPoints`
+   (added in Phase 2 for exactly this) so a chart never renders on too few
+   real events; the caller shows an honest empty state instead.
+2. **`Features/Insights/InsightCharts.swift`** gained `TrendLineChart` — a
+   multi-series Swift Charts `LineMark` component. The one other genuine
+   categorical-color case in this feature (besides Phase 6's
+   `PeriodComparisonChart`): up to 3 series share the same x-axis (bucket)
+   positions, so color is the only way to disambiguate them, using
+   `VCChartPalette.categorical` in the aggregator's fixed frequency-rank
+   order with Swift Charts' automatic `foregroundStyle(by:)` legend.
+3. **`Features/Insights/TrendsView.swift` + `TrendsViewModel.swift`** — four
+   cards (Color/Category/Pattern/Style Trend), each either a `TrendLineChart`
+   or an honest "rate more outfits and log wears" empty state per
+   `hasEnoughData`. Same `@Query`-raw-rows-in / pure-aggregator-out shape as
+   every other Insights screen.
+4. **`InsightsView.swift`** — wired the Trends segment to `TrendsView`
+   instead of the "Coming Soon" placeholder.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded (one real compile error caught and fixed along the way: `TrendChart`'s nested `SeriesPoint` needed explicit `Equatable` conformance for the parent struct's synthesized `Equatable` to compile). Simulator walkthrough still deferred at the user's request. Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 6: Interactive charts (Swift Charts)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Fifth implementation slice of Analytics & Insights, continuing straight
+through the approved Phase 1 plan's execution order after Phase 5's
+Favorite Colors. Invoked the `dataviz` skill before writing any chart code,
+per its own trigger rule.
+
+### What shipped
+1. **Palette promotion**: `Features/Profile/ProfileChartPalette.swift` →
+   `DesignSystem/VCChartPalette.swift` (enum renamed `ProfileChartPalette` →
+   `VCChartPalette`), so Profile and Insights both depend on one
+   DesignSystem-level definition instead of Insights reaching into a
+   Profile-owned file. Re-validated the categorical palette with the
+   dataviz skill's `scripts/validate_palette.js` before reusing it: light
+   mode passes lightness/chroma/CVD-separation, WARNs on contrast-vs-surface
+   for 2 of the 4 hues (meaning those two need visible direct labels rather
+   than color alone — already this codebase's convention for every chart
+   row); dark mode fully passes. Updated the 3 call sites in
+   `ProfileView.swift` plus Phase 4/5's Insights references.
+2. **`Features/Insights/InsightCharts.swift`** — two reusable Swift Charts
+   components: `RankedBarShareChart` (single-hue horizontal `BarMark` for a
+   ranked/magnitude series — one bar per row, direct percentage labels
+   always visible since row counts here are small, tap-to-highlight via
+   `chartOverlay`) and `PeriodComparisonChart` + `PeriodLegend` (the one
+   genuine two-series comparison in this feature — current vs. previous
+   period — current highlighted in the brand hue, previous in muted gray,
+   with a single shared legend rendered once by the hosting card rather than
+   per chart instance).
+3. **Rewired both existing Insights screens** off their Phase 4/5
+   hand-rolled `GeometryReader`/`Capsule` bars: `OverviewView.swift`'s Top
+   Colors/Top Categories composition cards and Activity card (now
+   `PeriodComparisonChart` per metric) now use real Swift Charts;
+   `StyleView.swift`'s Color Vibe Breakdown, Dark/Medium/Light, Warm/Cool,
+   and Favorite Combos sections now use `RankedBarShareChart`.
+
+### Scope note — corrected which sections get which chart type
+The Phase 6 plan as proposed grouped Dark/Medium/Light and Warm/Cool/Neutral
+under "categorical chart with a legend," alongside the genuinely
+comparative Activity current-vs-previous metric. On implementation, that
+grouping didn't hold up against the dataviz skill's own rule ("color
+follows the entity, never decoration for its own sake"): Dark/Medium/Light
+and Warm/Cool/Neutral are single-series ranked breakdowns already
+disambiguated by their axis label, identical in structure to Top
+Colors/Color Vibe Breakdown — so they use the single-hue
+`RankedBarShareChart`, not a colored/legended chart. Only Activity
+(current vs. previous period) is a real two-series comparison where color
+carries meaning beyond the axis label, so only it got
+`PeriodComparisonChart`'s two-color treatment. Flagging this since it
+refines (not changes the intent of) what was approved.
+
+Swatch galleries (Style) stay as literal color chips — nothing to
+chart-ify, they already are the real colors. Seasonal Colors stays a text
+list — proper time-series charting arrives with Phase 7's Trends.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Simulator walkthrough still deferred at the user's request (continuing straight through the phase sequence). Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 5: Favorite Colors (Style sub-tab)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Fourth implementation slice of Analytics & Insights, continuing the approved
+Phase 1 plan's execution order right after Phase 4's Overview tab. Favorite
+Colors is the spec's highest-priority item, so this phase goes to full depth
+rather than a thin slice.
+
+### What shipped
+1. **`Domain/ColorInsightsAggregator.swift`** — pure, NaN-safe aggregation
+   (Domain/CLAUDE.md) covering every angle the spec asks for, all from real
+   data already on `WardrobeItem`/`SavedCombination`, none invented:
+   swatch gallery (actual distinct hex chips from `colorProfile.primaryHex`,
+   deduplicated exactly, sized by frequency), color-vibe category
+   composition (reuses `AnalyticsAggregator.shareBreakdown`, now `internal`
+   instead of `private` so both aggregators share one count/sort/percentage
+   implementation), dark/light split (reuses `Domain/ColorHarmony.swift`'s
+   existing HSL parser's lightness component — no new luminance math),
+   warm/cool/neutral breakdown (from the existing optional `Undertone`
+   field), seasonal color affinity (top colors per `Season` using
+   `WardrobeItem.seasonality`), primary-vs-accent usage (% of items with a
+   `secondaryHex`, plus its own swatch gallery), favorite color combos
+   (co-occurring color-vibe pairs across `SavedCombination` — every saved
+   outfit is an implicit "I liked this enough to keep it" signal — windowed
+   by `savedAt`, ghost elements excluded), and a natural-language "why"
+   insight contrasting wardrobe composition (what you own) against learned
+   taste affinity (what you rate highly, via the existing
+   `AttributePreferenceProfile.colorVibeAffinity`) — gated on
+   `AnalyticsConfigResponse.stillLearningBelowRatings` so it never makes a
+   taste claim before there's enough rating data.
+2. **`Features/Insights/StyleView.swift` + `StyleViewModel.swift`** — the
+   Style sub-tab's screen. Unlike `OverviewViewModel`, this needs learned
+   taste affinity, so `StyleViewModel` calls the existing
+   `WardrobeRepository.fetchFeedbackHistory()` (already version-cached)
+   rather than re-deriving `AttributePreferenceProfile` itself.
+   `ratingSampleSize` for confidence gating uses the identical definition
+   Overview's snapshot does (`itemRatings.count` + detailed
+   `outfitFeedbacks.count`, passed in from `StyleView`'s own `@Query`
+   results), keeping confidence gating consistent across sub-tabs.
+3. **`InsightsView.swift`** — wired the Style segment to `StyleView`
+   instead of the "Coming Soon" placeholder.
+
+### Scope notes
+Composition sections (swatches, dark/light, warm/cool, seasonal,
+primary/accent) are current-wardrobe snapshots, not time-windowed —
+`WardrobeItem` has no acquisition date (same scope cut as Phase 4's
+Overview). The shared `TimeRangeSelector` is used only by the Favorite
+Combos section, the one sub-section with real per-row dates
+(`SavedCombination.savedAt`). Style DNA, mapped to this same Style sub-tab
+per the Phase 1 plan, stays deferred to Phase 10.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Simulator walkthrough deferred at the user's request (continuing straight through the phase sequence); this phase is purely additive (new Domain file, new feature files, one `switch` case rewired in `InsightsView.swift`) so no regression risk to existing screens. Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 4: Overview tab (5th "Insights" nav tab, on-device aggregation engine)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Third implementation slice of Analytics & Insights, following the approved
+Phase 1 plan's execution order (Phase 2 backend/infra scaffolding shipped
+2026-07-18, Phase 3 feedback collection shipped 2026-07-19 earlier). This is
+the first phase with a real user-facing surface — the Insights tab shell and
+its first sub-tab, Overview — and the first phase that reads the data Phase
+2/3 wired up.
+
+### What shipped
+1. **`Domain/AnalyticsTimeRange.swift`** — the shared 30d/3mo/6mo/1yr/all-time
+   selector every Insights sub-tab will reuse (per the Phase 1 plan's "built
+   once" note), with `currentInterval`/`previousInterval` for
+   current-vs-previous-period comparisons. Pure, no I/O.
+2. **`Domain/AnalyticsAggregator.swift`** — pure, NaN-safe, on-device
+   aggregation (Domain/CLAUDE.md isolation rules) building an
+   `OverviewSnapshot` from `WardrobeItem`/`ItemRating`/`OutfitFeedback`/
+   `WornLogEntry`: current wardrobe color/category composition, rating and
+   wear-log activity deltas (current period vs. previous), a one-sentence
+   style summary, and up to 3 natural-language discoveries. Deliberately
+   does **not** report a wardrobe-growth stat — `WardrobeItem` has no
+   acquisition-date field, and this phase didn't add one just to synthesize
+   a number (see the Phase 4 plan's scope note); every figure traces back to
+   a real timestamped row.
+3. **`Domain/AnalyticsLog.swift`** — dedicated `[Insights]` logger, mirroring
+   `Domain/MLLog.swift`'s pattern (`Diagnostics/AppLog.swift` is explicitly
+   off-limits below the Domain layer).
+4. **`Features/Insights/`** — new feature folder: `InsightsView` (the 5th tab
+   shell, segmented control across Overview/Style/Trends/Wardrobe/Discover
+   per the Phase 1 plan's nav mapping — only Overview is functional this
+   phase, the rest show a "Coming Soon" `ContentUnavailableView` placeholder
+   so the nav shell is complete for later phases), `OverviewView` +
+   `OverviewViewModel` (the glanceable summary screen — composition bars,
+   activity deltas with a confidence badge via `Domain/AnalyticsConfidence.swift`,
+   discoveries card with an honest empty-state nudge when there isn't enough
+   data yet), and `TimeRangeSelector` (shared segmented picker wrapping
+   `AnalyticsTimeRange`). `OverviewView` reads `WardrobeItem`/`ItemRating`/
+   `OutfitFeedback`/`WornLogEntry` via `@Query` directly — same "declarative
+   binding, not a Service call" convention `Features/Profile/ProfileView.swift`
+   already established for full-history aggregate reads — and hands the raw
+   rows to `OverviewViewModel.recompute(...)`, which also fetches
+   `AnalyticsConfigResponse` via the existing `AnalyticsConfigService`.
+5. **`RootTabView.swift`** — added the 5th `.tabItem` ("Insights",
+   `chart.bar.xaxis`), staying within Apple's un-collapsed 5-tab limit per
+   the Phase 1 plan's nav decision.
+
+### Scope cut, flagged not silently skipped
+Not yet pushing to `AnalyticsSnapshot` (the Firestore cross-device cache from
+Phase 2) — deferred until more phases land so the `payloadJSON` shape isn't
+locked in on a single metric. On-device recompute is cheap and instant
+either way; cross-device first-paint caching can be added later without
+reworking the aggregation math itself.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Simulator walkthrough of the new tab and the still-unexercised Phase 3 UI was deferred at the user's request (moving straight to Phase 5); no functional regressions expected since this phase is purely additive (new tab, new files, one new tab-item line in `RootTabView.swift`). Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-19 — Analytics & Insights, Phase 3: Better Feedback Collection (symmetric like-reason chips, occasion tag, would-buy/save-for-inspiration, replacement suggestion, "Wore This" quick action)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Second implementation slice of Analytics & Insights, following the approved
+Phase 1 plan's execution order (Phase 2 backend/infra scaffolding shipped
+2026-07-18). This phase collects richer, still-lightweight feedback signals
+that later phases (Wardrobe Insights, Style Trends, Style DNA) will read, and
+fixes a real gap the Phase 1 analysis flagged: the app had no real-world wear
+signal at all, only recommendation-selection proxies.
+
+### What shipped
+1. **`OutfitFeedback` gained five optional/defaulted columns**
+   (`Models/FeedbackEvent.swift`): `likeReasonsRaw` (new `OutfitLikeReason`
+   enum — the positive-side counterpart to the existing `OutfitChangeReason`,
+   kept deliberately symmetric per the Stylist Intelligence Engine's
+   "symmetric taste injection" precedent), `occasionRaw` (new
+   `OutfitOccasion` tag — distinct from the existing `occasionMatch`
+   satisfaction rating; this records *what* the occasion was), `wouldBuySimilar`
+   (tri-state `Bool?` — `nil` is genuinely "unanswered," not "No"),
+   `savedForInspiration` (plain `Bool`), and `replacementSuggestionRaw` (new
+   bounded `ReplacementSuggestion` enum — a structured alternative to a
+   free-text box for the Weakest Piece pick, matching this feature's
+   "avoid long forms" rule). `SchemaV11` added (`Models/SchemaMigrations.swift`,
+   `SchemaV10` froze the pre-Phase-3 `OutfitFeedback` shape as a nested type
+   per this file's established pattern), purely additive `.lightweight`
+   migration.
+2. **New `WornLogEntry` model** (`Models/WornLogEntry.swift`) — the "Wore
+   This" quick action, a leading swipe action on `Features/Combinations/CombinationsView.swift`'s
+   saved-outfit rows (`CombinationsViewModel.logWorn(_:)`). Event-sourced,
+   append-only, synced like ordinary user-authored feedback (unlike the
+   internal-only `RecommendationImpressionEvent`, which stays local).
+3. **Full Cloud Sync wiring** for `WornLogEntry` and the extended
+   `OutfitFeedback` payload, matching the existing pattern exactly:
+   `SyncEntityType.wornLogEntry`, `WornLogEntryDTO`/extended
+   `OutfitFeedbackDTO` (`Data/Sync/FirestoreDTOs.swift`), push/pull on
+   `Services/WardrobeSyncService.swift` (new `users/{uid}/wornLogEntries`
+   collection, no rules change needed), dispatch in
+   `Data/SyncOutboxWorker.swift`, bootstrap-push/pull-apply in
+   `Data/WardrobeSyncCoordinator.swift`, `WardrobeRepository.fetchWornLogEntries()`/`logWorn(savedCombinationID:itemIDs:)`
+   on both `SwiftDataWardrobeRepository` and the `SyncingWardrobeRepository`
+   decorator (the decorator recovers the SwiftData-minted id via
+   `fetchWornLogEntries().first`, same technique `recordItemRating` already
+   uses, so the pushed DTO's id always matches the local row's id).
+4. **UI** (`Features/Rating/RateCombinationView.swift`/`RateCombinationViewModel.swift`):
+   like-reason chips (shown only when `overallSatisfaction >= 4`, mirroring
+   the existing change-reason checklist's style), an occasion menu picker, a
+   Yes/No/unanswered tri-state chip for "would buy," a plain toggle for
+   "save for inspiration," and a replacement-suggestion checklist shown only
+   when a Weakest Piece is picked — all optional, all one extra tap, no new
+   required steps in the existing rating flow.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. Not run in Simulator (no dev-server/UI-automation tooling invoked this session); the new chips/toggle/swipe-action follow existing, already-verified UI patterns exactly (same `Form`/`Section`/checklist-row idioms already shipped in this same view). Tests skipped per standing project instruction.
+
+---
+
+## 2026-07-18 — Analytics & Insights, Phase 2: backend/infra scaffolding (Style DNA/Trends/Wardrobe/Shopping tabs come in later phases)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+First implementation slice of the Analytics & Insights feature (full spec:
+favorite colors, interactive charts, style trends, richer feedback,
+wardrobe/shopping insights, Style DNA). Phase 1 was an architecture-analysis
+plan (no code) concluding that all analytics math should run **on-device**
+(reusing `WardrobeItem`/`ItemRating`/`OutfitFeedback`/`ItemFeedback`/
+`PairFeedback`/`RecommendationImpressionEvent`, already local and already
+cross-device synced) rather than a new server-computed aggregation pipeline —
+avoiding duplicate logic in TypeScript, avoiding the repo's first
+cross-user-scale scheduled Cloud Function, and getting offline support for
+free. The backend's role is intentionally small: a durable cross-device cache
+of the client's own computation, plus one server-resolved config endpoint.
+This phase builds only the plumbing; Overview/Style/Trends/Wardrobe/Discover
+tab UI and the actual aggregation math land in later phases.
+
+### What shipped
+1. **New SwiftData models** — `Models/AnalyticsSnapshot.swift` (opaque
+   `payloadJSON` blob per computed period, so future metrics never need a
+   schema migration) and `Models/RecommendationAnalyticsSnapshot.swift`
+   (internal-only shown/selected funnel rollup — spec: "implemented
+   internally but should not yet become a major user-facing feature").
+   `SchemaV10` added (`Models/SchemaMigrations.swift`), purely additive
+   `.lightweight` migration; `Vision_clotherApp.swift` now builds its
+   `ModelContainer` from `SchemaV10.models`.
+2. **Full Cloud Sync wiring** for both new tables, matching the existing
+   delta+outbox+conflict-resolution pattern exactly (`Data/CLAUDE.md`):
+   `SyncEntityType` gained `.analyticsSnapshot`/`.recommendationAnalyticsSnapshot`
+   (`Models/SyncMetadata.swift`); new DTOs in `Data/Sync/FirestoreDTOs.swift`;
+   push/pull methods on `Services/WardrobeSyncService.swift` (new Firestore
+   collections `users/{uid}/analyticsSnapshots` and
+   `users/{uid}/recommendationAnalyticsSnapshots`, no rules change needed —
+   the existing generic per-uid catchall already covers them); dispatch cases
+   in `Data/SyncOutboxWorker.swift`; bootstrap-push and pull-apply logic in
+   `Data/WardrobeSyncCoordinator.swift` (the pull-apply path also reconciles
+   the "one row per periodKey" invariant across devices, since two devices
+   can independently mint a snapshot for the same not-yet-synced period);
+   new `WardrobeRepository` methods (`fetch*`/`upsert*ByPeriodKey`) on both
+   `SwiftDataWardrobeRepository` and the `SyncingWardrobeRepository`
+   decorator.
+3. **Backend: `GET /analytics/config`** — `backend/functions/src/analyticsConfig.ts`
+   (canonical thresholds, mirrors `entitlementLimits.ts`) +
+   `routes/analyticsConfig.ts` (fourth deliberate business-logic exception,
+   alongside accountDelete/iapVerify/entitlementLimits), mounted in `app.ts`
+   behind `responseCache`. Resolves confidence/unlock thresholds
+   (`stillLearningBelowRatings`, `highConfidenceAtRatings`,
+   `styleDNAMinRatings`, `trendsMinDataPoints`, `wardrobeInsightsMinItems`,
+   `wardrobeInsightsMinWornLogs`) server-side — not tier-gated (confirmed:
+   advanced analytics ship unlocked for all tiers in this pass).
+4. **iOS client for that endpoint** — `Models/AnalyticsConfigResponse.swift`,
+   `Services/AnalyticsConfigService.swift` (Remote/Mock/AuthGated, mirrors
+   `EntitlementLimitsService.swift` exactly), `ProxyConfig.analyticsConfigURL`,
+   `ServiceFactory.makeAnalyticsConfigService()`.
+5. **`Domain/AnalyticsConfidence.swift`** — shared `ConfidenceLevel`
+   (stillLearning/moderate/high) banding, driven entirely by the fetched
+   config, never a re-literaled threshold.
+
+### Product gap flagged, not yet filled
+No wear-tracking exists anywhere in the app (`lastWorn`/`wearCount`/etc. —
+none). Wardrobe Insights (a later phase) needs a real signal beyond
+recommendation-selection proxies; a lightweight "Wore this" log is planned
+for the Phase 3 feedback-improvements slice, not this one.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — succeeded. No UI surface yet to walk through (infra-only phase); tests skipped per standing project instruction.
+
+---
+
+## 2026-07-18 — UX Fix: User message appeared only after AI response; generic spinner replaced with themed multi-stage loading indicator
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+In `DailyAssistantViewModel.sendTurn`/`performProspectivePurchaseCheck`, the
+UI-facing chat timeline (`rounds: [ConversationRound]`) was only appended to
+*after* `await workTask.value` resolved the full LLM chain — each
+`ConversationRound` bundled the user's text and the AI's outcome together in
+one struct, appended in the same `switch outcome` block. So tapping Send
+showed nothing until the whole request/response round trip finished, at
+which point the user's own message and the AI's reply popped in
+simultaneously. Loading itself was a single generic `ProgressView` + static
+"Thinking through your closet…" caption with no indication of which step
+(fetch wardrobe, build catalog, call the LLM, validate picks) was actually
+running.
+
+### Fix
+1. **Immediate message display.** `ConversationRound.Outcome` gained a
+   `.pending` case. `sendTurn`/`performProspectivePurchaseCheck` now append a
+   `.pending` round with the user's text *synchronously*, before any
+   `async`/network work starts — so the user's bubble renders the instant
+   Send is tapped. The same round's `outcome` is mutated in place
+   (`rounds[index].outcome = ...`) once the real result arrives, or the round
+   is removed entirely on failure/timeout/supersession (mirrors the
+   pre-existing no-round-shown-on-failure behavior).
+2. **Themed multi-stage loading indicator.** Added
+   `DailyAssistantViewModel.LoadingStage` (`.analyzingPhoto`,
+   `.fetchingWardrobe`, `.buildingCatalog`, `.consultingStylist`,
+   `.validatingPicks`), each with a label + SF Symbol (`tshirt`,
+   `square.grid.2x2`, `sparkles`, `checkmark.seal`, `camera.viewfinder`).
+   `resolveOutfits`/`resolveProspectivePurchase` set `loadingStage` at each
+   real stage boundary (these already run on the `@MainActor` view model, so
+   no extra hop is needed). `DailyAssistantView`'s new `LoadingStageView`
+   renders the current stage as the assistant side of the latest `.pending`
+   round — right under the user's message, with `symbolEffect(.pulse)` and a
+   crossfade between stages — replacing the old flat spinner in
+   `statusView`, which now only handles `.failed` (loading is inline on the
+   round itself).
+
+### Changes
+
+| File | Change |
+|---|---|
+| `Features/DailyAssistant/DailyAssistantViewModel.swift` | Added `ConversationRound.Outcome.pending`; added `LoadingStage` enum + `var loadingStage`; `sendTurn`/`performProspectivePurchaseCheck` append a `.pending` round synchronously before their `async` work, then mutate it in place or remove it based on outcome; `resolveOutfits`/`resolveProspectivePurchase` set `loadingStage` at each stage boundary |
+| `Features/DailyAssistant/DailyAssistantView.swift` | `roundView` handles `.pending` via new `LoadingStageView`; `statusView` no longer renders a `.loading` case (moved inline); added `LoadingStageView` (pulsing SF Symbol + stage label, crossfades between stages) |
+
+---
+
 ## 2026-07-17 — Fix: Recommendation 401s traced to invalid OpenRouter key, not a secret-encoding bug; upstream error bodies were unlogged
 
 **Status:** ✅ Shipped — Cloud Functions deployed

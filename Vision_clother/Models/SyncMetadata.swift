@@ -54,6 +54,13 @@ enum SyncEntityType: String, Codable {
     /// drains it as a silent no-op.
     case swipeEvent
     case visualPreferenceState
+    /// Analytics & Insights (Phase 2) — see `Models/AnalyticsSnapshot.swift`.
+    case analyticsSnapshot
+    /// Analytics & Insights (Phase 2, internal-only) — see
+    /// `Models/RecommendationAnalyticsSnapshot.swift`.
+    case recommendationAnalyticsSnapshot
+    /// Analytics & Insights (Phase 3) — see `Models/WornLogEntry.swift`.
+    case wornLogEntry
 }
 
 @Model
