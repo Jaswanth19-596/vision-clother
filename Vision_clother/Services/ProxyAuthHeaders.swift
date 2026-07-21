@@ -20,10 +20,26 @@ enum ProxyAuthHeaders {
     /// Cloud Logging line for the same request — echoed back verbatim by the
     /// backend so a caller that logs it here can grep both sides by the same
     /// short id.
+    ///
+    /// `X-Idempotency-Key` (a fresh UUID, same one-per-call cadence as
+    /// `X-Request-Id` above) is required by `backend/functions/src/middleware/idempotency.ts`'s
+    /// `idempotencyGate` on the three quota-gated OpenRouter routes
+    /// (`/openrouter/recommend`, `/openrouter/tryon`, `/openrouter/images`)
+    /// — it's what lets that middleware tell "the app retried this exact
+    /// attempt after a timeout/kill" (safe to dedupe) apart from "this is a
+    /// deliberately new attempt" (e.g. `OutfitRecommendationService`'s
+    /// structured→unstructured fallback, a second call to `current()` with a
+    /// different model/payload, which must get its own key). Harmless on
+    /// routes that don't require it (`/openrouter/chat`, `/pexels/search`,
+    /// the account routes) — those simply ignore the extra header.
     static func current() async throws -> [String: String] {
         do {
             let token = try await AuthService.shared.currentIDToken()
-            return ["Authorization": "Bearer \(token)", "X-Request-Id": AppLog.newRequestID()]
+            return [
+                "Authorization": "Bearer \(token)",
+                "X-Request-Id": AppLog.newRequestID(),
+                "X-Idempotency-Key": UUID().uuidString,
+            ]
         } catch {
             AppLog.error(.network, "ProxyAuthHeaders.current: failed to build auth header — \(String(describing: error))")
             throw error

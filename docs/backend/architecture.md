@@ -30,15 +30,28 @@ These hold API keys server-side and forward requests verbatim — no business lo
 
 | # | Route | Upstream | Middleware |
 |---|---|---|---|
-| 1 | `POST /openrouter/recommend` | `https://openrouter.ai/api/v1/chat/completions` | `responseCache("recommendation")` → `quotaGate("recommendation")` |
-| 2 | `POST /openrouter/tryon` | `https://openrouter.ai/api/v1/chat/completions` | `quotaGate("tryOn")` |
+| 1 | `POST /openrouter/recommend` | `https://openrouter.ai/api/v1/chat/completions` | `idempotencyGate("recommendation")` → `responseCache("recommendation")` → `quotaGate("recommendation")` |
+| 2 | `POST /openrouter/tryon` | `https://openrouter.ai/api/v1/chat/completions` | `idempotencyGate("tryOn")` → `quotaGate("tryOn")` |
 | 3 | `POST /openrouter/chat` | `https://openrouter.ai/api/v1/chat/completions` | _(none beyond global auth + rate limit)_ |
-| 4 | `POST /openrouter/images` | `https://openrouter.ai/api/v1/images` | `quotaGate("tryOn")` |
+| 4 | `POST /openrouter/images` | `https://openrouter.ai/api/v1/images` | `idempotencyGate("tryOn")` → `quotaGate("tryOn")` |
 | 5 | `GET /pexels/search` | `https://api.pexels.com/v1/search` | _(none beyond global auth + rate limit)_ |
 
-Routes 1, 2, and 4 are quota-gated (real generation cost); 3 and 5 are uncapped beyond the global `rateLimit` guardrail. `/openrouter/recommend` and `/openrouter/tryon` reuse the same `openrouterChatRouter` handler as `/openrouter/chat` — the separate mount points exist solely to attach per-feature `quotaGate` and `responseCache` middleware. `/openrouter/images` is the dedicated-Images-API branch the try-on and background-isolation services fall back to when `ModelConfig.isChatCompletionImageModel` is false.
+Routes 1, 2, and 4 are quota-gated (real generation cost); 3 and 5 are uncapped beyond the global `rateLimit` guardrail. `/openrouter/recommend` and `/openrouter/tryon` reuse the same `openrouterChatRouter` handler as `/openrouter/chat` — the separate mount points exist solely to attach per-feature `idempotencyGate`, `quotaGate`, and `responseCache` middleware. `/openrouter/images` is the dedicated-Images-API branch the try-on and background-isolation services fall back to when `ModelConfig.isChatCompletionImageModel` is false.
 
-Each passthrough route: verify Firebase Auth ID token → per-uid rate limit (Firestore counter) → optional quota gate / response cache → loose top-level body-shape check (Zod) → inject the real provider key → forward verbatim → return the upstream status/body unchanged.
+Each passthrough route: verify Firebase Auth ID token → per-uid rate limit (Firestore counter) → optional idempotency gate / quota gate / response cache → loose top-level body-shape check (Zod) → inject the real provider key → forward verbatim → return the upstream status/body unchanged.
+
+### Idempotency protection (routes 1, 2, 4 only)
+
+`middleware/idempotency.ts`'s `idempotencyGate(feature)` sits in front of `quotaGate`/`responseCache` on the three quota-gated routes, closing a real-money concurrency gap: these upstream calls routinely take 60-180s, and a client retry, network flake, or app backgrounding/kill during that window would otherwise re-send the request, debiting quota and paying OpenRouter twice for one user action.
+
+Every request to these three routes must carry an `X-Idempotency-Key` header (iOS: `Services/ProxyAuthHeaders.swift`, a fresh UUID minted once per logical upstream attempt — reused by URLSession-level retries of that same attempt, but never reused across `OutfitRecommendationService`'s structured→unstructured fallback, which is a genuinely different request). Missing the header is a `400`.
+
+Lock doc `idempotencyKeys/{uid}_{idempotencyKey}` (Admin-SDK-only, `firestore.rules` denies all client access — mirrors `processedTransactions/{transactionId}` in `routes/iapVerify.ts`), keyed atomically inside a `runTransaction`, same pattern as that file:
+- Doc missing, or `status: "FAILED"` — lock acquired (`status: "IN_PROGRESS"`), request proceeds to `quotaGate`/upstream.
+- `status: "IN_PROGRESS"` — a duplicate arrived while the first attempt is still in flight: `409 Conflict`, no quota touched, no second upstream call.
+- `status: "COMPLETED"` — the exact response (status/content-type/body) from the original attempt is replayed verbatim; `quotaGate` and OpenRouter are never reached again.
+
+On the request finishing (`res.send` wrapped, not `res.on("finish")`, so the exact response body can be cached for a future replay): a 2xx marks the lock `COMPLETED` with the cached payload; anything else marks it `FAILED` and, if `quotaGate` actually debited usage for this request (`req.quotaDebit`, set by `quota.ts` at the moment of debit), calls `quota.ts`'s `refundQuota` to undo exactly that debit (a plain fast-path count, or a slow-path purchased-balance drawdown) — so a failed paid call never permanently costs the user a recommendation/try-on.
 
 ### Server-side routes with business logic (4)
 

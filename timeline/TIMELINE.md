@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-07-21 — Perf/reliability fix: batched Firestore outbox writes (`WriteBatch`) + bootstrap push no longer re-uploads clean rows
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention — no existing tests touched this sync layer either).
+
+### Problem
+User asked for an analysis of why `WardrobeSyncCoordinator.pushEverythingLocal` fires on sign-in and how outbox pushes are structured, then asked for the resulting refactor. Two issues found:
+1. `Data/SyncOutboxWorker.swift`'s `drainNow` pushed one row at a time via 11 near-identical `pushX(dto:uid:)` methods on `Services/WardrobeSyncService.swift` (5 concurrent individual `setData` calls, not batched) — extra round trips for a large backlog (bootstrap push, or catching up after being offline).
+2. `WardrobeSyncCoordinator.markDirtyForBootstrap` unconditionally re-marked *every* local row dirty on every bootstrap attempt regardless of existing `SyncMetadata` state, so a partially-failed bootstrap (`pushEverythingLocal` returning `fullySynced == false`) caused every retry (`retrySync`/`reconcileIfSignedIn`'s self-heal) to reprocess and re-push the entire local dataset, not just the rows that actually failed — and re-stamped `localUpdatedAt` on already-clean rows in the process.
+
+### Fix
+1. **`Vision_clother/Services/WardrobeSyncService.swift`:** replaced the 11 `pushX(dto:uid:)` methods plus `deleteEntity` (all had exactly one caller) with a single `commitBatch(_ operations: [SyncBatchOperation], uid:)` on the `WardrobeSyncService` protocol. New `SyncBatchOperation` value type (`entityType`/`entityID`/`operation`/`payload`) mirrors `SyncMetadata`'s fields. `FirestoreWardrobeSyncService.commitBatch` resolves each operation's `DocumentReference`, decodes/Firestore-encodes its payload (or builds the tombstone dict for a `.delete`), and adds it to one `Firestore.WriteBatch` per call — one network round trip per chunk instead of per row. `maxBatchSize = 500` (Firestore's hard per-batch cap). `AuthGatedWardrobeSyncService`/`MockWardrobeSyncService` updated to the new single-method surface.
+2. **`Vision_clother/Data/SyncOutboxWorker.swift`:** `drainNow` now chunks eligible dirty rows into groups of up to 500 and commits each chunk via `commitBatch`, with up to 4 chunks concurrent (`maxConcurrentBatches`, replacing the old `maxConcurrentPushes = 5` single-row fan-out). A `WriteBatch` commit is atomic per chunk: on success every row in the chunk is marked clean together (`finalizeSuccess`); on failure every row in the chunk gets its own `attemptCount`/`lastAttemptAt` bumped individually, preserving per-row exponential backoff even though the network call is now batched. Legacy `.swipeEvent` rows are drained locally before chunking (never occupy a batch slot).
+3. **`Vision_clother/Data/WardrobeSyncCoordinator.swift`:** `markDirtyForBootstrap` now skips a row outright when its existing `SyncMetadata.isDirty == false`, leaving `localUpdatedAt` untouched — safe because a clean row surviving into a bootstrap pass can only be there from an earlier bootstrap attempt for this same uid (`wipeLocalMirror` already clears `SyncMetadata` entirely when switching from a *different* previously-mirrored account).
+4. **Docs:** `docs/decisions/resolved-v1.md` (new "Batched Outbox Writes + Bootstrap Push Guard" section, refining the "Cloud Sync" entry's outbox bullet) and `Vision_clother/Data/CLAUDE.md` (Cloud Sync section) updated to describe the batching + bootstrap-guard behavior.
+
+---
+
+## 2026-07-21 — Fix: cache-invalidation gaps in `WardrobeRepository` — several feedback/rating/swipe writes never bumped `WardrobeMutationTracker`
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention).
+
+### Problem
+`SwiftDataWardrobeRepository.fetchFeedbackHistory()` (`Vision_clother/Data/WardrobeRepository.swift`) caches its aggregate and only recomputes when `WardrobeMutationTracker.shared.version` has changed since the cache was built. User reported `recordItemFeedback`/`recordPairFeedback` wrote `ItemFeedback`/`PairFeedback` rows but never called `markMutated()` — so a just-recorded item/pair "liked together" signal stayed invisible to the recommender until some unrelated mutation happened to bump the version.
+
+Auditing every write method in the file for the same gap (per user's ask) turned up four more real instances of the identical bug, all writing a model `fetchFeedbackHistory()` reads without invalidating the cache: `recordItemRating` (writes `ItemRating`), `recordOutfitRating` (writes `OutfitFeedback`), `recordSwipe` (writes `VisualPreferenceState`, read as `history.visualProfile`), and `updateVisualPreferenceState` (same model — currently unreferenced outside the protocol/decorator, but was going to have the identical bug the moment its planned recovery-path caller lands).
+
+One method's omission turned out to be *load-bearing*, not a bug: `saveWardrobeItemEmbedding`'s only current caller is `fetchFeedbackHistory()` itself, mid-recompute, persisting an embedding it just lazily computed for the very cache entry it's about to write — bumping the tracker there would invalidate the fresh cache against itself before the call even returns, forcing a full re-embed on every subsequent call. Left as a bare `modelContext.save()`, now with a doc comment explaining why (this was previously reverted from `saveCombination` for the same class of perf reason — see that method's existing comment).
+
+`deleteCombination` has a related but lower-severity, deliberately-left gap: deleting a `SavedCombination` that already has `OutfitFeedback` rows pointing at it means a cache built before the delete keeps crediting that feedback until another mutation invalidates it. Documented rather than fixed — bumping there would force a full recompute on every combination deletion for a rare, low-severity staleness window.
+
+### Fix
+1. **`Vision_clother/Data/WardrobeRepository.swift`:** added a private `saveAndMarkMutated()` helper (`save` + `WardrobeMutationTracker.shared.markMutated()` in one call) so a new mutating method has to actively opt out of cache invalidation (via a documented bare `modelContext.save()`) rather than silently forgetting it. Routed `save`/`update`/`delete`/`recordOutfitFeedback`/`recordItemFeedback`/`recordPairFeedback`/`recordItemRating`/`recordOutfitRating`/`recordSwipe`/`updateVisualPreferenceState` through it. Left `saveCombination`/`updateCombinationImage`/`saveWardrobeItemEmbedding`/`logWorn`/the Analytics upserts/`recordPairBan` family/`saveUserProfile`/`recordImpressions`/`recordSelection` as bare saves, each with its own doc comment on why (either the model isn't read by either cache, or — `saveWardrobeItemEmbedding` — invalidating would break the cache it's computing for).
+2. `SyncingWardrobeRepository` needed no change — it's a pure decorator that delegates every write to `underlying` (`SwiftDataWardrobeRepository`) before doing its own outbox bookkeeping, so the fix in the underlying repository covers both.
+
+---
+
 ## 2026-07-21 — Perf fix: eliminate duplicate wardrobe fetch/catalog build + second LLM round-trip on question-phrased recommendation turns
 
 **Status:** ✅ Shipped — `xcodebuild clean build` green

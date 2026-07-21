@@ -270,15 +270,33 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         return inventory
     }
 
-    func save(_ item: WardrobeItem) throws {
-        modelContext.insert(item)
+    /// Saves and bumps `WardrobeMutationTracker`'s version in one call —
+    /// every write whose model is read by `fetchInventory()`/
+    /// `fetchFeedbackHistory()` above must route through this rather than a
+    /// bare `modelContext.save()`, so a new mutating method can't silently
+    /// omit the invalidation the way `recordItemFeedback`/`recordPairFeedback`
+    /// originally did (both wrote a model `fetchFeedbackHistory()` reads
+    /// without bumping the tracker, leaving it serving stale cached data).
+    /// Documented exceptions that deliberately keep a bare `modelContext.save()`
+    /// instead — `saveCombination`, `updateCombinationImage`,
+    /// `saveWardrobeItemEmbedding`, `logWorn`, and the read-only-to-this-cache
+    /// writes below (`recordImpressions`, `recordSelection`, `recordPairBan`,
+    /// `removePairBan`, `saveUserProfile`, the Analytics upserts) — each carry
+    /// their own doc comment explaining why. When adding a new mutating
+    /// method, default to this helper unless you can point to why the model
+    /// it writes is never read by either cache.
+    private func saveAndMarkMutated() throws {
         try modelContext.save()
         WardrobeMutationTracker.shared.markMutated()
     }
 
+    func save(_ item: WardrobeItem) throws {
+        modelContext.insert(item)
+        try saveAndMarkMutated()
+    }
+
     func update(_ item: WardrobeItem) throws {
-        try modelContext.save()
-        WardrobeMutationTracker.shared.markMutated()
+        try saveAndMarkMutated()
     }
 
     func delete(_ item: WardrobeItem) throws {
@@ -288,8 +306,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             ImageStorage.delete(imageAssetName)
         }
         modelContext.delete(item)
-        try modelContext.save()
-        WardrobeMutationTracker.shared.markMutated()
+        try saveAndMarkMutated()
     }
 
     func fetchFeedbackHistory() async throws -> FeedbackHistory {
@@ -618,18 +635,17 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
 
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {
         modelContext.insert(OutfitFeedback(outfitID: outfitID, likedOverall: likedOverall))
-        try modelContext.save()
-        WardrobeMutationTracker.shared.markMutated()
+        try saveAndMarkMutated()
     }
 
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {
         modelContext.insert(ItemFeedback(itemID: itemID, likedFit: likedFit))
-        try modelContext.save()
+        try saveAndMarkMutated()
     }
 
     func recordPairFeedback(itemAID: UUID, itemBID: UUID, likedTogether: Bool) throws {
         modelContext.insert(PairFeedback(itemAID: itemAID, itemBID: itemBID, likedTogether: likedTogether))
-        try modelContext.save()
+        try saveAndMarkMutated()
     }
 
     func recordItemRating(
@@ -653,7 +669,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             wearAgain: wearAgain
         )
         modelContext.insert(rating)
-        try modelContext.save()
+        try saveAndMarkMutated()
 
         // Close the loop with Swipe-to-Learn Visual Taste: best-effort — a
         // rating should still save even if the visual-taste update fails or
@@ -745,7 +761,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             savedForInspiration: submission.savedForInspiration,
             replacementSuggestion: submission.replacementSuggestion
         ))
-        try modelContext.save()
+        try saveAndMarkMutated()
     }
 
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback] {
@@ -822,6 +838,19 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         }
     }
 
+    /// No `markMutated()` — same general posture as `saveCombination`/
+    /// `updateCombinationImage` above (a `SavedCombination` write alone
+    /// doesn't change anything `fetchFeedbackHistory()` aggregates). Known,
+    /// accepted gap: if this combination already has `OutfitFeedback` rows
+    /// pointing at it (recorded via `recordOutfitFeedback`/`recordOutfitRating`,
+    /// both of which do bump the tracker on their own write), a cached
+    /// `feedbackHistoryCache` built before this delete keeps crediting that
+    /// feedback to this combination's item set until some other mutation
+    /// happens to invalidate it — a fresh (uncached) recompute would instead
+    /// drop it immediately, since `combinationsByID` can no longer resolve
+    /// the now-deleted row. Left as-is rather than bumping here, since that
+    /// would force a full embeddings + attribute-profile recompute on every
+    /// combination deletion for a rare, low-severity staleness window.
     func deleteCombination(_ combination: SavedCombination) throws {
         // Best-effort — an orphaned file is a disk-space leak, not a
         // correctness issue worth failing the delete over.
@@ -882,7 +911,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // `VisualPreferenceState.totalSwipes`'s doc comment.
         state.totalSwipes += 1
 
-        try modelContext.save()
+        try saveAndMarkMutated()
 
         if let drift {
             MLLog.logger.notice("[AI-Stylist-ML] centroid drift: type=explicit side=\(liked ? "liked" : "disliked", privacy: .public) drift=\(drift, format: .fixed(precision: 2), privacy: .public)%")
@@ -908,7 +937,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         state.dislikedCentroids = dislikedCentroids
         state.embeddingDimension = embeddingDimension
         state.updatedAt = .now
-        try modelContext.save()
+        try saveAndMarkMutated()
     }
 
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
@@ -918,6 +947,19 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         return try modelContext.fetch(descriptor).first
     }
 
+    /// Deliberately a bare `modelContext.save()`, not `saveAndMarkMutated()`,
+    /// even though `WardrobeItemEmbedding` rows feed `fetchFeedbackHistory()`'s
+    /// `itemEmbeddings` map: this method's only current caller is
+    /// `fetchFeedbackHistory()` itself, mid-recompute (line ~610 below),
+    /// persisting an embedding it just lazily computed for the cache entry
+    /// it's about to write. Bumping the tracker here would change
+    /// `WardrobeMutationTracker.shared.version` out from under the
+    /// `currentVersion` that recompute captured at its own start, so the
+    /// freshly-built cache would immediately register as stale against
+    /// itself on the very next call — forcing a full re-embed every time
+    /// there's any new embedding to compute, defeating the cache entirely.
+    /// If a future caller invokes this from outside `fetchFeedbackHistory()`
+    /// (e.g. recovery tooling), it must bump the tracker itself afterward.
     func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {
         if let existing = try fetchWardrobeItemEmbedding(itemID: itemID) {
             existing.vector = vector

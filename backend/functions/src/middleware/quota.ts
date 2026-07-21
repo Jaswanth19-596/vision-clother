@@ -4,7 +4,7 @@ import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
 import { TIER_LIMITS, type Tier } from "../entitlementLimits";
 
-type QuotaFeature = "recommendation" | "tryOn";
+export type QuotaFeature = "recommendation" | "tryOn";
 
 const COUNT_FIELD: Record<QuotaFeature, "recommendationCount" | "tryOnCount"> = {
   recommendation: "recommendationCount",
@@ -116,6 +116,10 @@ export function quotaGate(feature: QuotaFeature) {
           { [COUNT_FIELD[feature]]: FieldValue.increment(1), updatedAt: Date.now() },
           { merge: true }
         );
+        // Recorded so `idempotency.ts` can undo exactly this write if the
+        // upstream call this debit is gating ends up failing — see
+        // `refundQuota` below.
+        req.quotaDebit = { feature, kind: "count" };
         logEvent("debug", "quota.ok", { requestId: req.requestId, uid, feature });
         next();
         return;
@@ -214,10 +218,12 @@ export function quotaGate(feature: QuotaFeature) {
           res.status(429).json({ error: "quota_exceeded", limit: result.limit, period: currentPeriod, purchasedBalance: 0 });
           return;
         case "ok_purchased":
+          req.quotaDebit = { feature, kind: "purchased" };
           logEvent("info", "quota.purchasedCreditUsed", { requestId: req.requestId, uid, feature, remainingBalance: result.remainingBalance });
           next();
           return;
         case "ok":
+          req.quotaDebit = { feature, kind: "count" };
           logEvent("debug", "quota.ok", { requestId: req.requestId, uid, feature });
           next();
           return;
@@ -235,4 +241,45 @@ export function quotaGate(feature: QuotaFeature) {
       next();
     }
   };
+}
+
+/**
+ * Undoes exactly the debit `quotaGate` recorded on `req.quotaDebit` — called
+ * by `middleware/idempotency.ts` when the request this debit was gating ends
+ * up failing downstream (upstream OpenRouter error, timeout, etc.), so a
+ * failed paid call never permanently costs the user a recommendation/try-on.
+ * A no-op if `quotaGate` never actually debited anything for this request
+ * (e.g. it 429'd/403'd before reaching `next()`, or the request never hit
+ * quotaGate at all — an idempotency-key replay hit).
+ *
+ * Field-scoped `FieldValue.increment`, same commutativity rationale as every
+ * other write in this file — safe to run concurrently with `iapVerify.ts`'s
+ * grant transaction or another in-flight `quotaGate` debit for the same uid.
+ * `req.quotaDebit` is cleared after a successful refund so a caller that
+ * somehow invokes this twice for the same request can't double-refund.
+ */
+export async function refundQuota(req: AuthedRequest): Promise<void> {
+  const debit = req.quotaDebit;
+  const uid = req.uid;
+  if (!debit || !uid) {
+    return;
+  }
+
+  const db = getFirestore();
+  const usageRef = db.collection("users").doc(uid).collection("meta").doc("usage");
+
+  if (debit.kind === "purchased") {
+    await usageRef.set(
+      { [BALANCE_FIELD[debit.feature]]: FieldValue.increment(1), updatedAt: Date.now() },
+      { merge: true }
+    );
+  } else {
+    await usageRef.set(
+      { [COUNT_FIELD[debit.feature]]: FieldValue.increment(-1), updatedAt: Date.now() },
+      { merge: true }
+    );
+  }
+
+  logEvent("info", "quota.refunded", { requestId: req.requestId, uid, feature: debit.feature, kind: debit.kind });
+  req.quotaDebit = undefined;
 }

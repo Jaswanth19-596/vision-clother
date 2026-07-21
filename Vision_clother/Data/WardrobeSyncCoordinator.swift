@@ -463,18 +463,34 @@ final class WardrobeSyncCoordinator {
     /// dirty and push them right back, an infinite no-op loop). Bootstrap
     /// push is the one path here that legitimately needs to *create* dirty
     /// rows rather than clean ones.
+    ///
+    /// Skips a row whose `SyncMetadata` is already clean (`isDirty == false`)
+    /// instead of unconditionally re-marking it — such a row can only be
+    /// clean here because an earlier bootstrap attempt for this same uid
+    /// already confirmed it pushed (`wipeLocalMirror` clears `SyncMetadata`
+    /// entirely whenever switching from a *different* previously-mirrored
+    /// account, so a clean row surviving into this pass is never leftover
+    /// from someone else's account). Without this guard, a bootstrap that
+    /// partially failed (`pushEverythingLocal` returning `fullySynced ==
+    /// false`) reprocessed and re-pushed the *entire* local dataset on every
+    /// retry (`retrySync`/`reconcileIfSignedIn`'s self-heal both call
+    /// `handleSignIn` again), not just the rows that actually failed — and
+    /// stomped `localUpdatedAt` on already-synced rows in the process, which
+    /// `shouldSkipDueToLocalDirty` above uses for pull-time conflict
+    /// resolution.
     private func markDirtyForBootstrap(_ type: SyncEntityType, entityID: UUID, dto: some Encodable) {
-        guard let payload = try? JSONEncoder().encode(dto) else { return }
         let key = SyncMetadata.compositeKey(entityType: type, entityID: entityID)
         let descriptor = FetchDescriptor<SyncMetadata>(predicate: #Predicate { $0.compositeKey == key })
         if let existing = try? modelContext.fetch(descriptor).first {
+            guard existing.isDirty else { return }
+            guard let payload = try? JSONEncoder().encode(dto) else { return }
             existing.operation = .upsert
-            existing.isDirty = true
             existing.localUpdatedAt = .now
             existing.attemptCount = 0
             existing.lastAttemptAt = nil
             existing.payload = payload
         } else {
+            guard let payload = try? JSONEncoder().encode(dto) else { return }
             modelContext.insert(SyncMetadata(entityType: type, entityID: entityID, operation: .upsert, payload: payload))
         }
     }

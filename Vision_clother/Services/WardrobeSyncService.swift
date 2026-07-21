@@ -39,6 +39,22 @@ struct RemoteMetaUpdate<DTO> {
     var updatedAt: Date
 }
 
+/// One dirty `SyncMetadata` row queued for a batched push —
+/// `Data/SyncOutboxWorker.swift` groups these into chunks of up to
+/// `FirestoreWardrobeSyncService.maxBatchSize` and hands each chunk to
+/// `commitBatch` as a single Firestore `WriteBatch`, instead of the one
+/// `setData` round trip per row this used to be. Mirrors `SyncMetadata`'s own
+/// fields exactly — this is just the subset the transport layer needs, kept
+/// separate so this file doesn't import SwiftData for a `@Model` reference.
+struct SyncBatchOperation {
+    var entityType: SyncEntityType
+    var entityID: UUID
+    var operation: SyncOperation
+    /// JSON-encoded DTO snapshot — `nil` for `.delete` (a tombstone needs no
+    /// payload), mirrors `SyncMetadata.payload`.
+    var payload: Data?
+}
+
 /// MIME type for a Cloud Storage photo upload — required so
 /// `backend/storage.rules`' `request.resource.contentType.matches('image/.*')`
 /// check actually passes. Every `WardrobeItem` cutout is PNG
@@ -82,32 +98,17 @@ struct PulledWardrobeDelta {
 /// removing this annotation only frees the network legs to run off the main
 /// actor's serial executor, not any local persistence.
 protocol WardrobeSyncService {
-    // Pure DTO transport, deliberately not `@Model` types — the caller is
-    // `Data/SyncOutboxWorker.swift`, draining `SyncMetadata.payload` (a
-    // JSON-encoded DTO captured at mutation time, see that model's doc
-    // comment), which never has a live `@Model` instance to hand over.
-    func pushWardrobeItem(_ dto: WardrobeItemDTO, uid: String) async throws
-    func pushOutfitFeedback(_ dto: OutfitFeedbackDTO, uid: String) async throws
-    func pushItemFeedback(_ dto: ItemFeedbackDTO, uid: String) async throws
-    func pushPairFeedback(_ dto: PairFeedbackDTO, uid: String) async throws
-    func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws
-    func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws
-    func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws
-    func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws
-    /// Analytics & Insights (Phase 2) — see `Models/AnalyticsSnapshot.swift`.
-    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws
-    /// Analytics & Insights, internal-only (Phase 2) — see
-    /// `Models/RecommendationAnalyticsSnapshot.swift`.
-    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws
-    /// Analytics & Insights (Phase 3) — see `Models/WornLogEntry.swift`.
-    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws
-    /// Anti-Repetition — see `Models/ItemPairBan.swift`.
-    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws
-
-    /// Soft-deletes (tombstones) an entity — only meaningful for the 6
-    /// event/row-per-entity types, not the 2 single-row `meta` docs (nothing
-    /// in `WardrobeRepository` ever deletes those).
-    func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws
+    /// Commits every operation in `operations` as a single Firestore
+    /// `WriteBatch` — atomic as a whole (all land or none do), so
+    /// `Data/SyncOutboxWorker.swift` never hands this more than
+    /// `FirestoreWardrobeSyncService.maxBatchSize` operations at once
+    /// (Firestore's hard per-batch cap) and, on a thrown error, retries
+    /// every row in `operations` again individually (each keeping its own
+    /// backoff) rather than assuming partial progress. Replaces what used to
+    /// be 11 separate `pushX(dto:uid:)` methods plus `deleteEntity` — those
+    /// had exactly one caller (`SyncOutboxWorker`), and this is the batched
+    /// shape that same caller now needs.
+    func commitBatch(_ operations: [SyncBatchOperation], uid: String) async throws
 
     /// `since: nil` is a full pull (bootstrap); a non-nil date is a delta
     /// pull bounded to `updatedAt > since` per collection.
@@ -163,74 +164,87 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         db.collection("users").document(uid)
     }
 
-    /// Shared push helper: encodes `dto` via Firestore's Codable support,
-    /// merges in a fresh server timestamp for `updatedAt` and clears any
-    /// prior tombstone (`isDeleted = false`, in case this id was previously
-    /// soft-deleted and is now being recreated), and writes it all in one
-    /// call — one write per push, not a separate encode-then-stamp round trip.
-    private func setDocument(_ ref: DocumentReference, dto: some Encodable) async throws {
-        var data = try Firestore.Encoder().encode(dto)
+    // MARK: - Push (batched)
+
+    /// Firestore's hard cap on operations in a single `WriteBatch`.
+    static let maxBatchSize = 500
+
+    func commitBatch(_ operations: [SyncBatchOperation], uid: String) async throws {
+        guard !operations.isEmpty else { return }
+        let batch = db.batch()
+        let decoder = JSONDecoder()
+        for operation in operations {
+            guard let ref = documentReference(entityType: operation.entityType, entityID: operation.entityID, uid: uid) else { continue }
+            if operation.operation == .delete {
+                // Tombstone — merge, not overwrite, so only these two fields
+                // change on an otherwise-untouched doc (matches the old
+                // single-row `deleteEntity`'s semantics).
+                batch.setData(["isDeleted": true, "updatedAt": FieldValue.serverTimestamp()], forDocument: ref, merge: true)
+                continue
+            }
+            guard let payload = operation.payload,
+                  let data = try? Self.encodedData(entityType: operation.entityType, payload: payload, decoder: decoder)
+            else { continue }
+            batch.setData(data, forDocument: ref)
+        }
+        try await batch.commit()
+    }
+
+    private func documentReference(entityType: SyncEntityType, entityID: UUID, uid: String) -> DocumentReference? {
+        switch entityType {
+        // Single-row `meta` docs are keyed by a fixed doc name, not `entityID`.
+        case .userStyleProfile:
+            return usersDoc(uid).collection("meta").document("styleProfile")
+        case .visualPreferenceState:
+            return usersDoc(uid).collection("meta").document("visualPreferenceState")
+        default:
+            guard let collection = Self.collectionName(for: entityType) else { return nil }
+            return usersDoc(uid).collection(collection).document(entityID.uuidString)
+        }
+    }
+
+    /// Decodes `payload` into its typed DTO for `entityType`, Firestore-encodes
+    /// it, and merges in a fresh server timestamp plus a cleared tombstone
+    /// flag (`isDeleted = false`, in case this id was previously soft-deleted
+    /// and is now being recreated) — one switch instead of the 11 near-identical
+    /// `pushX` methods this used to be spread across, now that every push
+    /// funnels through `commitBatch`.
+    private static func encodedData(entityType: SyncEntityType, payload: Data, decoder: JSONDecoder) throws -> [String: Any] {
+        var data: [String: Any]
+        switch entityType {
+        case .wardrobeItem:
+            data = try Firestore.Encoder().encode(decoder.decode(WardrobeItemDTO.self, from: payload))
+        case .outfitFeedback:
+            data = try Firestore.Encoder().encode(decoder.decode(OutfitFeedbackDTO.self, from: payload))
+        case .itemFeedback:
+            data = try Firestore.Encoder().encode(decoder.decode(ItemFeedbackDTO.self, from: payload))
+        case .pairFeedback:
+            data = try Firestore.Encoder().encode(decoder.decode(PairFeedbackDTO.self, from: payload))
+        case .itemRating:
+            data = try Firestore.Encoder().encode(decoder.decode(ItemRatingDTO.self, from: payload))
+        case .savedCombination:
+            data = try Firestore.Encoder().encode(decoder.decode(SavedCombinationDTO.self, from: payload))
+        case .userStyleProfile:
+            data = try Firestore.Encoder().encode(decoder.decode(UserStyleProfileDTO.self, from: payload))
+        case .visualPreferenceState:
+            data = try Firestore.Encoder().encode(decoder.decode(VisualPreferenceStateDTO.self, from: payload))
+        case .analyticsSnapshot:
+            data = try Firestore.Encoder().encode(decoder.decode(AnalyticsSnapshotDTO.self, from: payload))
+        case .recommendationAnalyticsSnapshot:
+            data = try Firestore.Encoder().encode(decoder.decode(RecommendationAnalyticsSnapshotDTO.self, from: payload))
+        case .wornLogEntry:
+            data = try Firestore.Encoder().encode(decoder.decode(WornLogEntryDTO.self, from: payload))
+        case .itemPairBan:
+            data = try Firestore.Encoder().encode(decoder.decode(ItemPairBanDTO.self, from: payload))
+        case .swipeEvent:
+            // Legacy no-op — never queued (see `SyncOutboxWorker.drainNow`,
+            // which drains any pre-existing `.swipeEvent` row locally
+            // without ever reaching this method).
+            data = [:]
+        }
         data["updatedAt"] = FieldValue.serverTimestamp()
         data["isDeleted"] = false
-        try await ref.setData(data)
-    }
-
-    // MARK: - Push
-
-    func pushWardrobeItem(_ dto: WardrobeItemDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("wardrobeItems").document(dto.id), dto: dto)
-    }
-
-    func pushOutfitFeedback(_ dto: OutfitFeedbackDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("outfitFeedback").document(dto.id), dto: dto)
-    }
-
-    func pushItemFeedback(_ dto: ItemFeedbackDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("itemFeedback").document(dto.id), dto: dto)
-    }
-
-    func pushPairFeedback(_ dto: PairFeedbackDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("pairFeedback").document(dto.id), dto: dto)
-    }
-
-    func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("itemRatings").document(dto.id), dto: dto)
-    }
-
-    func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("savedCombinations").document(dto.id), dto: dto)
-    }
-
-    func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("meta").document("styleProfile"), dto: dto)
-    }
-
-    func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("meta").document("visualPreferenceState"), dto: dto)
-    }
-
-    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("analyticsSnapshots").document(dto.id), dto: dto)
-    }
-
-    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("recommendationAnalyticsSnapshots").document(dto.id), dto: dto)
-    }
-
-    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("wornLogEntries").document(dto.id), dto: dto)
-    }
-
-    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {
-        try await setDocument(usersDoc(uid).collection("itemPairBans").document(dto.id), dto: dto)
-    }
-
-    // MARK: - Delete (tombstone)
-
-    func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
-        guard let collection = Self.collectionName(for: type) else { return }
-        try await usersDoc(uid).collection(collection).document(id.uuidString)
-            .setData(["isDeleted": true, "updatedAt": FieldValue.serverTimestamp()], merge: true)
+        return data
     }
 
     private static func collectionName(for type: SyncEntityType) -> String? {
@@ -492,44 +506,8 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
     private lazy var mock = MockWardrobeSyncService()
     private var current: WardrobeSyncService { AuthService.shared.isSignedIn ? real : mock }
 
-    func pushWardrobeItem(_ dto: WardrobeItemDTO, uid: String) async throws {
-        try await current.pushWardrobeItem(dto, uid: uid)
-    }
-    func pushOutfitFeedback(_ dto: OutfitFeedbackDTO, uid: String) async throws {
-        try await current.pushOutfitFeedback(dto, uid: uid)
-    }
-    func pushItemFeedback(_ dto: ItemFeedbackDTO, uid: String) async throws {
-        try await current.pushItemFeedback(dto, uid: uid)
-    }
-    func pushPairFeedback(_ dto: PairFeedbackDTO, uid: String) async throws {
-        try await current.pushPairFeedback(dto, uid: uid)
-    }
-    func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws {
-        try await current.pushItemRating(dto, uid: uid)
-    }
-    func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {
-        try await current.pushSavedCombination(dto, uid: uid)
-    }
-    func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {
-        try await current.pushUserStyleProfile(dto, uid: uid)
-    }
-    func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {
-        try await current.pushVisualPreferenceState(dto, uid: uid)
-    }
-    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {
-        try await current.pushAnalyticsSnapshot(dto, uid: uid)
-    }
-    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {
-        try await current.pushRecommendationAnalyticsSnapshot(dto, uid: uid)
-    }
-    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {
-        try await current.pushWornLogEntry(dto, uid: uid)
-    }
-    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {
-        try await current.pushItemPairBan(dto, uid: uid)
-    }
-    func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
-        try await current.deleteEntity(type: type, id: id, uid: uid)
+    func commitBatch(_ operations: [SyncBatchOperation], uid: String) async throws {
+        try await current.commitBatch(operations, uid: uid)
     }
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
         try await current.pullChanges(uid: uid, since: since)
@@ -572,19 +550,7 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
 /// stay interactive in Simulator/previews with no Firebase sign-in.
 @MainActor
 final class MockWardrobeSyncService: WardrobeSyncService {
-    func pushWardrobeItem(_ dto: WardrobeItemDTO, uid: String) async throws {}
-    func pushOutfitFeedback(_ dto: OutfitFeedbackDTO, uid: String) async throws {}
-    func pushItemFeedback(_ dto: ItemFeedbackDTO, uid: String) async throws {}
-    func pushPairFeedback(_ dto: PairFeedbackDTO, uid: String) async throws {}
-    func pushItemRating(_ dto: ItemRatingDTO, uid: String) async throws {}
-    func pushSavedCombination(_ dto: SavedCombinationDTO, uid: String) async throws {}
-    func pushUserStyleProfile(_ dto: UserStyleProfileDTO, uid: String) async throws {}
-    func pushVisualPreferenceState(_ dto: VisualPreferenceStateDTO, uid: String) async throws {}
-    func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {}
-    func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {}
-    func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {}
-    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {}
-    func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {}
+    func commitBatch(_ operations: [SyncBatchOperation], uid: String) async throws {}
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
         PulledWardrobeDelta(queryStartTime: Date())
     }

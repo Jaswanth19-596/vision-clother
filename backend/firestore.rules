@@ -8,6 +8,9 @@ rules_version = '2';
 // - processedTransactions/{transactionId}: the StoreKit purchase idempotency
 //   ledger (backend/functions/src/routes/iapVerify.ts) — Admin-SDK-only for
 //   the same reason, denied to every client outright.
+// - idempotencyKeys/{uid}_{idempotencyKey}: the request-dedup lock for the
+//   quota-gated OpenRouter routes (backend/functions/src/middleware/idempotency.ts)
+//   — Admin-SDK-only, same reason, denied to every client outright.
 // - users/{uid}/**: Cloud Sync's per-account wardrobe data
 //   (docs/decisions/resolved-v1.md's "Cloud Sync" section) — the iOS client
 //   talks to these directly, scoped so an account can only ever read/write
@@ -21,6 +24,10 @@ service cloud.firestore {
     }
 
     match /processedTransactions/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /idempotencyKeys/{document=**} {
       allow read, write: if false;
     }
 

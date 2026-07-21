@@ -26,9 +26,15 @@ final class SyncOutboxWorker {
     /// avoid two passes racing to update the same `SyncMetadata` rows.
     private var isDraining = false
 
-    /// Bounds how many rows' network pushes run concurrently in one
-    /// `drainNow` pass — see the fan-out in `drainNow` below.
-    private static let maxConcurrentPushes = 5
+    /// Rows per `WriteBatch` — Firestore's hard cap on operations in a single
+    /// batch (`FirestoreWardrobeSyncService.maxBatchSize`, mirrored here so
+    /// this file doesn't need a `FirebaseFirestore` import just to read a
+    /// constant).
+    private static let maxBatchSize = 500
+
+    /// Bounds how many chunk-level `WriteBatch` commits run concurrently in
+    /// one `drainNow` pass — see the fan-out in `drainNow` below.
+    private static let maxConcurrentBatches = 4
 
     private enum PushOutcome {
         case pushed
@@ -83,31 +89,49 @@ final class SyncOutboxWorker {
         var pushedCount = 0
         var failedCount = 0
 
-        // Bounded fan-out — each row's push is an independent network
-        // request (`push(_:uid:)` only reads `row` until the `await`
-        // returns), so running up to `maxConcurrentPushes` at once cuts
-        // wall-clock drain time for a large backlog (e.g. after being
-        // offline a while, or the bootstrap push's dirty rows) instead of
-        // one request at a time. The `ModelContext` mutations in
-        // `attemptPush` still only ever run on this actor, one at a time,
-        // same as before.
-        await withTaskGroup(of: PushOutcome.self) { group in
+        // Legacy `SwipeEvent` rows never reach Firestore (see the doc
+        // comment on `.swipeEvent` below) — drain them locally before
+        // building batches so they never occupy a slot in a `WriteBatch`.
+        var batchableRows: [SyncMetadata] = []
+        for row in eligibleRows {
+            if row.entityType == .swipeEvent {
+                AppLog.debug(.sync, "drainNow: dropping legacy swipeEvent outbox row \(row.entityID)")
+                finalizeSuccess(row)
+                pushedCount += 1
+            } else {
+                batchableRows.append(row)
+            }
+        }
+
+        let chunks = stride(from: 0, to: batchableRows.count, by: Self.maxBatchSize).map {
+            Array(batchableRows[$0..<min($0 + Self.maxBatchSize, batchableRows.count)])
+        }
+
+        // Bounded fan-out — each chunk's `WriteBatch` commit is an
+        // independent network request, so running up to
+        // `maxConcurrentBatches` at once cuts wall-clock drain time for a
+        // large backlog (e.g. after being offline a while, or the bootstrap
+        // push's dirty rows) instead of one batch at a time. The
+        // `ModelContext` mutations in `attemptCommitBatch` still only ever
+        // run on this actor, one chunk at a time, same as before.
+        await withTaskGroup(of: (count: Int, outcome: PushOutcome).self) { group in
             var index = 0
             func addNext() {
-                guard index < eligibleRows.count else { return }
-                let row = eligibleRows[index]
+                guard index < chunks.count else { return }
+                let chunk = chunks[index]
                 index += 1
                 group.addTask { [weak self] in
-                    await self?.attemptPush(row, uid: uid, now: now) ?? .failed
+                    let outcome = await self?.attemptCommitBatch(chunk, uid: uid, now: now) ?? .failed
+                    return (chunk.count, outcome)
                 }
             }
-            for _ in 0..<min(Self.maxConcurrentPushes, eligibleRows.count) {
+            for _ in 0..<min(Self.maxConcurrentBatches, chunks.count) {
                 addNext()
             }
-            while let outcome = await group.next() {
+            while let (count, outcome) = await group.next() {
                 switch outcome {
-                case .pushed: pushedCount += 1
-                case .failed: failedCount += 1
+                case .pushed: pushedCount += count
+                case .failed: failedCount += count
                 }
                 addNext()
             }
@@ -122,68 +146,42 @@ final class SyncOutboxWorker {
         return allSucceeded
     }
 
-    private func attemptPush(_ row: SyncMetadata, uid: String, now: Date) async -> PushOutcome {
+    /// Commits one chunk (≤`maxBatchSize` rows) as a single Firestore
+    /// `WriteBatch`. A `WriteBatch` is atomic as a whole — either every row
+    /// in `chunk` lands or none do — so local `SyncMetadata` state is only
+    /// ever updated *after* that commit resolves (never optimistically
+    /// beforehand): on success every row in the chunk is marked clean
+    /// together; on failure every row in the chunk gets its own
+    /// `attemptCount`/`lastAttemptAt` bumped individually, so each keeps its
+    /// own backoff schedule (`backoffSeconds(attemptCount:)`) on the next
+    /// drain rather than the whole chunk being retried in lockstep forever.
+    private func attemptCommitBatch(_ chunk: [SyncMetadata], uid: String, now: Date) async -> PushOutcome {
+        let operations = chunk.map {
+            SyncBatchOperation(entityType: $0.entityType, entityID: $0.entityID, operation: $0.operation, payload: $0.payload)
+        }
         do {
-            try await push(row, uid: uid)
-            if row.operation == .delete {
-                modelContext.delete(row)
-            } else {
-                row.isDirty = false
-                row.attemptCount = 0
-                row.lastAttemptAt = nil
+            try await syncService.commitBatch(operations, uid: uid)
+            for row in chunk {
+                finalizeSuccess(row)
             }
             return .pushed
         } catch {
-            row.attemptCount += 1
-            row.lastAttemptAt = now
-            AppLog.error(.sync, "drainNow: push failed for \(row.entityType) \(row.entityID) (attempt \(row.attemptCount)) — \(String(describing: error))")
+            for row in chunk {
+                row.attemptCount += 1
+                row.lastAttemptAt = now
+                AppLog.error(.sync, "drainNow: batch commit failed for \(row.entityType) \(row.entityID) (attempt \(row.attemptCount)) — \(String(describing: error))")
+            }
             return .failed
         }
     }
 
-    private func push(_ row: SyncMetadata, uid: String) async throws {
+    private func finalizeSuccess(_ row: SyncMetadata) {
         if row.operation == .delete {
-            try await syncService.deleteEntity(type: row.entityType, id: row.entityID, uid: uid)
-            return
-        }
-
-        guard let payload = row.payload else { return }
-        let decoder = JSONDecoder()
-
-        switch row.entityType {
-        case .wardrobeItem:
-            try await syncService.pushWardrobeItem(decoder.decode(WardrobeItemDTO.self, from: payload), uid: uid)
-        case .outfitFeedback:
-            try await syncService.pushOutfitFeedback(decoder.decode(OutfitFeedbackDTO.self, from: payload), uid: uid)
-        case .itemFeedback:
-            try await syncService.pushItemFeedback(decoder.decode(ItemFeedbackDTO.self, from: payload), uid: uid)
-        case .pairFeedback:
-            try await syncService.pushPairFeedback(decoder.decode(PairFeedbackDTO.self, from: payload), uid: uid)
-        case .itemRating:
-            try await syncService.pushItemRating(decoder.decode(ItemRatingDTO.self, from: payload), uid: uid)
-        case .savedCombination:
-            try await syncService.pushSavedCombination(decoder.decode(SavedCombinationDTO.self, from: payload), uid: uid)
-        case .userStyleProfile:
-            try await syncService.pushUserStyleProfile(decoder.decode(UserStyleProfileDTO.self, from: payload), uid: uid)
-        case .swipeEvent:
-            // Legacy no-op: `SwipeEvent` is no longer synced (see
-            // `Data/SyncingWardrobeRepository.swift`'s "Swipe-to-Learn Visual
-            // Taste" section) — nothing constructs a `.swipeEvent` row
-            // anymore. This case only exists to safely drain any row a
-            // pre-update install already queued, rather than letting
-            // `SyncEntityType`'s rawValue decode fallback (`Models/SyncMetadata.swift`)
-            // misroute it to `.wardrobeItem` and retry-fail forever.
-            AppLog.debug(.sync, "push: dropping legacy swipeEvent outbox row \(row.entityID)")
-        case .visualPreferenceState:
-            try await syncService.pushVisualPreferenceState(decoder.decode(VisualPreferenceStateDTO.self, from: payload), uid: uid)
-        case .analyticsSnapshot:
-            try await syncService.pushAnalyticsSnapshot(decoder.decode(AnalyticsSnapshotDTO.self, from: payload), uid: uid)
-        case .recommendationAnalyticsSnapshot:
-            try await syncService.pushRecommendationAnalyticsSnapshot(decoder.decode(RecommendationAnalyticsSnapshotDTO.self, from: payload), uid: uid)
-        case .wornLogEntry:
-            try await syncService.pushWornLogEntry(decoder.decode(WornLogEntryDTO.self, from: payload), uid: uid)
-        case .itemPairBan:
-            try await syncService.pushItemPairBan(decoder.decode(ItemPairBanDTO.self, from: payload), uid: uid)
+            modelContext.delete(row)
+        } else {
+            row.isDirty = false
+            row.attemptCount = 0
+            row.lastAttemptAt = nil
         }
     }
 

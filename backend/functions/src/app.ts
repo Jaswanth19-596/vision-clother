@@ -4,6 +4,7 @@ import { verifyAuth } from "./middleware/verifyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { quotaGate } from "./middleware/quota";
 import { responseCache } from "./middleware/responseCache";
+import { idempotencyGate } from "./middleware/idempotency";
 import { openrouterChatRouter } from "./routes/openrouterChat";
 import { openrouterImagesRouter } from "./routes/openrouterImages";
 import { pexelsSearchRouter } from "./routes/pexelsSearch";
@@ -67,11 +68,24 @@ function baseApp(): Express {
  * uncapped beyond the global rateLimit guardrail above.
  * `/openrouter/recommend` reuses the same `openrouterChatRouter` handler as
  * `/openrouter/chat` — the separate mount point exists solely to attach
- * `quotaGate("recommendation")` + `responseCache("recommendation")`.
+ * `idempotencyGate("recommendation")` + `responseCache("recommendation")` +
+ * `quotaGate("recommendation")`. `idempotencyGate` runs first (see
+ * `middleware/idempotency.ts`) so a client-declared retry (same
+ * `X-Idempotency-Key`) of an already-completed call short-circuits before
+ * either the content-hash cache or the quota debit — and so a failed
+ * upstream call downstream of quotaGate can be refunded. `/openrouter/chat`
+ * is deliberately NOT idempotency-gated: it's uncapped/no quota cost, so
+ * there's nothing to deduplicate.
  */
 export function buildProxyApp(): Express {
   const app = baseApp();
-  app.use("/openrouter/recommend", responseCache("recommendation"), quotaGate("recommendation"), openrouterChatRouter);
+  app.use(
+    "/openrouter/recommend",
+    idempotencyGate("recommendation"),
+    responseCache("recommendation"),
+    quotaGate("recommendation"),
+    openrouterChatRouter
+  );
   app.use("/openrouter/chat", openrouterChatRouter);
   app.use("/pexels/search", pexelsSearchRouter);
   return app;
@@ -83,12 +97,15 @@ export function buildProxyApp(): Express {
  * feature — `/openrouter/tryon` (chat-completion image models) and
  * `/openrouter/images` (the dedicated-Images-API branch the same two
  * services fall back to when `ModelConfig.isChatCompletionImageModel` is
- * false — see `docs/decisions/resolved-v1.md`).
+ * false — see `docs/decisions/resolved-v1.md`). Both are `idempotencyGate`d
+ * before `quotaGate` — see `buildProxyApp`'s doc comment above; the
+ * rationale is identical, and matters even more here given the 60-180s
+ * upstream latency these routes' long timeouts exist to accommodate.
  */
 export function buildHeavyApp(): Express {
   const app = baseApp();
-  app.use("/openrouter/tryon", quotaGate("tryOn"), openrouterChatRouter);
-  app.use("/openrouter/images", quotaGate("tryOn"), openrouterImagesRouter);
+  app.use("/openrouter/tryon", idempotencyGate("tryOn"), quotaGate("tryOn"), openrouterChatRouter);
+  app.use("/openrouter/images", idempotencyGate("tryOn"), quotaGate("tryOn"), openrouterImagesRouter);
   return app;
 }
 
