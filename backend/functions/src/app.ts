@@ -1,5 +1,5 @@
 import express from "express";
-import type { NextFunction, Response } from "express";
+import type { Express, NextFunction, Response } from "express";
 import { verifyAuth } from "./middleware/verifyAuth";
 import { rateLimit } from "./middleware/rateLimit";
 import { quotaGate } from "./middleware/quota";
@@ -44,53 +44,70 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
 }
 
 /**
- * Every route is: verify Firebase Auth -> rate limit -> forward to the
- * provider verbatim. No business logic lives past this point — see
- * docs/backend/conventions.md — with three deliberate exceptions:
- * `/account/delete` (see `routes/accountDelete.ts`'s doc comment) needs
- * Admin SDK privileges (bulk cross-collection Firestore delete, Storage
- * prefix wipe, deleting the Auth user) the client can never safely hold,
- * `/iap/verify` (see `routes/iapVerify.ts`) verifies StoreKit 2
- * purchase JWS tokens and credits the server-only-write usage doc — the
- * one mutation that must never be client-reachable — and
- * `/entitlement/limits` (see `routes/entitlementLimits.ts`) resolves the
- * caller's tier into concrete numbers so the client never hardcodes a
- * tier→number table that could drift from `middleware/quota.ts`'s (a real
- * bug, not a security issue — see that route's doc comment for why this
- * was never an enforcement mechanism either way), and `/analytics/config`
- * (see `routes/analyticsConfig.ts`) resolves Analytics & Insights confidence/
- * unlock thresholds for the same reason.
- * App Check is deferred (needs a paid Apple Developer account for App
- * Attest) — see docs/decisions/resolved-v1.md.
+ * Shared pipeline for all three split deployments (`proxyApi`/`heavyApi`/
+ * `accountApi` in `index.ts`): mint/echo `X-Request-Id` + start/finish log
+ * lines, then Firebase Auth verification, then the shared per-uid rate
+ * limiter. Splitting into three Cloud Functions only changes which routes
+ * (and which memory/timeout/maxInstances/secrets) get bundled into a given
+ * deployed function — never this common request pipeline. See
+ * `docs/backend/architecture.md`'s "Cloud Functions" section.
  */
-export function buildApp(): express.Express {
+function baseApp(): Express {
   const app = express();
   app.use(express.json({ limit: "15mb" })); // headroom over the ~10MB post-downscale image payloads
-
   app.use(requestLogger);
   app.use(verifyAuth, rateLimit);
+  return app;
+}
 
-  // Recommendation and try-on are quota'd (real generation cost) via a
-  // dedicated route each, ahead of the generic pass-through path so the
-  // same openrouterChatRouter handler picks up quotaGate for those two
-  // features only. Vision-tagging, profile derivation, intent-extraction,
-  // and background isolation stay on /openrouter/chat, uncapped beyond the
-  // global rateLimit guardrail above — see docs/decisions/resolved-v1.md.
+/**
+ * Low-memory/short-timeout deployment (`proxyApi`): cheap passthrough calls
+ * only — `/openrouter/chat` (vision-tagging, profile derivation,
+ * intent-extraction, background isolation) and `/pexels/search` are
+ * uncapped beyond the global rateLimit guardrail above.
+ * `/openrouter/recommend` reuses the same `openrouterChatRouter` handler as
+ * `/openrouter/chat` — the separate mount point exists solely to attach
+ * `quotaGate("recommendation")` + `responseCache("recommendation")`.
+ */
+export function buildProxyApp(): Express {
+  const app = baseApp();
   app.use("/openrouter/recommend", responseCache("recommendation"), quotaGate("recommendation"), openrouterChatRouter);
-  app.use("/openrouter/tryon", quotaGate("tryOn"), openrouterChatRouter);
   app.use("/openrouter/chat", openrouterChatRouter);
-  // Same "tryOn" feature as /openrouter/tryon above — this is the
-  // dedicated-Images-API branch the same two services (try-on render,
-  // background isolation) fall back to when ModelConfig points at a
-  // non-chat-completion image model (see ModelConfig.isChatCompletionImageModel).
-  // Previously ungated: real generation cost reachable by URL alone,
-  // independent of which feature/quota the client claims to be using.
-  app.use("/openrouter/images", quotaGate("tryOn"), openrouterImagesRouter);
   app.use("/pexels/search", pexelsSearchRouter);
+  return app;
+}
+
+/**
+ * Higher-memory/long-timeout deployment (`heavyApi`): the two real
+ * generation-cost image routes only, both quota'd under the same "tryOn"
+ * feature — `/openrouter/tryon` (chat-completion image models) and
+ * `/openrouter/images` (the dedicated-Images-API branch the same two
+ * services fall back to when `ModelConfig.isChatCompletionImageModel` is
+ * false — see `docs/decisions/resolved-v1.md`).
+ */
+export function buildHeavyApp(): Express {
+  const app = baseApp();
+  app.use("/openrouter/tryon", quotaGate("tryOn"), openrouterChatRouter);
+  app.use("/openrouter/images", quotaGate("tryOn"), openrouterImagesRouter);
+  return app;
+}
+
+/**
+ * Payments/account-management deployment (`accountApi`), isolated from
+ * generation traffic so a provider outage or quota spike on
+ * proxyApi/heavyApi can't starve deletes, IAP verification, or config
+ * reads. All four routes are the deliberate business-logic exceptions to
+ * the passthrough-proxy posture — see `app.ts`'s prior single-function doc
+ * comment history and `docs/backend/architecture.md` for the individual
+ * justifications (Admin SDK privileges / server-only-write access). None
+ * of the four touch `openRouterApiKey`/`pexelsApiKey`, so this deployment
+ * binds no provider secrets.
+ */
+export function buildAccountApp(): Express {
+  const app = baseApp();
   app.use("/account/delete", accountDeleteRouter);
   app.use("/iap/verify", iapVerifyRouter);
   app.use("/entitlement/limits", entitlementLimitsRouter);
   app.use("/analytics/config", responseCache("analyticsConfig"), analyticsConfigRouter);
-
   return app;
 }
