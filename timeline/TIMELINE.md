@@ -2,6 +2,236 @@
 
 ---
 
+## 2026-07-20 — Feature: Default body photo option in Profile (mannequin alternative to a real photo)
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User asked for a third option alongside Profile's "Take Photo" / "Choose from
+Library": let the user pick a bundled default image instead of uploading a
+real photo of themselves. The user supplied the actual image
+(`front-view.jpg`, a mannequin wearing plain clothes) to bundle. Design
+decisions confirmed with the user up front: one single default image (no
+variants), skip Style Profile derivation for it (neutral defaults instead of
+running the vision call on a non-human image), and ride the existing
+portrait Cloud Sync channel rather than building new sync plumbing.
+
+The existing "base photo" (`Services/UserPortraitStorage.swift`) already fed
+two things: the try-on image-compositing base, and a one-time
+`UserProfileDerivationService` vision call deriving undertone/skin
+tone/body type. A mannequin photo has no real skin/body to read from and
+would fail `PersonPhotoValidationService`'s Vision-based human/pose
+detection outright — including a re-check that
+`ManualPairingViewModel.runPipeline` runs on *every* try-on generation, not
+just at save time, which would have silently blocked try-on forever for
+anyone using the default image if left unhandled.
+
+### What shipped
+1. **`Vision_clother/Vision_clother/Resources/DefaultBodyPhoto.jpg`** (new) —
+   bundled copy of the supplied `front-view.jpg`, auto-included via the
+   project's `PBXFileSystemSynchronizedRootGroup` (no `.pbxproj` edit
+   needed).
+2. **`Services/UserPortraitStorage.swift`** — added `defaultBodyPhotoData`
+   (loaded once from the bundle) and `isDefaultBodyPhoto(_:)`, a plain byte
+   -equality check. Deliberately not a new persisted flag: since the bundled
+   file's bytes are fixed, "is the default currently active" is answerable
+   from the existing `load()`'d bytes alone.
+3. **`Features/Profile/ProfileViewModel.swift`** — new
+   `useDefaultBodyPhoto()`: saves/uploads the bundled bytes through the
+   exact same `UserPortraitStorage.save` + `uploadPortraitIfSignedIn` path
+   `savePortrait` already uses (so Cloud Sync carries the choice to other
+   devices automatically, no new Firestore field), but skips
+   `validationService.validate` and `profileDerivationService.deriveProfile`
+   entirely, instead calling `repository.saveUserProfile` with a neutral
+   `UserStyleProfileWire` (undertone `.neutral`, empty keywords/colors). New
+   `isUsingDefaultBodyPhoto` computed property (byte-compares
+   `portraitImageData` against the bundled default) — no extra stored state,
+   stays correct across `refreshPortrait()` (account switches, cross-device
+   pulls).
+4. **`Features/Profile/ProfileView.swift`** — new "Use Default Image
+   Instead" button in the identity section (hidden once already active);
+   `identityFacts` now shows an explanatory note instead of undertone/body
+   -type pills while the default image is active, rather than implying a
+   real derived profile exists.
+5. **`Features/Pairing/ManualPairingViewModel.swift`** — `runPipeline` skips
+   its pre-generation `validationService.validate` call when
+   `UserPortraitStorage.isDefaultBodyPhoto` is true, so try-on generation
+   works with the default image instead of failing Vision's human/pose
+   check on every attempt.
+6. **Docs**: `Features/Profile/CLAUDE.md` and `Features/Pairing/CLAUDE.md`
+   each got a short pointer; `docs/decisions/resolved-v1.md` gained a
+   "Default Body Photo" section.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk
+iphonesimulator build` — BUILD SUCCEEDED. Tests skipped per standing project
+instruction. Not manually driven in the simulator UI this session.
+
+---
+
+## 2026-07-20 — Fix: Wardrobe/Insights Q&A hardened to always ground answers in the user's real data
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+User asked that every question routed outside the outfit recommender have
+full access to the user's real wardrobe and Insights data while answering —
+i.e. answers should be actively personalized, not generic. Auditing the
+same-day QA feature found two things worth tightening even though the data
+was technically already present in every call's context:
+1. `Services/StylistQAService.swift`'s `encodeRequestBody` attached the
+   wardrobe catalog + Insights summary to whichever message sat at **index 0**
+   of the replayed conversation history — correct in the common case (a
+   fresh conversation that opens with the QA question), but conceptually
+   fragile for a mixed conversation (some recommend turns, then a QA turn),
+   where the data ended up positioned next to an unrelated earlier message
+   instead of the actual current question.
+2. `Domain/StylistQABrain.swift`'s prompt described the catalog/Insights as
+   something to consult for wardrobe-specific facts, but didn't explicitly
+   instruct the model to actively draw on them for general style/shopping
+   *advice* too — risking answers that read as generic fashion-chatbot
+   output rather than personalized to the user's real closet/Style DNA.
+
+### Fix
+1. `encodeRequestBody` now attaches `catalogDataText`/`insightsSummaryText`
+   to the **latest** turn (`conversationHistory.count - 1`) instead of index
+   0 — guarantees the data is always directly alongside whatever question is
+   actually being answered, regardless of how many earlier turns (QA or
+   recommend) precede it in the conversation. `StylistQABrain.composeFirstTurnContent`
+   renamed to `composeContent` to match (no longer "first turn" specific).
+2. `StylistQABrain.systemPrompt` gained an explicit instruction: the model
+   always has the real wardrobe catalog + Insights summary attached to the
+   current message and must actively use them to personalize every answer —
+   even general advice questions ("how do I dress like an American man")
+   should draw on the user's actual owned colors/undertone/Style DNA/gaps
+   where relevant; general fashion knowledge fills gaps, never substitutes
+   for checking the real data first.
+
+### Changes
+`Vision_clother/Services/StylistQAService.swift`, `Vision_clother/Domain/StylistQABrain.swift`,
+`docs/decisions/resolved-v1.md`.
+
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator build` — BUILD SUCCEEDED.
+
+---
+
+## 2026-07-20 — Fix: Wardrobe/Insights Q&A refused general style/shopping advice
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Problem
+User asked "Tell me what i should be buing to dress like an american man" and
+got the occasion-clarification bounce ("I can only help you style items you
+already own. Are you looking for an outfit for a specific event?") instead
+of an answer — the exact class of bug the same-day Wardrobe/Insights Q&A
+feature (below) was built to fix, for a case that feature didn't cover.
+Root cause: `Domain/StylistQABrain.swift`'s classification prompt only set
+`is_wardrobe_question` true for questions grounded in the user's *existing*
+catalog/Insights data, and defaulted genuinely ambiguous messages to false —
+so a general style/shopping-advice question with no tie to owned items or a
+named occasion fell through to `OutfitRecommendationService`, which has no
+concept of "answer in prose" and correctly (from its own narrow mandate)
+treated the ungrounded, occasion-less request as needing clarification.
+
+### Fix
+Widened `StylistQABrain.systemPrompt`'s classification: `is_wardrobe_question`
+is now true for anything that should be answered in words rather than built
+as an outfit — existing-wardrobe/Insights questions (unchanged) *plus*
+general style/fashion/shopping advice answered from the model's own fashion
+expertise, grounding only the parts that reference the user's real closet
+(e.g. shopping gaps) in the WARDROBE CATALOG/INSIGHTS SUMMARY. The "genuinely
+unsure" default flipped from false to true. The only case that must still
+route to the recommender: a concrete request to be dressed for a named
+occasion from real owned items, or a refinement of outfits already shown.
+Updated the doc comments on `Models/StylistQAResponse.swift`'s
+`isWardrobeQuestion`/`answerText`, `CLAUDE.md`'s Core Invariant, and
+`docs/decisions/resolved-v1.md`'s "Wardrobe/Insights Q&A" section to match.
+
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator build` — BUILD SUCCEEDED.
+
+---
+
+## 2026-07-20 — Feature: Wardrobe/Insights Q&A in Daily Assistant chat
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User reported that typing a genuine question into the Daily Assistant prompt
+(e.g. "what colors do I wear most") produced an outfit recommendation
+instead of an answer. Root cause: the recommendation call's schema only ever
+supported three outcomes — outfits, a clarifying question about the
+*occasion*, or an off-topic redirect — with no path for "answer a factual
+question about the wardrobe or Insights tab." User explicitly did not want
+this folded into the existing ~150-line Decision Hierarchy prompt
+(`Domain/StylistBrain.swift`) — a separate, smaller, optimized prompt was
+requested to avoid diluting a tuned prompt ("lost in the middle"), while
+still sharing the same monthly "recommendation" quota bucket.
+
+### What shipped
+1. **`Domain/QuestionIntentHeuristic.swift`** (new) — cheap, pure, on-device
+   pre-filter (interrogative openers / trailing "?"). Only gates whether the
+   new QA path is even attempted; an ordinary "dress me for X" request never
+   pays for it. Not the real classifier — a false positive/negative here
+   just costs one extra round trip or falls through to prior behavior.
+2. **`Domain/InsightsSummaryBuilder.swift`** (new) — condenses the same pure
+   aggregators that power `Features/Insights/` (Overview, Colors, Wardrobe,
+   Shopping, Style DNA — Trends excluded, its time-series shape doesn't
+   compress into static prompt text) into compact prose, reusing each
+   aggregator's already-computed human-readable strings (`Discovery.text`,
+   `ShoppingSuggestion.text`, `DimensionScore.why`, `StyleColorSnapshot.whyInsight`)
+   rather than inventing new phrasing.
+3. **`Models/StylistQAResponse.swift`** (new) — `{ is_wardrobe_question, answer_text }`.
+4. **`Domain/StylistQABrain.swift`** (new) — a deliberately small, separate
+   system prompt (no Decision Hierarchy, no outfit schema, no clarification
+   protocol) instructing the model to classify (and, if true, answer)
+   directly from the wardrobe catalog + Insights summary given in the first
+   user message.
+5. **`Services/StylistQAService.swift`** (new) — `StylistQAService` protocol +
+   `OpenRouterStylistQAService` (structured/unstructured-fallback pattern,
+   mirroring `OutfitRecommendationService.swift`) + `MockStylistQAService` +
+   `AuthGatedStylistQAService`. POSTs to the exact same
+   `ProxyConfig.openRouterRecommendURL` proxy route the recommender uses —
+   confirmed that route is a payload-agnostic pass-through gated by path,
+   not body shape (`backend/functions/src/app.ts`), so this needed **zero
+   backend changes** and shares the same "recommendation" quota bucket.
+6. **`Data/WardrobeRepository.swift`** — two new protocol methods,
+   `fetchAllItemRatings()`/`fetchAllOutfitFeedback()` (all-time, mirroring
+   `fetchWornLogEntries()`/`fetchSavedCombinations()`'s existing pattern),
+   with a default `[]` extension implementation so every pre-existing test
+   double compiles unchanged; only `SwiftDataWardrobeRepository` (real fetch)
+   and `SyncingWardrobeRepository` (forwards to `underlying`) override it.
+7. **`Features/DailyAssistant/DailyAssistantViewModel.swift`** — new
+   `resolveTurn(userText:conversationHistory:isFinalTurn:)` wraps the
+   existing, **completely unmodified** `resolveOutfits`: when the heuristic
+   fires, tries `resolveWardrobeQuestion()` first; a confirmed answer short-
+   circuits to a new `RequestOutcome`/`ConversationRound.Outcome.answer(String)`
+   case (appended to `conversationHistory` for follow-up refinement, no
+   validator/impressions involved). Any QA-call failure or a `false`
+   classification silently falls through to `resolveOutfits` unchanged — the
+   QA path can only add capability, never make the recommendation path less
+   reliable. `usageTracker.recordRecommendationUsed()` is bumped as soon as
+   the QA call itself succeeds (mirrors `resolveOutfits`'s existing comment:
+   the server's quota gate already cleared regardless of how it classified).
+   New `stylistQAService` init param (defaults to `MockStylistQAService()`).
+8. **`Features/DailyAssistant/DailyAssistantView.swift`** — renders the new
+   `.answer` outcome as a plain assistant text bubble, not the outfit
+   carousel; construction site passes `ServiceFactory.makeStylistQAService()`.
+9. **`AppWiring/ServiceFactory.swift`** — `makeStylistQAService()`.
+10. **Docs**: `CLAUDE.md`'s Core Invariant extended (LLM is also the sole
+    answerer of wardrobe/Insights questions, via the separate call above);
+    `docs/decisions/resolved-v1.md` gained a "Wardrobe/Insights Q&A"
+    section; `Domain/CLAUDE.md`, `Services/CLAUDE.md`,
+    `Features/DailyAssistant/CLAUDE.md` each got a short pointer.
+
+### Fixed during build verification
+`InsightsSummaryBuilder.buildSummaryText`'s `sections` array was declared
+`[String]` while every section builder returns `String?` — changed to
+`[String?]` ahead of the existing `compactMap { $0 }`.
+
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — BUILD SUCCEEDED. Tests skipped per standing project instruction.
+
+---
+
 ## 2026-07-20 — Feature: split "Combinations" into Generated / Worn segments
 
 **Status:** ✅ Shipped — Build Succeeded

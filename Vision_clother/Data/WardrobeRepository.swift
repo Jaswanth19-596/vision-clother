@@ -203,6 +203,27 @@ protocol WardrobeRepository {
     /// No "unban" UI ships yet, but the method exists now so a future one
     /// needs no further protocol/migration change.
     func removePairBan(id: UUID) throws
+
+    /// Wardrobe/Insights Q&A (2026-07-20): all-time `ItemRating`/`OutfitFeedback`
+    /// rows, feeding `Domain/InsightsSummaryBuilder.swift` the same inputs
+    /// `Features/Insights/StyleView.swift`'s `@Query`s already give the
+    /// Insights tab — `DailyAssistantViewModel` has no `ModelContext`/`@Query`
+    /// access, only this repository. Default implementation below returns
+    /// `[]` so every existing test double compiles unchanged; only the real
+    /// repositories override it.
+    func fetchAllItemRatings() throws -> [ItemRating]
+    /// See `fetchAllItemRatings()`'s doc comment.
+    func fetchAllOutfitFeedback() throws -> [OutfitFeedback]
+}
+
+/// Default no-op fallback for the two Insights-Q&A bulk-fetch methods above
+/// — keeps every pre-existing `WardrobeRepository` test double compiling
+/// without needing a change for a feature they don't exercise. Only
+/// `SwiftDataWardrobeRepository`/`SyncingWardrobeRepository` (the real
+/// production path) override these.
+extension WardrobeRepository {
+    func fetchAllItemRatings() throws -> [ItemRating] { [] }
+    func fetchAllOutfitFeedback() throws -> [OutfitFeedback] { [] }
 }
 
 @MainActor
@@ -733,6 +754,14 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]
         )
         return try modelContext.fetch(descriptor)
+    }
+
+    func fetchAllItemRatings() throws -> [ItemRating] {
+        try modelContext.fetch(FetchDescriptor<ItemRating>(sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]))
+    }
+
+    func fetchAllOutfitFeedback() throws -> [OutfitFeedback] {
+        try modelContext.fetch(FetchDescriptor<OutfitFeedback>(sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]))
     }
 
     func fetchSavedCombinations() throws -> [SavedCombination] {

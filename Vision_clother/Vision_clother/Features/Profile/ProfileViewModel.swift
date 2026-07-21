@@ -37,6 +37,17 @@ final class ProfileViewModel {
     private(set) var derivationState: DerivationState = .idle
     private(set) var feedbackHistory = FeedbackHistory()
 
+    /// Whether the current base photo is the bundled default image rather
+    /// than a real photo of the user — computed from bytes, not a separate
+    /// stored flag (see `UserPortraitStorage.isDefaultBodyPhoto`'s doc
+    /// comment), so it stays correct across `refreshPortrait()` calls
+    /// (account switches, cross-device sync) with no extra state to keep in
+    /// sync.
+    var isUsingDefaultBodyPhoto: Bool {
+        guard let portraitImageData else { return false }
+        return UserPortraitStorage.isDefaultBodyPhoto(portraitImageData)
+    }
+
     private let repository: WardrobeRepository
     private let validationService: PersonPhotoValidationService
     private let profileDerivationService: UserProfileDerivationService
@@ -130,6 +141,41 @@ final class ProfileViewModel {
             self.deriveProfile(from: data)
             self.uploadPortraitIfSignedIn(data)
         }
+    }
+
+    /// Alternative to `savePortrait` for users who'd rather not upload a
+    /// personal photo — applies the bundled `UserPortraitStorage.defaultBodyPhotoData`
+    /// as the base try-on photo. Skips both `validationService` (a plastic
+    /// mannequin photo has no human pose/joints for Vision to detect — it
+    /// would just fail `PersonPhotoValidationService`) and
+    /// `profileDerivationService` (there's no real skin tone/body type to
+    /// read from it), assigning a neutral `UserStyleProfileWire` instead so
+    /// recommendation personalization degrades gracefully rather than
+    /// erroring. Still saved/uploaded through the same paths as a real
+    /// photo, so Cloud Sync carries the choice to other devices for free.
+    func useDefaultBodyPhoto() {
+        guard let data = UserPortraitStorage.defaultBodyPhotoData else {
+            AppLog.error(.viewModel, "ProfileViewModel.useDefaultBodyPhoto: bundled default image missing")
+            photoUploadError = "The default image isn't available."
+            return
+        }
+        AppLog.info(.viewModel, "ProfileViewModel.useDefaultBodyPhoto: applying bundled default")
+        photoUploadError = nil
+        derivationTask?.cancel()
+        try? UserPortraitStorage.save(data)
+        hasPortrait = true
+        portraitImageData = data
+        derivationState = .idle
+        let neutralProfile = UserStyleProfileWire(
+            skinTone: "Not specified",
+            undertone: .neutral,
+            bodyType: "Not specified",
+            styleKeywords: [],
+            recommendedColors: [],
+            avoidColors: []
+        )
+        try? repository.saveUserProfile(neutralProfile)
+        uploadPortraitIfSignedIn(data)
     }
 
     /// Best-effort, not part of the durable `SyncMetadata` outbox — same

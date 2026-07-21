@@ -9,7 +9,7 @@
 //
 //  Same view+view-model-in-one-file shape as `AccountSectionView`. The view
 //  model forwards to the app-root `StoreKitPaymentManager` passed per call
-//  (mirroring `AccountSectionViewModel.signOut(syncCoordinator:)`'s
+//  (mirroring `AccountCardViewModel.signOut(syncCoordinator:)`'s
 //  pattern) — views never call the manager directly.
 //
 

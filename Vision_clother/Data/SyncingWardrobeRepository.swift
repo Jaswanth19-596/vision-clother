@@ -165,6 +165,14 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.fetchOutfitFeedback(for: outfitID)
     }
 
+    func fetchAllItemRatings() throws -> [ItemRating] {
+        try underlying.fetchAllItemRatings()
+    }
+
+    func fetchAllOutfitFeedback() throws -> [OutfitFeedback] {
+        try underlying.fetchAllOutfitFeedback()
+    }
+
     // MARK: - Saved combinations
 
     func fetchSavedCombinations() throws -> [SavedCombination] {

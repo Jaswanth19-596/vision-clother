@@ -79,6 +79,8 @@ final class DailyAssistantViewModel {
     private enum RequestOutcome {
         case success([OutfitCombination])
         case clarification(followUpText: String, chips: [String])
+        /// Wardrobe/Insights Q&A (2026-07-20) — see `resolveWardrobeQuestion()`.
+        case answer(String)
         case failure(String)
         case timedOut
     }
@@ -169,6 +171,10 @@ final class DailyAssistantViewModel {
             /// outcome. `note` is the model's own `follow_up_text` when it
             /// chose to explain a no-match verdict, `nil` otherwise.
             case purchaseCheck(item: WardrobeItem, outfits: [OutfitCombination], note: String?)
+            /// Wardrobe/Insights Q&A (2026-07-20): the assistant answered a
+            /// question about the wardrobe/Insights directly instead of
+            /// recommending outfits — see `resolveWardrobeQuestion()`.
+            case answer(String)
         }
 
         let id = UUID()
@@ -224,6 +230,12 @@ final class DailyAssistantViewModel {
     /// Primary recommendation path (PRD §2.1a, the 2026-07-10
     /// LLM-as-Recommender reversal — docs/decisions/resolved-v1.md).
     private let recommendationService: OutfitRecommendationService
+    /// Wardrobe/Insights Q&A (2026-07-20): a separate, smaller call —
+    /// deliberately not folded into `recommendationService`'s prompt — tried
+    /// first (behind `Domain/QuestionIntentHeuristic.swift`'s cheap gate) so
+    /// a genuine wardrobe/Insights question gets answered directly instead
+    /// of forced into an outfit recommendation. See `resolveWardrobeQuestion()`.
+    private let stylistQAService: StylistQAService
     private let weatherProvider: CurrentWeatherProviding
     /// Backs the lazy profile backfill in `requestOutfitIdeas()` — derives
     /// once from an existing portrait if `fetchUserProfile()` is still nil,
@@ -258,6 +270,7 @@ final class DailyAssistantViewModel {
         repository: WardrobeRepository,
         jobQueueStore: JobQueueStore,
         recommendationService: OutfitRecommendationService = MockOutfitRecommendationService(),
+        stylistQAService: StylistQAService = MockStylistQAService(),
         weatherProvider: CurrentWeatherProviding = MockCurrentWeatherProvider(),
         profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService(),
         usageTracker: UsageTracker
@@ -265,6 +278,7 @@ final class DailyAssistantViewModel {
         self.repository = repository
         self.jobQueueStore = jobQueueStore
         self.recommendationService = recommendationService
+        self.stylistQAService = stylistQAService
         self.weatherProvider = weatherProvider
         self.profileDerivationService = profileDerivationService
         self.usageTracker = usageTracker
@@ -385,8 +399,8 @@ final class DailyAssistantViewModel {
         // on timeout cooperatively aborts any in-flight URLSession request
         // too, rather than leaving it running in the background.
         let workTask = Task {
-            await PerfLog.time("resolveOutfits.total") {
-                await self.resolveOutfits(conversationHistory: historySnapshot, isFinalTurn: isFinalTurn)
+            await PerfLog.time("resolveTurn.total") {
+                await self.resolveTurn(userText: userText, conversationHistory: historySnapshot, isFinalTurn: isFinalTurn)
             }
         }
         let timeoutTask = Task {
@@ -407,6 +421,12 @@ final class DailyAssistantViewModel {
         }
 
         switch outcome {
+        case .answer(let text):
+            if let index = rounds.firstIndex(where: { $0.id == pendingRoundID }) {
+                rounds[index].outcome = .answer(text)
+            }
+            conversationHistory.append(ConversationTurn(role: .assistant, text: text))
+            extractionState = .idle
         case .success(let resolved):
             if let index = rounds.firstIndex(where: { $0.id == pendingRoundID }) {
                 rounds[index].outcome = .outfits(resolved)
@@ -484,6 +504,72 @@ final class DailyAssistantViewModel {
         )
         let result = RecentOutfitHistoryBuilder.build(wornEntries: entries, combinationsByID: combinationsByID)
         return (result, try repository.fetchPairBans())
+    }
+
+    /// Wardrobe/Insights Q&A (2026-07-20) entry point for every ordinary
+    /// free-text turn — tries `resolveWardrobeQuestion` first (behind
+    /// `Domain/QuestionIntentHeuristic.swift`'s cheap on-device gate, so an
+    /// ordinary "dress me for X" turn never pays for it) and only falls
+    /// through to the existing, completely unmodified `resolveOutfits` when
+    /// that returns nil — either the heuristic didn't trigger, the QA call
+    /// itself decided this wasn't a wardrobe question, or the QA call
+    /// failed outright. `resolveOutfits` itself is untouched by this
+    /// feature on purpose (see `Services/StylistQAService.swift`'s header).
+    private func resolveTurn(userText: String, conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
+        if QuestionIntentHeuristic.looksLikeWardrobeQuestion(userText),
+           let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory) {
+            return .answer(answer)
+        }
+        return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+    }
+
+    /// Returns the answer text when this turn really is a wardrobe/Insights
+    /// question the QA call could confidently answer; `nil` in every other
+    /// case (not a question, ambiguous, empty wardrobe, or any failure) so
+    /// `resolveTurn` falls through to the ordinary recommendation flow —
+    /// never surfaces a QA-specific error to the user, since a failure here
+    /// should degrade to today's existing behavior, not a dead end.
+    private func resolveWardrobeQuestion(conversationHistory: [ConversationTurn]) async -> String? {
+        guard !Task.isCancelled else { return nil }
+        do {
+            let (inventory, history) = try await wardrobeSnapshot()
+            guard !inventory.filter({ !$0.isGhostElement }).isEmpty else { return nil }
+            let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history)
+            guard !catalog.isEmpty else { return nil }
+            let catalogData = try JSONEncoder().encode(catalog)
+            let catalogText = String(decoding: catalogData, as: UTF8.self)
+
+            let insightsSummary = InsightsSummaryBuilder.buildSummaryText(
+                inventory: inventory,
+                itemRatings: try repository.fetchAllItemRatings(),
+                outfitFeedbacks: try repository.fetchAllOutfitFeedback(),
+                wornLogEntries: try repository.fetchWornLogEntries(),
+                savedCombinations: try repository.fetchSavedCombinations(),
+                attributeProfile: history.attributeProfile
+            )
+
+            loadingStage = .consultingStylist
+            let response = try await PerfLog.time("stylistQA.call") {
+                try await stylistQAService.answerWardrobeQuestion(
+                    conversationHistory: conversationHistory,
+                    catalogDataText: catalogText,
+                    insightsSummaryText: insightsSummary
+                )
+            }
+            // Same posture as `resolveOutfits`: this call already cleared
+            // the server's quotaGate("recommendation") regardless of how it
+            // classified the message, so the optimistic local mirror is
+            // bumped here too, not only on a confirmed answer.
+            usageTracker.recordRecommendationUsed()
+
+            guard response.isWardrobeQuestion, let answer = response.answerText, !answer.isEmpty else {
+                return nil
+            }
+            return answer
+        } catch {
+            MLLog.logger.notice("stylistQA: failed, falling through to recommendation flow — \(String(describing: error))")
+            return nil
+        }
     }
 
     private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {

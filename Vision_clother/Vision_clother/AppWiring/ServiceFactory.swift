@@ -61,6 +61,12 @@ enum ServiceFactory {
         AuthGatedOutfitRecommendationService()
     }
 
+    /// Wardrobe/Insights Q&A (2026-07-20) — same auth-gated-at-call-time
+    /// posture as `makeOutfitRecommendationService()` above.
+    static func makeStylistQAService() -> StylistQAService {
+        AuthGatedStylistQAService()
+    }
+
     /// `OpenMeteoWeatherProvider` needs no API key/entitlement — CoreLocation
     /// + Open-Meteo's free REST API — so it's always the real one here, no
     /// key gate like the OpenRouter-backed services above.

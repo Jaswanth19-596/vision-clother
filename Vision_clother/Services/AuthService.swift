@@ -67,11 +67,18 @@ final class AuthService: NSObject, ObservableObject {
     /// and a manual retry, instead of every AI feature silently mocking
     /// forever with no explanation.
     @Published private(set) var guestSessionError: String?
+    /// Best-effort human-readable label for the signed-in identity (email,
+    /// then phone, then Firebase's `displayName`) — `nil` for guests/no
+    /// session. Used by the Profile tab's account card so "Signed in" isn't
+    /// just a bare status word.
+    @Published private(set) var displayLabel: String?
 
     private override init() {
-        isSignedIn = Auth.auth().currentUser != nil
-        uid = Auth.auth().currentUser?.uid
-        isAnonymous = Auth.auth().currentUser?.isAnonymous ?? false
+        let user = Auth.auth().currentUser
+        isSignedIn = user != nil
+        uid = user?.uid
+        isAnonymous = user?.isAnonymous ?? false
+        displayLabel = Self.displayLabel(for: user)
         super.init()
         AppLog.info(.auth, "init: currentUser=\(Auth.auth().currentUser?.uid ?? "nil") isAnonymous=\(isAnonymous)")
         Auth.auth().addStateDidChangeListener { [weak self] _, user in
@@ -79,8 +86,14 @@ final class AuthService: NSObject, ObservableObject {
             self?.isSignedIn = user != nil
             self?.uid = user?.uid
             self?.isAnonymous = user?.isAnonymous ?? false
+            self?.displayLabel = Self.displayLabel(for: user)
         }
         Task { [weak self] in await self?.ensureGuestSession() }
+    }
+
+    private static func displayLabel(for user: User?) -> String? {
+        guard let user, !user.isAnonymous else { return nil }
+        return user.email ?? user.phoneNumber ?? user.displayName
     }
 
     /// Guest-first entry point — kicked fire-and-forget from `init` so a

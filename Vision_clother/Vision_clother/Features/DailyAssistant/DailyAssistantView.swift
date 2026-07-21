@@ -90,6 +90,7 @@ struct DailyAssistantView: View {
                 repository: SyncingWardrobeRepository(modelContext: modelContext),
                 jobQueueStore: jobQueueStore,
                 recommendationService: ServiceFactory.makeOutfitRecommendationService(),
+                stylistQAService: ServiceFactory.makeStylistQAService(),
                 weatherProvider: ServiceFactory.makeWeatherProvider(),
                 profileDerivationService: ServiceFactory.makeUserProfileDerivationService(),
                 usageTracker: usageTracker
@@ -282,6 +283,14 @@ struct DailyAssistantView: View {
                         onAddToCloset: { viewModel.addProspectiveItemToCloset(item) },
                         onDiscard: { viewModel.discardProspectiveItem(item) }
                     )
+                }
+
+            case .answer(let text):
+                assistantRow {
+                    Text(text)
+                        .font(.body)
+                        .premiumCard()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

@@ -2,11 +2,12 @@
 //  AccountSectionView.swift
 //  Vision_clother
 //
-//  Compact account/sign-in section for ProfileView.swift — kept as its own
-//  file rather than growing the already-large ProfileView further. Signing
-//  in is optional, not a hard gate: `ServiceFactory` already falls back to
-//  mocks for every OpenRouter/Pexels-backed service when signed out (see
-//  Services/AuthService.swift), so the rest of the app stays interactive.
+//  Settings — everything account-adjacent that *isn't* sign-in/out: credit
+//  purchases, usage/quota readout, sync status, and diagnostic log sharing.
+//  Sign-in/out itself lives in `AccountCardView.swift`, shown directly in
+//  ProfileView's main list — see that file's header and
+//  Features/Profile/CLAUDE.md. Kept as its own file rather than growing the
+//  already-large ProfileView further.
 //
 
 import Combine
@@ -15,19 +16,11 @@ import SwiftUI
 
 @Observable
 final class AccountSectionViewModel {
-    enum PhoneStep {
-        case enterNumber
-        case enterCode(verificationID: String)
-    }
-
-    var phoneNumber = ""
-    var verificationCode = ""
-    var phoneStep: PhoneStep = .enterNumber
     var isBusy = false
     var errorMessage: String?
-    /// Distinct from `isBusy` (shared across sign-in/phone/sign-out too) —
-    /// gates the "Deleting your account…" status label specifically, so it
-    /// can't misfire during an unrelated busy sign-in flow.
+    /// Distinct from `isBusy` (shared across delete/sync too) — gates the
+    /// "Deleting your account…" status label specifically, so it can't
+    /// misfire during an unrelated busy flow.
     private(set) var isDeletingAccount = false
     /// Set by `prepareDebugLogExport()` right before presenting `ShareLink` —
     /// `DebugLogStore` is an actor, so the URL has to be fetched async ahead
@@ -42,11 +35,13 @@ final class AccountSectionViewModel {
     /// be reactive under `@Observable` (its tracking only fires on this
     /// class's own stored property writes, not on a Combine `@Published`
     /// read nested inside a computed property), hence the active mirror via
-    /// `bindAuthState()`'s Combine subscriptions.
+    /// `bindAuthState()`'s Combine subscriptions. Sign-in/out actions
+    /// themselves live in `AccountCardViewModel` now — this only needs to
+    /// know *whether* signed in/anonymous, to gate Buy Credits/Delete
+    /// Account visibility below.
     private(set) var isSignedIn = AuthService.shared.isSignedIn
     private(set) var isAnonymous = AuthService.shared.isAnonymous
     private(set) var uid: String? = AuthService.shared.uid
-    private(set) var guestSessionError: String? = AuthService.shared.guestSessionError
     private var authCancellables = Set<AnyCancellable>()
 
     init() {
@@ -63,76 +58,6 @@ final class AccountSectionViewModel {
         AuthService.shared.$uid
             .sink { [weak self] in self?.uid = $0 }
             .store(in: &authCancellables)
-        AuthService.shared.$guestSessionError
-            .sink { [weak self] in self?.guestSessionError = $0 }
-            .store(in: &authCancellables)
-    }
-
-    func signInWithGoogle() async {
-        errorMessage = nil
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            try await AuthService.shared.signInWithGoogle()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func sendPhoneCode() async {
-        errorMessage = nil
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            let verificationID = try await AuthService.shared.startPhoneSignIn(phoneNumber: phoneNumber)
-            phoneStep = .enterCode(verificationID: verificationID)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func confirmPhoneCode() async {
-        guard case .enterCode(let verificationID) = phoneStep else { return }
-        errorMessage = nil
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            try await AuthService.shared.confirmPhoneSignIn(verificationID: verificationID, code: verificationCode)
-            resetPhoneFlow()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func resetPhoneFlow() {
-        phoneNumber = ""
-        verificationCode = ""
-        phoneStep = .enterNumber
-    }
-
-    /// Manual recovery when `AuthService.init()`'s fire-and-forget
-    /// `ensureGuestSession()` never established a session (see
-    /// `AuthService.guestSessionError`) — every AI feature silently mocks
-    /// until this succeeds, so this needs a visible retry, not just a
-    /// background relaunch-and-hope.
-    func retryGuestSession() async {
-        errorMessage = nil
-        isBusy = true
-        defer { isBusy = false }
-        _ = await AuthService.shared.ensureGuestSession()
-    }
-
-    /// Guest-first: sign-out is now "become a fresh guest," not "become
-    /// signed-out" — see `Data/WardrobeSyncCoordinator.swift`'s
-    /// `performExplicitSignOut` doc comment. Delegates the whole
-    /// drain/wipe/sign-out/re-guest sequence there rather than calling
-    /// `AuthService.shared.signOut()` directly, since only the coordinator
-    /// knows how to do that safely without losing unsynced data.
-    func signOut(syncCoordinator: WardrobeSyncCoordinator) async {
-        errorMessage = nil
-        isBusy = true
-        defer { isBusy = false }
-        await syncCoordinator.performExplicitSignOut()
     }
 
     /// Permanent account deletion — delegates to
@@ -186,8 +111,6 @@ struct AccountSectionView: View {
                 linkedContent
             } else if viewModel.isSignedIn {
                 guestContent
-            } else {
-                noSessionContent
             }
 
             usageContent
@@ -264,9 +187,12 @@ struct AccountSectionView: View {
         }
     }
 
+    /// Linked (non-anonymous) account — the "Signed in" status and Sign Out
+    /// action now live in `AccountCardView` at the top of Profile's main
+    /// list; this only offers what's left for a linked account under
+    /// Settings.
     @ViewBuilder
     private var linkedContent: some View {
-        Label("Signed in", systemImage: "checkmark.seal.fill")
         // Linked accounts only — purchases hang off the Firebase uid, and a
         // guest uid is disposable (see `CreditsStoreView`'s doc comment).
         Button {
@@ -275,78 +201,20 @@ struct AccountSectionView: View {
             Label("Buy Credits", systemImage: "plus.circle")
         }
         .disabled(syncCoordinator.isSyncingAccountSwitch)
-        Button("Sign Out", role: .destructive) {
-            Task { await viewModel.signOut(syncCoordinator: syncCoordinator) }
-        }
-        .disabled(syncCoordinator.isSyncingAccountSwitch)
         Button("Delete Account", role: .destructive) {
             isPresentingDeleteConfirmation = true
         }
         .disabled(viewModel.isBusy || syncCoordinator.isSyncingAccountSwitch)
     }
 
-    /// No Firebase session at all — distinct from `guestContent`'s "browsing
-    /// as a guest" (that implies a working anonymous session): this is what
-    /// shows when `AuthService.init()`'s fire-and-forget guest sign-in never
-    /// completed, so every AI feature is silently mocked
-    /// (`Services/ServiceFactory.swift` gates on `isSignedIn`). Previously
-    /// this state fell through to `linkedContent`'s "Signed in" + a Sign Out
-    /// button that did nothing (`isAnonymous` reads `false` with no
-    /// `currentUser` at all, same as a real signed-in account) — this is the
-    /// fix for that.
-    @ViewBuilder
-    private var noSessionContent: some View {
-        Text("Couldn't start a session — AI styling features are unavailable until this succeeds.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-        if let guestSessionError = viewModel.guestSessionError {
-            Text(guestSessionError)
-                .font(.caption)
-                .foregroundStyle(.red)
-        }
-
-        Button {
-            Task { await viewModel.retryGuestSession() }
-        } label: {
-            Label("Retry", systemImage: "arrow.clockwise")
-        }
-        .disabled(viewModel.isBusy)
-
-        Button {
-            Task { await viewModel.signInWithGoogle() }
-        } label: {
-            Label("Sign in with Google", systemImage: "person.crop.circle")
-        }
-        .disabled(viewModel.isBusy)
-
-        phoneSignInContent
-    }
-
-    /// Guest (unlinked anonymous session): Google/phone sign-in now
-    /// transparently *link* this session (`AuthService.signInOrLink`)
-    /// rather than replacing it, so the copy here promises "save," not
-    /// "unlock" — AI recommendations already work as a guest.
+    /// Guest (unlinked anonymous session) — sign-in actions now live in
+    /// `AccountCardView`; this only offers the guest-only destructive
+    /// action. Guests still have real synced Firestore/Storage data under
+    /// their anonymous uid (guest-first: `AuthService`'s `isSignedIn` is
+    /// true for guests too), so a guest who never links can still purge it
+    /// rather than it sitting orphaned in the cloud indefinitely.
     @ViewBuilder
     private var guestContent: some View {
-        Text("Browsing as a guest. Sign in to save your closet across devices, unlock try-on rendering, and buy credits.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-        Button {
-            Task { await viewModel.signInWithGoogle() }
-        } label: {
-            Label("Sign in with Google", systemImage: "person.crop.circle")
-        }
-        .disabled(viewModel.isBusy || syncCoordinator.isSyncingAccountSwitch)
-
-        phoneSignInContent
-
-        // Guests still have real synced Firestore/Storage data under their
-        // anonymous uid (guest-first: `AuthService`'s `isSignedIn` is true
-        // for guests too) — offered here too, not just `linkedContent`, so a
-        // guest who never links can still purge it rather than it sitting
-        // orphaned in the cloud indefinitely.
         Button("Delete My Data", role: .destructive) {
             isPresentingDeleteConfirmation = true
         }
@@ -378,29 +246,6 @@ struct AccountSectionView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-    }
-
-    @ViewBuilder
-    private var phoneSignInContent: some View {
-        switch viewModel.phoneStep {
-        case .enterNumber:
-            TextField("Phone number (e.g. +14155551234)", text: $viewModel.phoneNumber)
-                .keyboardType(.phonePad)
-            Button("Send Code") {
-                Task { await viewModel.sendPhoneCode() }
-            }
-            .disabled(viewModel.isBusy || viewModel.phoneNumber.isEmpty || syncCoordinator.isSyncingAccountSwitch)
-        case .enterCode:
-            TextField("Verification code", text: $viewModel.verificationCode)
-                .keyboardType(.numberPad)
-            Button("Verify") {
-                Task { await viewModel.confirmPhoneCode() }
-            }
-            .disabled(viewModel.isBusy || viewModel.verificationCode.isEmpty || syncCoordinator.isSyncingAccountSwitch)
-            Button("Cancel", role: .cancel) {
-                viewModel.resetPhoneFlow()
-            }
-        }
     }
 }
 

@@ -42,4 +42,20 @@ enum UserPortraitStorage {
     static func delete() {
         try? FileManager.default.removeItem(at: fileURL)
     }
+
+    /// Bundled stand-in body photo (`Resources/DefaultBodyPhoto.jpg`) offered
+    /// in Profile as an alternative to the user's own photo, for anyone who'd
+    /// rather not upload a personal photo. Identical bytes on every install,
+    /// so `isDefaultBodyPhoto(_:)` can tell "the user picked this" from "the
+    /// user has their own photo" by plain equality — no extra persisted flag,
+    /// and it rides the exact same save/upload path a real photo does, so
+    /// Cloud Sync carries the choice across devices for free.
+    static let defaultBodyPhotoData: Data? = {
+        guard let url = Bundle.main.url(forResource: "DefaultBodyPhoto", withExtension: "jpg") else { return nil }
+        return try? Data(contentsOf: url)
+    }()
+
+    static func isDefaultBodyPhoto(_ data: Data) -> Bool {
+        data == defaultBodyPhotoData
+    }
 }

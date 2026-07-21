@@ -130,16 +130,23 @@ final class ManualPairingViewModel {
             return
         }
 
-        do {
-            try await validationService.validate(imageData: portraitData)
-        } catch let error as PersonPhotoValidationError {
-            guard generationID == currentGenerationID else { return }
-            state = .failed(error.errorDescription ?? "That photo isn't usable.")
-            return
-        } catch {
-            guard generationID == currentGenerationID else { return }
-            state = .failed("Couldn't check that photo. Try again.")
-            return
+        // The bundled default body photo (Profile's "Use Default Image")
+        // is a plastic mannequin, not a real person — Vision's human/pose
+        // detectors have nothing to find on it, so `PersonPhotoValidationService`
+        // would reject every generation. Skip validation for it; a real
+        // user photo still goes through the same check as always.
+        if !UserPortraitStorage.isDefaultBodyPhoto(portraitData) {
+            do {
+                try await validationService.validate(imageData: portraitData)
+            } catch let error as PersonPhotoValidationError {
+                guard generationID == currentGenerationID else { return }
+                state = .failed(error.errorDescription ?? "That photo isn't usable.")
+                return
+            } catch {
+                guard generationID == currentGenerationID else { return }
+                state = .failed("Couldn't check that photo. Try again.")
+                return
+            }
         }
 
         guard !Task.isCancelled, generationID == currentGenerationID else { return }
