@@ -22,9 +22,89 @@ import Observation
 @MainActor
 final class CombinationsViewModel {
     private let repository: WardrobeRepository
+    /// Anti-Repetition's "Generate Image" follow-up to a placeholder
+    /// combination (Action A saved one with no render yet) — same
+    /// service/quota dependencies `ManualPairingViewModel.generatePreview()`
+    /// uses, since this is the identical render pipeline triggered from a
+    /// different entry point.
+    private let tryOnService: TryOnRenderService
+    private let usageTracker: UsageTracker
+    /// Keyed by `SavedCombination.id` — more than one detail page could
+    /// in principle be generating at once (paging TabView keeps every page
+    /// alive), so this can't be a single scalar the way `ManualPairingViewModel.state` is.
+    private(set) var generationStateByCombinationID: [UUID: TryOnState] = [:]
 
-    init(repository: WardrobeRepository) {
+    init(repository: WardrobeRepository, tryOnService: TryOnRenderService = MockTryOnRenderService(), usageTracker: UsageTracker) {
         self.repository = repository
+        self.tryOnService = tryOnService
+        self.usageTracker = usageTracker
+    }
+
+    func generationState(for combination: SavedCombination) -> TryOnState {
+        generationStateByCombinationID[combination.id] ?? .idle
+    }
+
+    /// Runs the same try-on render pipeline `ManualPairingViewModel.generatePreview()`
+    /// does, but against an already-saved placeholder combination's resolved
+    /// items — on success, replaces the placeholder in place
+    /// (`updateCombinationImage`) rather than creating a second
+    /// `SavedCombination` row.
+    func generateImage(for combination: SavedCombination) async {
+        guard !AuthService.shared.isAnonymous else {
+            generationStateByCombinationID[combination.id] = .failed(.signInRequired)
+            return
+        }
+        guard usageTracker.combinationsRemaining > 0 else {
+            generationStateByCombinationID[combination.id] = .failed(.quotaExceeded)
+            return
+        }
+        guard let portraitData = UserPortraitStorage.load() else {
+            generationStateByCombinationID[combination.id] = .failed(.renderFailed(reason: "Add a photo of yourself first."))
+            return
+        }
+        let items = resolveItems(for: combination)
+        guard !items.isEmpty else { return }
+
+        AppLog.info(.viewModel, "CombinationsViewModel.generateImage: id=\(combination.id) items=\(items.count)")
+        await tryOnService.renderTryOn(baseImageData: portraitData, items: items) { [weak self] state in
+            Task { @MainActor in
+                self?.apply(state, combination: combination)
+            }
+        }
+    }
+
+    private func apply(_ state: TryOnState, combination: SavedCombination) {
+        generationStateByCombinationID[combination.id] = state
+        switch state {
+        case .succeeded(let imageURL):
+            guard let imageData = try? Data(contentsOf: imageURL), let assetName = try? ImageStorage.save(imageData) else {
+                generationStateByCombinationID[combination.id] = .failed(.renderFailed(reason: "Couldn't save the generated image."))
+                return
+            }
+            do {
+                try repository.updateCombinationImage(id: combination.id, assetName: assetName)
+                usageTracker.recordCombinationUsed()
+                AppLog.info(.viewModel, "CombinationsViewModel.generateImage: ok id=\(combination.id)")
+            } catch {
+                AppLog.error(.viewModel, "CombinationsViewModel.generateImage: failed id=\(combination.id) — \(String(describing: error))")
+                generationStateByCombinationID[combination.id] = .failed(.renderFailed(reason: "Couldn't save the generated image."))
+            }
+        case .failed(let error):
+            AppLog.error(.viewModel, "CombinationsViewModel.generateImage: failed id=\(combination.id) — \(String(describing: error))")
+        case .idle, .submitting, .polling:
+            break
+        }
+    }
+
+    // MARK: - Anti-Repetition: permanent pair veto
+
+    func banPair(_ itemA: WardrobeItem, _ itemB: WardrobeItem) {
+        do {
+            try repository.recordPairBan(itemAID: itemA.id, itemBID: itemB.id)
+            AppLog.info(.viewModel, "CombinationsViewModel.banPair: ok \(itemA.id)+\(itemB.id)")
+        } catch {
+            AppLog.error(.viewModel, "CombinationsViewModel.banPair: failed — \(String(describing: error))")
+        }
     }
 
     /// The "Wore this" quick action (Analytics & Insights, Phase 3) — logs a

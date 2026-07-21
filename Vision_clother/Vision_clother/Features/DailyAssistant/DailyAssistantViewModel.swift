@@ -34,6 +34,22 @@ final class DailyAssistantViewModel {
         let histogram = Dictionary(grouping: rejections, by: { String(describing: $0) }).mapValues(\.count)
         MLLog.logger.notice("validation: offered=\(offered) kept=\(kept) rejections=\(histogram)")
     }
+
+    /// `Services/OutfitRecommendationService.swift`'s `performRequest` always
+    /// wraps a transport error in `OutfitRecommendationError.network(_:)`
+    /// before rethrowing (so callers get one typed error surface for the
+    /// whole recommendation call) — a bare `error as? URLError` check at the
+    /// `resolveOutfits`/`resolveProspectivePurchase` catch sites therefore
+    /// never matches a cooperative-cancellation `URLError`, even though one
+    /// is exactly what `timeoutTask.cancel()` produces. Unwraps one level to
+    /// find it.
+    private static func isCancelledTransportError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError { return urlError.code == .cancelled }
+        if case OutfitRecommendationError.network(let underlying) = error {
+            return (underlying as? URLError)?.code == .cancelled
+        }
+        return false
+    }
     /// Hard cap on the whole weather → profile → recommendation stretch.
     /// Neither `URLSession.shared` (used by every OpenRouter service in this
     /// chain) nor any call site configures its own request timeout, so a
@@ -450,6 +466,26 @@ final class DailyAssistantViewModel {
         return (inventory, history)
     }
 
+    /// Anti-Repetition: the rotation-novelty + permanent-veto context fed to
+    /// every recommendation call. `fetchWornLogEntries(since:)` is already
+    /// bounded to the wider of the two rotation tiers
+    /// (`softPenalizeWindowDays`); the matching `SavedCombination` rows are
+    /// then scoped in-memory to exactly the ids those worn entries reference
+    /// (not `fetchSavedCombinations()`'s full history) — bounded by recent
+    /// wear count, not total saved-combo count, mirroring
+    /// `fetchFeedbackHistory()`'s own `neededOutfitIDs` scoping.
+    private func fetchRecentOutfitHistory() throws -> (result: RecentOutfitHistoryBuilder.Result, pairBans: [ItemPairBan]) {
+        let cutoff = Date.now.addingTimeInterval(-Double(FashionKnowledgeConstants.Rotation.softPenalizeWindowDays) * 86400)
+        let entries = try repository.fetchWornLogEntries(since: cutoff)
+        let neededCombinationIDs = Set(entries.map(\.savedCombinationID))
+        let combinationsByID = Dictionary(uniqueKeysWithValues: (try repository.fetchSavedCombinations())
+            .filter { neededCombinationIDs.contains($0.id) }
+            .map { ($0.id, $0) }
+        )
+        let result = RecentOutfitHistoryBuilder.build(wornEntries: entries, combinationsByID: combinationsByID)
+        return (result, try repository.fetchPairBans())
+    }
+
     private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
         do {
             // Weather, the wardrobe snapshot, and the profile don't depend on
@@ -470,11 +506,14 @@ final class DailyAssistantViewModel {
                 return .failure("Your wardrobe appears to be empty. Add some items and try again.")
             }
 
+            let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
+
             loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
                 try await recommendationService.recommendOutfits(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
-                    catalog: catalog, profile: profile, weather: weather, history: history
+                    catalog: catalog, profile: profile, weather: weather, history: history,
+                    recentWornHistory: recentWornHistory, pairBans: pairBans
                 )
             }
             // A call that reaches this point already cleared the server's
@@ -530,7 +569,9 @@ final class DailyAssistantViewModel {
                     constraints: response.resolvedConstraints,
                     profile: profile,
                     weather: weather,
-                    history: history
+                    history: history,
+                    bannedPairs: Set(pairBans.map { PairKey($0.itemAID, $0.itemBID) }),
+                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs))
                 )
             }
             Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)
@@ -542,8 +583,13 @@ final class DailyAssistantViewModel {
             return .timedOut
         } catch {
             // URLSession surfaces cooperative cancellation (from the timeout
-            // deadline above) as `URLError.cancelled`, not `CancellationError`.
-            if (error as? URLError)?.code == .cancelled {
+            // deadline above) as `URLError.cancelled`, not `CancellationError`
+            // — but it never reaches here bare: `OutfitRecommendationService`
+            // always wraps transport errors in `OutfitRecommendationError.network(_:)`
+            // first, so the cancellation has to be unwrapped from underneath
+            // that case (see `Self.isCancelledTransportError`), not read
+            // directly off `error`.
+            if Self.isCancelledTransportError(error) {
                 return .timedOut
             }
             Self.logger.debug("Outfit recommendation failed: \(String(describing: error))")
@@ -672,12 +718,15 @@ final class DailyAssistantViewModel {
                 )
             }
 
+            let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
+
             loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
                 try await recommendationService.recommendOutfits(
                     conversationHistory: [ConversationTurn(role: .user, text: Self.prospectivePurchaseScenarioText)],
                     isFinalTurn: true,
-                    catalog: catalog, profile: profile, weather: weather, history: history
+                    catalog: catalog, profile: profile, weather: weather, history: history,
+                    recentWornHistory: recentWornHistory, pairBans: pairBans
                 )
             }
             usageTracker.recordRecommendationUsed()
@@ -699,7 +748,9 @@ final class DailyAssistantViewModel {
                     response, index: freshIndex,
                     constraints: response.resolvedConstraints,
                     profile: profile, weather: weather, history: history,
-                    mustIncludeItemID: prospectiveItem.id
+                    mustIncludeItemID: prospectiveItem.id,
+                    bannedPairs: Set(pairBans.map { PairKey($0.itemAID, $0.itemBID) }),
+                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs))
                 )
             }
             Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)
@@ -772,5 +823,33 @@ final class DailyAssistantViewModel {
         // gesture among the shown candidates — best-effort, never a gate.
         try? repository.recordSelection(outfitID: outfit.id)
         jobQueueStore.enqueueTryOn(baseImageData: baseImageData, outfit: outfit)
+    }
+
+    // MARK: - Anti-Repetition: "Wearing This Today" (Action A)
+
+    /// Logs a wear directly from the text recommendation card, before any
+    /// try-on image exists. `WornLogEntry`/`OutfitFeedback` both require a
+    /// durable `SavedCombination.id`, never the ephemeral `OutfitCombination.id`
+    /// the LLM response produced, so this silently creates that row first —
+    /// same fields a manual Save would populate, minus a real rendered image
+    /// (`SavedCombination.noRenderPlaceholderAssetName`; see its doc comment).
+    /// Best-effort, same posture as `recordSelection`/`recordImpressions` —
+    /// a logging failure here shouldn't block the user from continuing to
+    /// use the recommendation they're looking at.
+    func markWornToday(_ outfit: OutfitCombination) {
+        let combination = SavedCombination(
+            imageAssetName: SavedCombination.noRenderPlaceholderAssetName,
+            itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id),
+            labelsBySlot: outfit.itemsBySlot.mapValues(\.displayLabel),
+            origin: "assistantQuickWorn",
+            supplementaryAccessoryItemIDs: outfit.supplementaryAccessories.map(\.id),
+            supplementaryAccessoryLabels: outfit.supplementaryAccessories.map(\.displayLabel)
+        )
+        do {
+            try repository.saveAndLogWorn(combination: combination, itemIDs: outfit.items.map(\.id))
+            AppLog.info(.viewModel, "DailyAssistantViewModel.markWornToday: ok id=\(combination.id)")
+        } catch {
+            AppLog.error(.viewModel, "DailyAssistantViewModel.markWornToday: failed — \(String(describing: error))")
+        }
     }
 }

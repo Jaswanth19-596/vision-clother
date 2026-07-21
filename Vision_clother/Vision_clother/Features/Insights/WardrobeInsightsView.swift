@@ -76,6 +76,7 @@ struct WardrobeInsightsView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Utilization")
                 .font(.headline)
+            InsightSourceCaption(text: "From wears you've logged")
             if let rate = snapshot.utilizationRate {
                 Text("\(Int((rate * 100).rounded()))%")
                     .font(.system(.largeTitle, design: .rounded).bold())
@@ -102,6 +103,7 @@ struct WardrobeInsightsView: View {
             VStack(alignment: .leading, spacing: VCSpacing.sm) {
                 Text(title)
                     .font(.headline)
+                InsightSourceCaption(text: "From wears you've logged")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: VCSpacing.md) {
                         ForEach(items) { utilization in
@@ -133,6 +135,7 @@ struct WardrobeInsightsView: View {
             VStack(alignment: .leading, spacing: VCSpacing.lg) {
                 Text("Similar Items")
                     .font(.headline)
+                InsightSourceCaption(text: "From what's in your closet")
                 ForEach(snapshot.redundantGroups) { group in
                     VStack(alignment: .leading, spacing: VCSpacing.sm) {
                         Text("\(group.itemIDs.count) similar \(group.pattern.rawValue) \(group.colorVibe.rawValue.replacingOccurrences(of: "_", with: " ")) \(group.slot.rawValue)s")
@@ -159,6 +162,7 @@ struct WardrobeInsightsView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Closet Balance")
                 .font(.headline)
+            InsightSourceCaption(text: "From what's in your closet")
             RankedBarShareChart(rows: snapshot.slotBalance.map {
                 .init(id: $0.slot.rawValue, label: $0.slot.rawValue.capitalized, percentage: $0.percentage)
             })
@@ -183,6 +187,7 @@ struct WardrobeInsightsView: View {
             VStack(alignment: .leading, spacing: VCSpacing.sm) {
                 Text("Shopping Suggestions")
                     .font(.headline)
+                InsightSourceCaption(text: "From gaps between what you own and what you actually wear")
                 ForEach(shopping.suggestions) { suggestion in
                     HStack(alignment: .top, spacing: VCSpacing.sm) {
                         Image(systemName: "bag")

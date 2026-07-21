@@ -62,9 +62,9 @@ enum StylistBrain {
             case .hardConstraints:
                 return """
                 1. Hard Constraints
-                   Purpose: Only use items that exist in the catalog; one item per slot; never repeat an item within an outfit; never place an item in a slot other than its own catalog slot.
+                   Purpose: Only use items that exist in the catalog; one item per slot; never repeat an item within an outfit; never place an item in a slot other than its own catalog slot; never combine two items on the PERMANENTLY BANNED PAIRS list below in the same outfit.
                    Priority: Absolute — no lower tier can override this.
-                   Never: Invent, substitute, or reuse a garment ID.
+                   Never: Invent, substitute, or reuse a garment ID, or recommend a banned pair together in any outfit, regardless of how well the rest of the outfit scores.
                 """
             case .dressCode:
                 return """
@@ -118,7 +118,9 @@ enum StylistBrain {
         static func composeSystemPrompt(
             profile: UserStyleProfile?,
             attributeProfile: AttributePreferenceProfile?,
-            isFinalTurn: Bool = false
+            isFinalTurn: Bool = false,
+            hasRecentWornHistory: Bool = false,
+            hasBannedPairs: Bool = false
         ) -> String {
             var prompt = """
             ROLE: You are an expert personal stylist for Vision Clother, an app that recommends outfits assembled entirely from a user's own wardrobe.
@@ -257,6 +259,33 @@ enum StylistBrain {
                 }
             }
 
+            // Anti-Repetition: whole-outfit rotation novelty (prompt-only —
+            // see `Domain/RecentOutfitHistoryBuilder.swift`) and the
+            // permanent item-pair veto (prompt + validator, see
+            // `Domain/OutfitRecommendationValidator.swift`'s `.bannedPair`
+            // rejection). Both gated on their own boolean rather than always
+            // emitted — cheap no-op when there's no history/bans yet, same
+            // posture as the Prospective Purchase block below.
+            if hasRecentWornHistory {
+                prompt += """
+
+                OUTFIT ROTATION (avoid repeating what the user has already worn recently — see the "Recently Worn Combinations" list in the user message below):
+                - RECENTLY WORN — LAST \(FashionKnowledgeConstants.Rotation.hardAvoidWindowDays) DAYS (hard avoid): Never recommend the exact same combination of items as one already worn in this window — this is enforced automatically and an exact repeat will simply be discarded before the user ever sees it, wasting one of the outfits you were asked for. Always vary at least one item versus every listed hard-avoid combination, even if it requires a downgrade elsewhere.
+                - WORN \(FashionKnowledgeConstants.Rotation.hardAvoidWindowDays + 1)-\(FashionKnowledgeConstants.Rotation.softPenalizeWindowDays) DAYS AGO (soft penalty): Deprioritize combinations that closely or exactly match one worn in this window — rank a genuinely different combination higher when the wardrobe supports one, but this is not a hard rule.
+                - PARTIAL OVERLAP: Sharing one or two items with a recently-worn combination (e.g. the same shirt and jeans with different shoes) is not itself a problem — small wardrobes legitimately reuse individual pieces across different outfits. Only vary at least one primary item when it's easy to do so without a downgrade; never force a worse combination purely to avoid partial overlap.
+                - Beyond \(FashionKnowledgeConstants.Rotation.softPenalizeWindowDays) days, prior wear carries no penalty at all.
+
+                """
+            }
+            if hasBannedPairs {
+                prompt += """
+
+                PERMANENTLY BANNED PAIRS:
+                - The user has permanently vetoed the item pairs listed under "Banned Pairs" in the user message below from ever appearing in the same outfit together. This is absolute — treat it exactly like Tier 1 Hard Constraints above, never as a stylistic preference.
+
+                """
+            }
+
             // 3. Prospective Purchase Evaluation (2026-07-15): always present
             // in the prompt (cheap, and a no-op on every ordinary request) —
             // only takes effect when the catalog actually contains a
@@ -295,12 +324,24 @@ enum StylistBrain {
         static func composeUserContent(
             scenarioText: String,
             weather: WeatherContext?,
-            catalogDataText: String
+            catalogDataText: String,
+            recentWornHistoryText: String? = nil,
+            bannedPairsText: String? = nil
         ) -> String {
             var content = "Scenario: \(scenarioText)"
 
             if let weather {
                 content += "\n\nCurrent Weather: Temperature \(weather.temperatureFahrenheit)°F, Condition: \(weather.conditions)."
+            }
+
+            // Anti-Repetition: placed before the catalog so the model reads
+            // "what to avoid" before "what's available," same ordering logic
+            // the scenario/weather blocks above already follow.
+            if let recentWornHistoryText, !recentWornHistoryText.isEmpty {
+                content += "\n\nRecently Worn Combinations:\n\(recentWornHistoryText)"
+            }
+            if let bannedPairsText, !bannedPairsText.isEmpty {
+                content += "\n\nBanned Pairs:\n\(bannedPairsText)"
             }
 
             content += "\n\nWardrobe Catalog (JSON Array - pick ONLY from these ids):\n\(catalogDataText)"

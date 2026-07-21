@@ -47,7 +47,7 @@ struct Vision_clotherApp: App {
         // Config/FirebaseBootstrap.swift.
         FirebaseBootstrap.configure()
 
-        let schema = Schema(SchemaV11.models)
+        let schema = Schema(SchemaV12.models)
         let container: ModelContainer
         do {
             container = try ModelContainer(

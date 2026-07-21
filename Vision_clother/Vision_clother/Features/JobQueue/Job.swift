@@ -42,6 +42,11 @@ struct Job: Identifiable {
     /// Set on try-on terminal state, so the panel can reopen
     /// `TryOnResultView` with the exact result it ended on.
     var tryOnResultState: TryOnState?
+    /// Anti-Repetition, Action C: the durable `SavedCombination.id` minted by
+    /// `JobQueueStore.saveCombination(for:liked:)` once Like/Dislike saves
+    /// this try-on's outfit — lets `logWornToday(for:)` log a wear against
+    /// it without re-deriving/re-saving. `nil` until that save succeeds.
+    var savedCombinationID: UUID?
 
     init(id: UUID = UUID(), kind: Kind, thumbnail: Data?, createdAt: Date = .now) {
         self.id = id
@@ -52,6 +57,7 @@ struct Job: Identifiable {
         self.thumbnail = thumbnail
         self.resultItemID = nil
         self.tryOnResultState = nil
+        self.savedCombinationID = nil
     }
 }
 

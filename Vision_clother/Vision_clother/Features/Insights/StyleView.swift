@@ -90,8 +90,11 @@ struct StyleView: View {
         HStack(alignment: .top, spacing: VCSpacing.md) {
             Image(systemName: "sparkles")
                 .foregroundStyle(VCAccentColor.brand)
-            Text(text)
-                .font(.subheadline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(text)
+                    .font(.subheadline)
+                InsightSourceCaption(text: "From your closet colors and past ratings")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .premiumCard()
@@ -101,6 +104,7 @@ struct StyleView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text(title)
                 .font(.headline)
+            InsightSourceCaption(text: "From the colors of items in your closet")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: VCSpacing.md) {
                     ForEach(swatches.prefix(12)) { swatch in
@@ -125,6 +129,7 @@ struct StyleView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Color Vibe Breakdown")
                 .font(.headline)
+            InsightSourceCaption(text: "From the colors of items in your closet")
             RankedBarShareChart(rows: rows.map {
                 .init(
                     id: $0.colorVibe.rawValue,
@@ -143,6 +148,7 @@ struct StyleView: View {
             VStack(alignment: .leading, spacing: VCSpacing.sm) {
                 Text("Dark / Light")
                     .font(.headline)
+                InsightSourceCaption(text: "From the colors of items in your closet")
                 RankedBarShareChart(rows: [
                     .init(id: "dark", label: "Dark", percentage: lightness.darkPercentage),
                     .init(id: "medium", label: "Medium", percentage: lightness.mediumPercentage),
@@ -158,6 +164,7 @@ struct StyleView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Warm / Cool")
                 .font(.headline)
+            InsightSourceCaption(text: "From the colors of items in your closet")
             RankedBarShareChart(rows: rows.map {
                 .init(id: $0.undertone?.rawValue ?? "unknown", label: $0.undertone?.rawValue.capitalized ?? "Unknown", percentage: $0.percentage)
             })
@@ -172,6 +179,7 @@ struct StyleView: View {
             VStack(alignment: .leading, spacing: VCSpacing.sm) {
                 Text("Seasonal Colors")
                     .font(.headline)
+                InsightSourceCaption(text: "From the colors of items in your closet")
                 ForEach(rows) { row in
                     HStack {
                         Text(seasonLabel(row.season))
@@ -192,6 +200,7 @@ struct StyleView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Primary vs. Accent")
                 .font(.headline)
+            InsightSourceCaption(text: "From the colors of items in your closet")
             HStack {
                 Text("Items with an accent color")
                     .font(.subheadline)
@@ -224,6 +233,7 @@ struct StyleView: View {
                     .font(.headline)
                 Spacer()
             }
+            InsightSourceCaption(text: "From outfits you've saved")
             TimeRangeSelector(selection: $comboTimeRange)
             if combos.isEmpty {
                 Text("Save a few outfits with at least two colors to see your favorite combos here.")
@@ -248,6 +258,7 @@ struct StyleView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text("Style DNA")
                 .font(.headline)
+            InsightSourceCaption(text: "From your ratings, feedback, and worn history")
             if dna.isUnlocked {
                 RankedBarShareChart(rows: dna.dimensions.map {
                     .init(id: $0.id, label: $0.name, percentage: $0.score / 100)

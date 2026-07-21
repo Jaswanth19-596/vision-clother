@@ -241,6 +241,9 @@ struct DailyAssistantView: View {
                                 return
                             }
                             viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
+                        },
+                        onWearToday: { outfit in
+                            viewModel.markWornToday(outfit)
                         }
                     )
                 }
@@ -272,6 +275,9 @@ struct DailyAssistantView: View {
                                 return
                             }
                             viewModel.startTryOn(baseImageData: placeholderBaseImageData, outfit: outfit)
+                        },
+                        onWearToday: { outfit in
+                            viewModel.markWornToday(outfit)
                         },
                         onAddToCloset: { viewModel.addProspectiveItemToCloset(item) },
                         onDiscard: { viewModel.discardProspectiveItem(item) }
@@ -544,6 +550,7 @@ private struct OutfitsRoundView: View {
     let combinationsRemaining: Int
     let onToggleExpanded: () -> Void
     let onStartTryOn: (OutfitCombination) -> Void
+    let onWearToday: (OutfitCombination) -> Void
 
     @State private var selectedOutfitID: OutfitCombination.ID?
     /// Permanently tracks which outfits in this round have been queued for
@@ -551,6 +558,9 @@ private struct OutfitsRoundView: View {
     /// no timer reset. Swiping to a different outfit shows a fresh button
     /// for that outfit if it hasn't been queued yet.
     @State private var queuedOutfitIDs: Set<OutfitCombination.ID> = []
+    /// Anti-Repetition, Action A — same permanent-lock convention as
+    /// `queuedOutfitIDs` above.
+    @State private var wornOutfitIDs: Set<OutfitCombination.ID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -626,6 +636,12 @@ private struct OutfitsRoundView: View {
                             queuedOutfitIDs.insert(selected.id)
                         }
                     }
+                    WearTodayButton(isWorn: wornOutfitIDs.contains(selected.id)) {
+                        onWearToday(selected)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            wornOutfitIDs.insert(selected.id)
+                        }
+                    }
                 }
             }
         }
@@ -652,11 +668,13 @@ private struct PurchaseCheckRoundView: View {
     let combinationsRemaining: Int
     let onToggleExpanded: () -> Void
     let onStartTryOn: (OutfitCombination) -> Void
+    let onWearToday: (OutfitCombination) -> Void
     let onAddToCloset: () -> Bool
     let onDiscard: () -> Void
 
     @State private var selectedOutfitID: OutfitCombination.ID?
     @State private var queuedOutfitIDs: Set<OutfitCombination.ID> = []
+    @State private var wornOutfitIDs: Set<OutfitCombination.ID> = []
     @State private var isAdded = false
     @State private var isDiscarded = false
 
@@ -757,6 +775,12 @@ private struct PurchaseCheckRoundView: View {
                         queuedOutfitIDs.insert(selected.id)
                     }
                 }
+                WearTodayButton(isWorn: wornOutfitIDs.contains(selected.id)) {
+                    onWearToday(selected)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        wornOutfitIDs.insert(selected.id)
+                    }
+                }
             }
         }
     }
@@ -830,6 +854,31 @@ private struct TryOnActionButton: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Anti-Repetition, Action A — "I'm wearing this today", available directly
+/// on the text recommendation card with no image/try-on step required
+/// (`DailyAssistantViewModel.markWornToday(_:)`). Deliberately independent
+/// of `TryOnActionButton`'s queue/quota gating: marking worn is free and
+/// always available, since it's a real-world fact the user is reporting,
+/// not a metered render. Once marked the button stays permanently locked,
+/// same convention as `TryOnActionButton`'s queued state.
+private struct WearTodayButton: View {
+    let isWorn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            if isWorn {
+                Label("Marked Worn", systemImage: "checkmark.circle.fill")
+            } else {
+                Label("Wearing This Today", systemImage: "checkmark.circle")
+            }
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .disabled(isWorn)
+        .animation(.easeInOut(duration: 0.2), value: isWorn)
     }
 }
 

@@ -2,6 +2,325 @@
 
 ---
 
+## 2026-07-20 — Feature: split "Combinations" into Generated / Worn segments
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+The Combinations tab showed one flat list mixing two independent concepts:
+`SavedCombination` rows with a real generated try-on image, and rows that
+only exist because the user logged a wear (`WornLogEntry`) without ever
+generating an image (e.g. "Wearing This Today" from a text recommendation
+card, which saves a placeholder via `SavedCombination.noRenderPlaceholderAssetName`).
+An outfit can be generated-but-never-worn, worn-but-never-generated, both,
+or neither — the data model already captured this (no schema change
+needed), the UI just didn't distinguish it.
+
+### What shipped
+1. **`Features/Combinations/CombinationsView.swift`** — added a segmented
+   `Picker` ("Generated" / "Worn") above the list. "Generated" filters the
+   existing `combinations` query to `hasRenderedImage == true` (unchanged
+   sort — most-recently-saved first). "Worn" is a new capped `@Query` on
+   `WornLogEntry` (sorted `wornAt` desc, same 300-row pagination posture as
+   `combinations`), deduped by `savedCombinationID` (keeping the first/most-
+   recent occurrence) and joined back to `SavedCombination` — one row per
+   outfit, most-recently-worn first, with the row's date now showing last-
+   worn (not saved) date. Both segments keep the "Wore This" / "Delete"
+   swipe actions. Distinct empty states per segment.
+2. **`Features/Combinations/CombinationDetailView.swift`** — was paging
+   through *all* combinations by raw index; now takes `orderedIDs: [UUID]`
+   (the exact ids `CombinationsView` was showing in whichever segment the
+   user tapped from) + `startIndex`, so swiping between detail pages stays
+   within that segment instead of crossing into the other one. Still keeps
+   its own live `@Query` for reactivity to background sync/deletes; reorders
+   /filters it to `orderedIDs` rather than reading a frozen snapshot.
+3. **`Features/Root/RootTabView.swift`** and `CombinationsView.swift`'s own
+   `#Preview` — added `WornLogEntry.self` to their preview `ModelContainer`s
+   (new `@Query`'d type).
+
+### Side effects to watch
+None expected — `deleteCombination` still doesn't cascade-delete
+`WornLogEntry` rows (pre-existing behavior), so a deleted combination's
+worn-log rows become orphaned; the new "Worn" join already tolerates that
+(skips entries with no matching `SavedCombination`), same posture
+`Domain/RecentOutfitHistoryBuilder.swift` already has.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk
+iphonesimulator clean build` — BUILD SUCCEEDED (one real error caught and
+fixed along the way: `navigationDestination(item:)` requires `Hashable`, not
+just `Identifiable`). Not run in the simulator UI (per project convention,
+no test suite; UI not manually driven this session).
+
+---
+
+## 2026-07-20 — Fix: worn outfits kept getting recommended again despite "mark as worn"
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User reported that marking an outfit worn didn't reliably stop it from being
+recommended again. Traced the whole pipeline end-to-end
+(`WornLogEntry`/`SavedCombination` persistence → `fetchRecentOutfitHistory()`
+→ `RecentOutfitHistoryBuilder` → `StylistBrain` prompt) and found it was all
+wired correctly — the recently-worn item-ID sets really do reach the LLM's
+prompt. The gap: the "last 7 days = hard avoid" rule
+(`FashionKnowledgeConstants.Rotation.hardAvoidWindowDays`) was *prompt-only*
+guidance, with no deterministic backstop — unlike the permanent item-pair
+veto (`ItemPairBan`/`.bannedPair`), which `OutfitRecommendationValidator`
+already hard-rejects regardless of LLM compliance. If the model didn't
+follow the instruction (or invoked its own "no valid alternative" escape
+clause), the exact repeat sailed through validation untouched.
+
+### What shipped
+1. **`Domain/OutfitRecommendationValidator.swift`** — added a
+   `recentlyWornItemSets: Set<Set<UUID>>` parameter to `validate`/
+   `validateVerbose`/`resolve`, threaded the same way as `bannedPairs`. Any
+   resolved outfit whose full item-ID set (all slots + supplementary
+   accessories) exactly matches one of these sets is now hard-rejected via a
+   new `RejectionReason.recentlyWorn` case, mirroring `.bannedPair`. Partial
+   overlap (reusing one or two pieces) is untouched by design — only an
+   exact full-set match is rejected.
+2. **`Features/DailyAssistant/DailyAssistantViewModel.swift`** — both
+   `OutfitRecommendationValidator.validateVerbose` call sites (`resolveOutfits`
+   and the Prospective Purchase Evaluation flow) now pass
+   `recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs))`,
+   reusing the same `RecentOutfitHistoryBuilder.Result` already fetched for
+   the prompt — no extra query.
+3. **`Domain/StylistBrain.swift`** — reworded the OUTFIT ROTATION hard-avoid
+   prompt bullet: removed the "no valid alternative, you may repeat it"
+   escape clause (now moot — an exact repeat is silently dropped before the
+   user ever sees it, wasting one of the requested outfit slots) and told
+   the model plainly that repeats are enforced automatically.
+
+### Side effects to watch
+On a very small wardrobe where the LLM's only real option is a recent
+repeat, that outfit is now dropped rather than surfaced with a disclaimer —
+if every offered outfit is such a repeat, the user sees the existing
+"Couldn't find outfits matching your request… try adding more items" empty
+state instead. Soft-penalize (8–14 days) is untouched — still prompt-only by
+design, since it's meant to be a preference nudge, not a block.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk
+iphonesimulator clean build` — BUILD SUCCEEDED. Not runtime-tested against a
+live LLM call (per project convention, no test suite run).
+
+---
+
+## 2026-07-20 — Fix: recommendation requests getting cancelled (-999) after marking an outfit worn
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User reproduced: mark an outfit worn (Action A, just-shipped Anti-Repetition
+feature), then ask a new recommendation in a new chat. The request failed
+with `NSURLErrorCancelled` (-999) ~8.4s into the network call — well before
+the 15s hard client-side timeout. A subagent investigation (traced actual
+code, not guesswork) found the mechanism: `saveCombination`/`logWorn`/
+`updateCombinationImage` had just been given `WardrobeMutationTracker.shared.markMutated()`
+calls (this same session's Anti-Repetition work, on the theory it was needed
+to keep rotation-history fresh). In fact the rotation-history fetch
+(`DailyAssistantViewModel.fetchRecentOutfitHistory()`) deliberately reads
+`WornLogEntry`/`SavedCombination`/`ItemPairBan` directly and uncached — it
+never depended on that cache at all, so those `markMutated()` calls were
+pure unnecessary invalidation. The version bump forced
+`fetchFeedbackHistory()`'s cache to miss on the very next call, triggering a
+full recompute (Vision embeddings + attribute-profile pass, ~6.6s) *before*
+the LLM network call even started. Combined with an 8.4s network leg, total
+elapsed hit the 15s deadline and `timeoutTask.cancel()` fired mid-request.
+A second, independent bug compounded the confusing symptom: the
+cancellation-detection check in `DailyAssistantViewModel.swift` (`(error as?
+URLError)?.code == .cancelled`) could never match, because
+`OutfitRecommendationService.swift` always wraps transport errors in
+`OutfitRecommendationError.network(_:)` before rethrowing — so a genuine
+timeout was always misreported as "Couldn't reach the styling service"
+instead of "took too long."
+
+### What shipped
+1. **`Data/WardrobeRepository.swift`** — removed the `markMutated()` calls
+   from `saveCombination`, `updateCombinationImage`, and `logWorn`. None of
+   the three tables they touch (`SavedCombination`, `WornLogEntry`) are read
+   by `fetchFeedbackHistory()` except via an `OutfitFeedback.outfitID` join
+   — which `recordOutfitFeedback`'s own (legitimate, unchanged)
+   `markMutated()` call already covers. `fetchInventory()`'s cache is
+   similarly untouched by any of these three methods.
+2. **`DailyAssistantViewModel.swift`** — new `isCancelledTransportError(_:)`
+   helper that unwraps `OutfitRecommendationError.network(let underlying)`
+   before checking `URLError.cancelled`, used at both cancellation-check
+   sites (`resolveOutfits`, `resolveProspectivePurchase`) — a genuine
+   client-side timeout now correctly surfaces "This is taking too long..."
+   instead of a generic network-error message.
+
+Verified with `xcodebuild -project Vision_clother.xcodeproj -scheme
+Vision_clother -sdk iphonesimulator clean build` → BUILD SUCCEEDED.
+
+---
+
+## 2026-07-20 — Anti-Repetition: worn tracking, permanent pair veto, rotation novelty, and combination dedup
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User reported getting the same outfit recommended repeatedly, including one
+already worn and rated highly. Root cause: `OutfitRecommendationService`'s
+`temperature: 0` plus a byte-identical prompt (catalog/profile unchanged
+across sessions) made the LLM deterministically reproduce the same output —
+there was no cross-session memory of what had already been recommended or
+worn, and `OutfitFeedback` (written on save/rate, not on real-world wear)
+couldn't serve as a "recently worn" signal. Extensive back-and-forth with the
+user (see conversation) shaped three complementary, deliberately separate
+features plus a follow-up dedup fix. Major discovery during design:
+`Models/WornLogEntry.swift` already existed (durable, synced, event-sourced
+"wore this" log) wired to exactly one place (a swipe action on the
+Combinations list) — most of "worn tracking" turned out to be new UI entry
+points onto existing plumbing, not a new data model.
+
+### What shipped
+
+**Wave 1 — Data model & sync**
+1. **`Models/ItemPairBan.swift`** (new) — the permanent "never recommend
+   these two together" veto. Order-independent `itemAID`/`itemBID`
+   normalized in `init` (mirrors `PairFeedback`'s convention) — distinct
+   from `PairFeedback.likedTogether`, which is a soft scoring signal, not a
+   hard block.
+2. **`SchemaMigrations.swift`** — `SchemaV12` (pure lightweight migration,
+   brand-new independent table, same precedent as `SchemaV9`/`SchemaV6`).
+   Registered in `Vision_clotherApp.swift`'s live `Schema(...)`.
+3. Full sync wiring: `SyncMetadata.SyncEntityType.itemPairBan`,
+   `FirestoreDTOs.swift`'s `ItemPairBanDTO`, `WardrobeSyncCoordinator.swift`
+   bootstrap/pull/`applyItemPairBanChange`, `WardrobeSyncService.swift`
+   protocol/Firestore/Mock/AuthGated push+pull, `SyncOutboxWorker.swift`'s
+   exhaustive entity-type dispatch switch (a case the compiler forced).
+
+**Wave 2 — Local core features & UI**
+4. **`WardrobeRepository.swift`** — fixed a real pre-existing bug:
+   `logWorn`/`saveCombination`/`recordOutfitFeedback` never called
+   `WardrobeMutationTracker.shared.markMutated()`, so a worn-log/save
+   wouldn't invalidate `fetchFeedbackHistory()`'s cache. Harmless before
+   this feature (nothing read worn data into a cached aggregate); would have
+   silently defeated rotation novelty otherwise. Added `saveAndLogWorn`
+   (atomic save+log — a `WornLogEntry` can never reference a
+   `SavedCombination.id` that didn't durably commit first),
+   `fetchWornLogEntries(since:)`, `updateCombinationImage`,
+   `fetchPairBans`/`recordPairBan`/`removePairBan`.
+5. **`Models/SavedCombination.swift`** — `noRenderPlaceholderAssetName`
+   sentinel + `hasRenderedImage` computed property, so "Wearing This Today"
+   can save a combination before any try-on image exists with zero changes
+   to any image-loading call site (`CachedWardrobeImage` already falls back
+   to a placeholder for an unresolvable asset name).
+6. **Action A** — "Wearing This Today" button directly on the text
+   recommendation card (`DailyAssistantView.swift`'s new `WearTodayButton`,
+   `DailyAssistantViewModel.markWornToday(_:)`) — no image generation
+   required.
+7. **Action C** — "Wear This Today" on the generated try-on result
+   (`TryOnResultView.swift`), wired through `Job.savedCombinationID` (new
+   field) and `JobQueueStore.logWornToday(for:)`.
+8. **"Generate Image" follow-up** — `Features/Combinations/CombinationDetailView.swift`
+   + `CombinationsViewModel.generateImage(for:)` runs the same try-on
+   pipeline `ManualPairingViewModel` uses (portrait/quota/anonymous gating,
+   `TryOnState`), replacing the placeholder in place via
+   `updateCombinationImage` rather than creating a second row. The
+   placeholder branch itself was later replaced with the same per-slot
+   flatlay (thumbnails + labels, tap-to-detail) `OutfitCardView` shows for a
+   fresh recommendation, instead of a bare "No preview yet" box, per direct
+   user feedback mid-implementation.
+9. **Ban-authoring UI** — `CombinationDetailView.swift`'s new `BanPairView`
+   sheet, scoped to one already-saved combination's resolved items (2-pick
+   chip list) rather than a free-form whole-closet picker.
+
+**Wave 3 — Intelligence & enforcement**
+10. **`FashionKnowledgeConstants.Rotation`** — `hardAvoidWindowDays = 7`,
+    `softPenalizeWindowDays = 14`, single-sourced since both the builder's
+    bucketing and `StylistBrain`'s prompt prose need the same numbers.
+11. **`Domain/RecentOutfitHistoryBuilder.swift`** (new) — pure, logged,
+    mirrors `WardrobeCatalogBuilder`'s shape. Joins `WornLogEntry` rows to
+    their `SavedCombination` for item-sets + labels, bucketed into
+    hard-avoid/soft-penalize tiers (multiple wears of the same combo
+    collapse to one entry, most-recent wins); `banPromptText` formats
+    permanent vetoes from `[CatalogEntry]` (not `WardrobeItem]`, since that's
+    all `encodeRequestBody` has on hand). Labels sanitized
+    (newlines/structuring characters stripped) before prompt injection.
+12. **`StylistBrain.swift`** — new OUTFIT ROTATION + PERMANENTLY BANNED
+    PAIRS system-prompt sections (gated on `hasRecentWornHistory`/
+    `hasBannedPairs` booleans so they're a no-op when empty), a new Tier 1
+    Hard Constraints bullet for the pair veto, and `composeUserContent`
+    gains `recentWornHistoryText`/`bannedPairsText` blocks placed before the
+    catalog JSON, inside turn-0's cacheable content.
+13. **`OutfitRecommendationValidator.swift`** — new `.bannedPair(itemAID:itemBID:)`
+    `RejectionReason`, enforced right after the existing duplicate-id check
+    via `PairCompatibilityScoring.pairwiseCombinations` (the same all-pairs
+    enumeration `outfitScore` itself uses, so "which pairs count" can't
+    drift between scoring and veto-checking) — a deterministic backstop so
+    an LLM slip can't break the user's explicit veto, unlike the
+    prompt-only rotation-novelty tiers.
+14. **`OutfitRecommendationService.swift`** (protocol + all 3
+    implementations) and **`DailyAssistantViewModel.swift`**
+    (`fetchRecentOutfitHistory()`, wired into both `resolveOutfits` and
+    `resolveProspectivePurchase`) — threaded `recentWornHistory`/`pairBans`
+    through to the LLM call and `bannedPairs: Set<PairKey>` through to the
+    validator.
+
+**Follow-up — Combination dedup**
+15. User flagged that Combinations should never show two rows for the same
+    outfit. `WardrobeRepository.saveCombination(_:)` signature changed from
+    `throws` to `@discardableResult throws -> UUID`: checks for an existing
+    row with the identical item-set (every populated slot + supplementary
+    accessories) before inserting; if found, upgrades that row's image in
+    place when it was a placeholder and the new save has a real render
+    (else best-effort deletes the now-unused generated file), and returns
+    the existing id instead of inserting a duplicate. `saveAndLogWorn`
+    updated to return `UUID` (not `SavedCombination`) and log against the
+    persisted id. Every caller that referenced the pre-generated id
+    afterward — `ManualPairingViewModel.saveOutfit`,
+    `JobQueueStore.saveCombination(for:liked:)` — updated to use the
+    returned id for subsequent feedback/worn-log/`Job.savedCombinationID`
+    references. `SyncingWardrobeRepository`'s decorator refactored around a
+    shared `pushPersistedCombination(id:)` helper so it always pushes the
+    real persisted row to Firestore, never a discarded duplicate.
+
+Verified with `xcodebuild -project Vision_clother.xcodeproj -scheme
+Vision_clother -sdk iphonesimulator clean build` → BUILD SUCCEEDED after
+every wave and after the dedup follow-up.
+
+---
+
+## 2026-07-20 — Insights UX: explicit tab purpose + per-card data-source captions
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User (a developer) reported the Insights tab was confusing: no explanation
+of what "Overview," "Style," "Trends," "Wardrobe" each mean, and no
+indication of what data backs any given card. Root cause was purely
+missing copy — research (two Explore passes + direct file reads of
+`InsightsView.swift`, `OverviewView.swift`, `StyleView.swift`,
+`TrendsView.swift`, `WardrobeInsightsView.swift`) confirmed none of the
+displayed data is random or fabricated; every field traces to real
+persisted `WardrobeItem`/`ItemRating`/`OutfitFeedback`/`WornLogEntry`/
+`SavedCombination` rows through `Domain/*Aggregator.swift`. The fix is
+UI copy only, no data/aggregator changes.
+
+### What shipped
+1. **`InsightsView.swift`** — added `description` to the private
+   `InsightsSection` enum; rendered as a live footnote below the
+   segmented picker, e.g. Overview: "A quick snapshot of your closet and
+   recent activity," Wardrobe: "How well you're using what you already
+   own — worn vs. unworn, gaps, and duplicates."
+2. **`InsightCharts.swift`** — new shared `InsightSourceCaption` view
+   (icon + `.caption2`/`.tertiary` text) for per-card data provenance.
+3. **`OverviewView.swift` / `StyleView.swift` / `TrendsView.swift` /
+   `WardrobeInsightsView.swift`** — every card now shows an
+   `InsightSourceCaption` under its headline stating exactly what it's
+   computed from (closet, ratings/feedback, worn history, or saved
+   combos), e.g. "From wears you've logged," "From outfits you've
+   saved," "From your ratings, feedback, and worn items over time."
+
+Verified with `xcodebuild -project Vision_clother.xcodeproj -scheme
+Vision_clother -sdk iphonesimulator clean build` → BUILD SUCCEEDED.
+
+---
+
 ## 2026-07-19 — Analytics & Insights, Phase 10: Style DNA (Style sub-tab) — feature complete
 
 **Status:** ✅ Shipped — Build Succeeded

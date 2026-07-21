@@ -311,7 +311,7 @@ final class WardrobeSyncCoordinator {
             ItemRating.self, SavedCombination.self, UserStyleProfile.self, SwipeEvent.self,
             VisualPreferenceState.self, WardrobeItemEmbedding.self, RecommendationImpressionEvent.self,
             AnalyticsSnapshot.self, RecommendationAnalyticsSnapshot.self, WornLogEntry.self,
-            SyncMetadata.self,
+            ItemPairBan.self, SyncMetadata.self,
         ]
         for type in syncedAndLocalOnlyTypes {
             try? modelContext.delete(model: type)
@@ -407,6 +407,9 @@ final class WardrobeSyncCoordinator {
         }
         for entry in (try? repository.fetchWornLogEntries()) ?? [] {
             markDirtyForBootstrap(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
+        }
+        for ban in (try? repository.fetchPairBans()) ?? [] {
+            markDirtyForBootstrap(.itemPairBan, entityID: ban.id, dto: ItemPairBanDTO.from(ban))
         }
         try? modelContext.save()
 
@@ -522,6 +525,7 @@ final class WardrobeSyncCoordinator {
         await applyBatched(delta.analyticsSnapshots) { applyAnalyticsSnapshotChange($0) }
         await applyBatched(delta.recommendationAnalyticsSnapshots) { applyRecommendationAnalyticsSnapshotChange($0) }
         await applyBatched(delta.wornLogEntries) { applyWornLogEntryChange($0) }
+        await applyBatched(delta.itemPairBans) { applyItemPairBanChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -742,6 +746,21 @@ final class WardrobeSyncCoordinator {
         upsertCleanSyncMetadata(entityType: .wornLogEntry, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
     }
 
+    /// A ban is create-only (no edit UI, per the plan) so there's no
+    /// meaningful "local dirty wins" merge to reason about beyond the
+    /// standard guard every other apply method already uses — kept
+    /// consistent with them rather than special-cased.
+    private func applyItemPairBanChange(_ change: PulledChange<ItemPairBanDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.itemPairBan, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<ItemPairBan>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto, let model = dto.toModel() { modelContext.insert(model) }
+        upsertCleanSyncMetadata(entityType: .itemPairBan, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
     /// Splits a `PulledChange` into its common parts — `dto` is `nil` for
     /// `.deleted`, since a tombstone has nothing to materialize.
     private func unpack<DTO>(_ change: PulledChange<DTO>) -> (id: String, updatedAt: Date, dto: DTO?) {
@@ -864,3 +883,4 @@ extension SavedCombinationDTO: IdentifiableDTOField { var idValue: String { id }
 extension AnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id } }
 extension RecommendationAnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id } }
 extension WornLogEntryDTO: IdentifiableDTOField { var idValue: String { id } }
+extension ItemPairBanDTO: IdentifiableDTOField { var idValue: String { id } }

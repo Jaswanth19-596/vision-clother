@@ -88,7 +88,8 @@ struct JobQueuePanelView: View {
                         activeTryOnJob = nil
                     },
                     onSave: { liked in await jobQueueStore.saveCombination(for: job.id, liked: liked) },
-                    onDone: { activeTryOnJob = nil }
+                    onDone: { activeTryOnJob = nil },
+                    onWearToday: { await jobQueueStore.logWornToday(for: job.id) }
                 )
                 .presentationDetents([.medium, .large])
             }

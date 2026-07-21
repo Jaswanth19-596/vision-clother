@@ -38,6 +38,16 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .discover: return "sparkle.magnifyingglass"
         }
     }
+
+    var description: String {
+        switch self {
+        case .overview: return "A quick snapshot of your closet and recent activity."
+        case .style: return "The colors and patterns you actually gravitate toward, based on your closet and feedback."
+        case .trends: return "How your color, category, and style preferences are shifting over time."
+        case .wardrobe: return "How well you're using what you already own — worn vs. unworn, gaps, and duplicates."
+        case .discover: return "Personalized recommendations, coming soon."
+        }
+    }
 }
 
 struct InsightsView: View {
@@ -54,6 +64,12 @@ struct InsightsView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, VCSpacing.lg)
                 .padding(.top, VCSpacing.sm)
+
+                Text(section.description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, VCSpacing.lg)
+                    .padding(.top, 4)
 
                 content
             }

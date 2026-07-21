@@ -171,15 +171,32 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.fetchSavedCombinations()
     }
 
-    func saveCombination(_ combination: SavedCombination) throws {
-        try underlying.saveCombination(combination)
-        markDirty(.savedCombination, entityID: combination.id, dto: SavedCombinationDTO.from(combination))
-        uploadImageIfNeeded(assetName: combination.imageAssetName, kind: .combinationRender)
+    @discardableResult
+    func saveCombination(_ combination: SavedCombination) throws -> UUID {
+        let persistedID = try underlying.saveCombination(combination)
+        // Push whatever is now actually persisted at `persistedID`, not
+        // `combination` itself — a dedup match means `combination` was
+        // never inserted (and may have just upgraded an existing row's
+        // image in place), so pushing it directly would sync a phantom
+        // document with no corresponding local row.
+        try pushPersistedCombination(id: persistedID)
+        return persistedID
     }
 
     func deleteCombination(_ combination: SavedCombination) throws {
         try underlying.deleteCombination(combination)
         markDeleted(.savedCombination, entityID: combination.id)
+    }
+
+    func updateCombinationImage(id: UUID, assetName: String) throws {
+        try underlying.updateCombinationImage(id: id, assetName: assetName)
+        try pushPersistedCombination(id: id)
+    }
+
+    private func pushPersistedCombination(id: UUID) throws {
+        guard let combination = try underlying.fetchSavedCombinations().first(where: { $0.id == id }) else { return }
+        markDirty(.savedCombination, entityID: combination.id, dto: SavedCombinationDTO.from(combination))
+        uploadImageIfNeeded(assetName: combination.imageAssetName, kind: .combinationRender)
     }
 
     // MARK: - User style profile
@@ -271,6 +288,10 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.fetchWornLogEntries()
     }
 
+    func fetchWornLogEntries(since cutoff: Date) throws -> [WornLogEntry] {
+        try underlying.fetchWornLogEntries(since: cutoff)
+    }
+
     func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws {
         try underlying.logWorn(savedCombinationID: savedCombinationID, itemIDs: itemIDs)
         // `fetchWornLogEntries()` is newest-first (`wornAt` descending) — the
@@ -280,6 +301,40 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         if let entry = try underlying.fetchWornLogEntries().first {
             markDirty(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
         }
+    }
+
+    @discardableResult
+    func saveAndLogWorn(combination: SavedCombination, itemIDs: [UUID]) throws -> UUID {
+        let persistedID = try underlying.saveAndLogWorn(combination: combination, itemIDs: itemIDs)
+        try pushPersistedCombination(id: persistedID)
+        if let entry = try underlying.fetchWornLogEntries().first {
+            markDirty(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
+        }
+        return persistedID
+    }
+
+    // MARK: - Anti-Repetition: permanent pair veto
+
+    func fetchPairBans() throws -> [ItemPairBan] {
+        try underlying.fetchPairBans()
+    }
+
+    func recordPairBan(itemAID: UUID, itemBID: UUID) throws {
+        try underlying.recordPairBan(itemAID: itemAID, itemBID: itemBID)
+        // `recordPairBan` dedupes on write (`SwiftDataWardrobeRepository`),
+        // so a re-ban of an already-banned pair inserts no new row — only
+        // push when `fetchPairBans()`'s newest-first head is genuinely this
+        // pair, same "recover the minted id" technique `logWorn` uses above.
+        let ordered = [itemAID, itemBID].sorted { $0.uuidString < $1.uuidString }
+        if let ban = try underlying.fetchPairBans().first, ban.itemAID == ordered[0], ban.itemBID == ordered[1] {
+            markDirty(.itemPairBan, entityID: ban.id, dto: ItemPairBanDTO.from(ban))
+            AppLog.info(.sync, "recordPairBan: queued for sync id=\(ban.id)")
+        }
+    }
+
+    func removePairBan(id: UUID) throws {
+        try underlying.removePairBan(id: id)
+        markDeleted(.itemPairBan, entityID: id)
     }
 
     // MARK: - Outbox bookkeeping

@@ -210,8 +210,13 @@ final class ManualPairingViewModel {
                     origin: "pairing",
                     basePortraitFingerprint: basePortraitFingerprint
                 )
-                try? repository.saveCombination(combination)
-                try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)
+                // `saveCombination` may return an existing row's id instead
+                // of `combinationID` if this exact top+bottom pairing is
+                // already saved (never a duplicate row for the same
+                // outfit) — feedback must reference whichever id is
+                // actually persisted.
+                let persistedID = (try? repository.saveCombination(combination)) ?? combinationID
+                try? repository.recordOutfitFeedback(outfitID: persistedID, likedOverall: liked)
             }
             try? await photoLibrarySaver.save(imageData: imageData)
         }

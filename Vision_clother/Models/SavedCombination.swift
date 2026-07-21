@@ -73,4 +73,14 @@ final class SavedCombination {
     var displayTitle: String {
         (Slot.allCases.compactMap { labelsBySlot[$0] } + supplementaryAccessoryLabels).joined(separator: " + ")
     }
+
+    /// Anti-Repetition, Action A: "Wearing This Today" logs a wear directly
+    /// from the text recommendation card, before any try-on image exists —
+    /// `imageAssetName` is non-optional, so that path stores this sentinel
+    /// rather than a real `ImageStorage` filename. `CachedWardrobeImage`
+    /// already falls back to a placeholder for any asset name it can't
+    /// resolve, so no other screen needs to change to tolerate this.
+    static let noRenderPlaceholderAssetName = "__no_render__"
+
+    var hasRenderedImage: Bool { imageAssetName != Self.noRenderPlaceholderAssetName }
 }

@@ -29,6 +29,19 @@ enum OutfitRecommendationValidator {
         case wrongSlot(slot: Slot)
         case duplicateID
         case ghostElement(slot: Slot)
+        /// Anti-Repetition: the outfit contains both items of a permanent
+        /// `ItemPairBan` — a hard rejection, same tier as the others above,
+        /// so a promise made via the ban UI can't be broken by an LLM slip.
+        case bannedPair(itemAID: UUID, itemBID: UUID)
+        /// Anti-Repetition: the outfit's full item set exactly matches a
+        /// combination worn within `FashionKnowledgeConstants.Rotation
+        /// .hardAvoidWindowDays` days — see `Domain/RecentOutfitHistoryBuilder.swift`'s
+        /// `Result.hardAvoid`. The prompt already instructs the LLM not to
+        /// repeat these, but that's advisory only; this is the deterministic
+        /// backstop so a "mark as worn" action reliably keeps that exact
+        /// outfit out of the next recommendation regardless of whether the
+        /// LLM complied.
+        case recentlyWorn
     }
 
     /// Multi-Accessory Outfits (Stylist Intelligence Engine ADR, closed
@@ -55,11 +68,13 @@ enum OutfitRecommendationValidator {
         profile: UserStyleProfile? = nil,
         weather: WeatherContext? = nil,
         history: FeedbackHistory = FeedbackHistory(),
-        mustIncludeItemID: UUID? = nil
+        mustIncludeItemID: UUID? = nil,
+        bannedPairs: Set<PairKey> = [],
+        recentlyWornItemSets: Set<Set<UUID>> = []
     ) -> [OutfitCombination] {
         validateVerbose(
             response, index: index, constraints: constraints, profile: profile, weather: weather, history: history,
-            mustIncludeItemID: mustIncludeItemID
+            mustIncludeItemID: mustIncludeItemID, bannedPairs: bannedPairs, recentlyWornItemSets: recentlyWornItemSets
         ).valid
     }
 
@@ -72,7 +87,9 @@ enum OutfitRecommendationValidator {
         profile: UserStyleProfile? = nil,
         weather: WeatherContext? = nil,
         history: FeedbackHistory = FeedbackHistory(),
-        mustIncludeItemID: UUID? = nil
+        mustIncludeItemID: UUID? = nil,
+        bannedPairs: Set<PairKey> = [],
+        recentlyWornItemSets: Set<Set<UUID>> = []
     ) -> (valid: [OutfitCombination], rejections: [RejectionReason]) {
         var combinations: [OutfitCombination] = []
         var rejections: [RejectionReason] = []
@@ -85,7 +102,10 @@ enum OutfitRecommendationValidator {
         let availableSlots = Set(index.values.map(\.slot))
 
         for wire in response.outfits {
-            switch resolve(wire, index: index, availableSlots: availableSlots) {
+            switch resolve(
+                wire, index: index, availableSlots: availableSlots,
+                bannedPairs: bannedPairs, recentlyWornItemSets: recentlyWornItemSets
+            ) {
             case .success(let combo):
                 combinations.append(combo)
             case .failure(let reason):
@@ -133,7 +153,8 @@ enum OutfitRecommendationValidator {
     /// so the slot is simply left absent from `itemsBySlot` (same treatment
     /// as an ordinary optional slot) instead of failing the whole outfit.
     private static func resolve(
-        _ wire: RecommendedOutfitWire, index: [String: WardrobeItem], availableSlots: Set<Slot>
+        _ wire: RecommendedOutfitWire, index: [String: WardrobeItem], availableSlots: Set<Slot>,
+        bannedPairs: Set<PairKey> = [], recentlyWornItemSets: Set<Set<UUID>> = []
     ) -> Result<OutfitCombination, RejectionReason> {
         var itemsBySlot: [Slot: WardrobeItem] = [:]
 
@@ -170,6 +191,35 @@ enum OutfitRecommendationValidator {
 
         let usedIDs = itemsBySlot.values.map(\.id) + supplementaryAccessories.map(\.id)
         guard Set(usedIDs).count == usedIDs.count else { return .failure(.duplicateID) }
+
+        let usedItems = Array(itemsBySlot.values) + supplementaryAccessories
+
+        // Anti-Repetition: reuses `PairCompatibilityScoring.pairwiseCombinations`
+        // (the same all-pairs enumeration `outfitScore` itself uses) so
+        // "which pairs count" can never drift between scoring and
+        // veto-checking.
+        if !bannedPairs.isEmpty {
+            for (itemA, itemB) in PairCompatibilityScoring.pairwiseCombinations(usedItems) {
+                if bannedPairs.contains(PairKey(itemA.id, itemB.id)) {
+                    return .failure(.bannedPair(itemAID: itemA.id, itemBID: itemB.id))
+                }
+            }
+        }
+
+        // Anti-Repetition: deterministic backstop for the "recently worn"
+        // hard-avoid window — the prompt (`Domain/StylistBrain.swift`'s
+        // OUTFIT ROTATION section) already asks the LLM not to repeat these,
+        // but an exact-set match is rejected here unconditionally so
+        // compliance never depends on the model actually following that
+        // instruction. Deliberately an *exact* full-set match only —
+        // partial overlap (reusing one or two pieces) is allowed by design,
+        // same as the prompt's PARTIAL OVERLAP guidance.
+        if !recentlyWornItemSets.isEmpty {
+            let candidateItemIDs = Set(usedItems.map(\.id))
+            if recentlyWornItemSets.contains(candidateItemIDs) {
+                return .failure(.recentlyWorn)
+            }
+        }
 
         let structured = StructuredRationale(
             summary: wire.rationale.summary,

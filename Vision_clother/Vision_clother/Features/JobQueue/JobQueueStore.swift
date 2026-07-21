@@ -362,13 +362,39 @@ final class JobQueueStore {
                 supplementaryAccessoryItemIDs: outfit.supplementaryAccessories.map(\.id),
                 supplementaryAccessoryLabels: outfit.supplementaryAccessories.map(\.displayLabel)
             )
-            try? repository.saveCombination(combination)
-            try? repository.recordOutfitFeedback(outfitID: combinationID, likedOverall: liked)
+            // `saveCombination` may return an existing row's id instead of
+            // `combinationID` if this exact set of items is already saved
+            // (never a duplicate row for the same outfit) — every reference
+            // below must use whichever id is actually persisted.
+            let persistedID = (try? repository.saveCombination(combination)) ?? combinationID
+            try? repository.recordOutfitFeedback(outfitID: persistedID, likedOverall: liked)
             for (itemA, itemB) in PairCompatibilityScoring.pairwiseCombinations(outfit.items) {
                 try? repository.recordPairFeedback(itemAID: itemA.id, itemBID: itemB.id, likedTogether: liked)
             }
+            // Anti-Repetition, Action C: lets `logWornToday(for:)` log a wear
+            // against this row without re-deriving/re-saving it.
+            if let index = jobs.firstIndex(where: { $0.id == jobID }) {
+                jobs[index].savedCombinationID = persistedID
+            }
         }
         try? await photoLibrarySaver.save(imageData: imageData)
+    }
+
+    /// Anti-Repetition, Action C: "Wear This Today" on the generated try-on
+    /// image view. Unlike Action A (`DailyAssistantViewModel.markWornToday(_:)`),
+    /// no implicit save is needed here — `saveCombination(for:liked:)` above
+    /// always runs first (Like/Dislike unconditionally saves, see that
+    /// method's doc comment), so `job.savedCombinationID` is already durable
+    /// by the time this can be tapped.
+    func logWornToday(for jobID: Job.ID) async {
+        guard let job = jobs.first(where: { $0.id == jobID }), let combinationID = job.savedCombinationID,
+              case .tryOn(let payload) = job.kind else { return }
+        do {
+            try repository.logWorn(savedCombinationID: combinationID, itemIDs: payload.outfit.items.map(\.id))
+            AppLog.info(.jobQueue, "logWornToday: ok job=\(jobID) combination=\(combinationID)")
+        } catch {
+            AppLog.error(.jobQueue, "logWornToday: failed job=\(jobID) — \(String(describing: error))")
+        }
     }
 
     // MARK: - Shared job control

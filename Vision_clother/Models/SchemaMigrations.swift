@@ -553,6 +553,35 @@ enum SchemaV11: VersionedSchema {
     }
 }
 
+/// V11 -> V12 adds one brand-new, independent table (`ItemPairBan` —
+/// Anti-Repetition's permanent "never recommend these two together" veto)
+/// with zero changes to any existing V11 type, so like V9 -> V10 this needs
+/// no `.custom` stage; `.lightweight` lets SwiftData infer the migration.
+enum SchemaV12: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(12, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+            WornLogEntry.self,
+            ItemPairBan.self,
+        ]
+    }
+}
+
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
 /// `.custom` stage below: `willMigrate` runs against the still-V1-shaped
 /// store (old columns present, new ones absent), `didMigrate` runs after the
@@ -564,9 +593,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self, SchemaV12.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11, migrateV11toV12] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -646,5 +675,10 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV10toV11 = MigrationStage.lightweight(
         fromVersion: SchemaV10.self,
         toVersion: SchemaV11.self
+    )
+
+    static let migrateV11toV12 = MigrationStage.lightweight(
+        fromVersion: SchemaV11.self,
+        toVersion: SchemaV12.self
     )
 }

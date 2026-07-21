@@ -21,12 +21,21 @@ struct TryOnResultView: View {
     /// button was tapped.
     let onSave: (Bool) async -> Void
     let onDone: () -> Void
+    /// Anti-Repetition, Action C — logs a wear against the combination
+    /// `onSave` already durably saved. No id parameter: the caller
+    /// (`JobQueuePanelView`) already knows which job/combination this sheet
+    /// belongs to.
+    let onWearToday: () async -> Void
 
     /// Flips to a "Saved" confirmation after tapping Like/Dislike — resets
     /// whenever a fresh render replaces `state`, since `.id(imageURL)` on
     /// the parent sheet isn't guaranteed, so this view model's own state is
     /// the source of truth for "have we saved *this* image".
     @State private var didSave = false
+    /// Anti-Repetition, Action C — same permanent-lock convention as
+    /// `didSave`.
+    @State private var didMarkWorn = false
+    @State private var isMarkingWorn = false
     /// True while `onSave()`'s Task is in flight. "Done" is disabled during
     /// this window so the caller can never read a save's results (e.g. the
     /// rating prompt's item list) before the save has actually finished —
@@ -74,6 +83,24 @@ struct TryOnResultView: View {
                         Button("Done", action: onDone)
                             .buttonStyle(PrimaryButtonStyle())
                     }
+                    Button {
+                        isMarkingWorn = true
+                        Task {
+                            await onWearToday()
+                            didMarkWorn = true
+                            isMarkingWorn = false
+                        }
+                    } label: {
+                        if isMarkingWorn {
+                            ProgressView()
+                        } else if didMarkWorn {
+                            Label("Marked Worn Today", systemImage: "checkmark.circle.fill")
+                        } else {
+                            Label("Wear This Today", systemImage: "checkmark.circle")
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(isMarkingWorn || didMarkWorn)
                 } else {
                     Text("Did you like this outfit?").font(.headline)
                     HStack {
@@ -139,6 +166,7 @@ struct TryOnResultView: View {
         onCancel: {},
         onRetry: {},
         onSave: { _ in },
-        onDone: {}
+        onDone: {},
+        onWearToday: {}
     )
 }

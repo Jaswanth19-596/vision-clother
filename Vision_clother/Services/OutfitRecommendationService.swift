@@ -34,7 +34,9 @@ protocol OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
-        history: FeedbackHistory
+        history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan]
     ) async throws -> OutfitRecommendationResponse
 }
 
@@ -85,13 +87,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
-        history: FeedbackHistory
+        history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan]
     ) async throws -> OutfitRecommendationResponse {
         do {
             return try await PerfLog.time("recommendation.structuredAttempt") {
                 try await performRequest(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
-                    catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: true
+                    catalog: catalog, profile: profile, weather: weather, history: history,
+                    recentWornHistory: recentWornHistory, pairBans: pairBans, useStructuredOutput: true
                 )
             }
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
@@ -103,7 +108,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             return try await PerfLog.time("recommendation.unstructuredFallbackAttempt") {
                 try await performRequest(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
-                    catalog: catalog, profile: profile, weather: weather, history: history, useStructuredOutput: false
+                    catalog: catalog, profile: profile, weather: weather, history: history,
+                    recentWornHistory: recentWornHistory, pairBans: pairBans, useStructuredOutput: false
                 )
             }
         }
@@ -116,6 +122,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         profile: UserStyleProfile?,
         weather: WeatherContext?,
         history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan],
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
         let requestID = AppLog.newRequestID()
@@ -143,6 +151,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             profile: profile,
             weather: weather,
             history: history,
+            recentWornHistory: recentWornHistory,
+            pairBans: pairBans,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -202,15 +212,21 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         profile: UserStyleProfile?,
         weather: WeatherContext?,
         history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan],
         useStructuredOutput: Bool
     ) throws -> Data {
         let catalogData = try JSONEncoder().encode(catalog)
         let catalogText = String(decoding: catalogData, as: UTF8.self)
+        let recentWornHistoryText = RecentOutfitHistoryBuilder.promptText(for: recentWornHistory)
+        let bannedPairsText = RecentOutfitHistoryBuilder.banPromptText(pairBans, catalog: catalog)
 
         var systemPrompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(
             profile: profile,
             attributeProfile: history.attributeProfile,
-            isFinalTurn: isFinalTurn
+            isFinalTurn: isFinalTurn,
+            hasRecentWornHistory: !recentWornHistoryText.isEmpty,
+            hasBannedPairs: !bannedPairsText.isEmpty
         )
 
         // Replays the full clarification-loop transcript every call —
@@ -234,7 +250,9 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 let content = StylistBrain.DynamicPromptComposer.composeUserContent(
                     scenarioText: turn.text,
                     weather: weather,
-                    catalogDataText: catalogText
+                    catalogDataText: catalogText,
+                    recentWornHistoryText: recentWornHistoryText,
+                    bannedPairsText: bannedPairsText
                 )
                 return ["role": turn.role.rawValue, "content": Self.cacheableContent(content)]
             }
@@ -498,7 +516,9 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
-        history: FeedbackHistory
+        history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan]
     ) async throws -> OutfitRecommendationResponse {
         // Prospective Purchase Evaluation (2026-07-15): prefer the flagged
         // entry for its own slot over an arbitrary first match, so the
@@ -562,7 +582,9 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
         catalog: [CatalogEntry],
         profile: UserStyleProfile?,
         weather: WeatherContext?,
-        history: FeedbackHistory
+        history: FeedbackHistory,
+        recentWornHistory: RecentOutfitHistoryBuilder.Result,
+        pairBans: [ItemPairBan]
     ) async throws -> OutfitRecommendationResponse {
         try await current.recommendOutfits(
             conversationHistory: conversationHistory,
@@ -570,7 +592,9 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
             catalog: catalog,
             profile: profile,
             weather: weather,
-            history: history
+            history: history,
+            recentWornHistory: recentWornHistory,
+            pairBans: pairBans
         )
     }
 }

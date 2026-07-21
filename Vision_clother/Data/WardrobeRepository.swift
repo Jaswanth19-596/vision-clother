@@ -92,8 +92,25 @@ protocol WardrobeRepository {
     /// Saved try-on images from "Save this outfit?" (Manual Pairing / Daily
     /// Assistant), newest first — backs the Combinations tab.
     func fetchSavedCombinations() throws -> [SavedCombination]
-    func saveCombination(_ combination: SavedCombination) throws
+    /// Never inserts a duplicate row for an outfit that's already saved —
+    /// "duplicate" means the exact same set of items (every populated slot
+    /// plus supplementary accessories), regardless of which flow saved it or
+    /// what image it was rendered against. Returns the durable id to use
+    /// going forward: `combination.id` for a genuinely new item-set, or the
+    /// existing row's id when one already matches (in which case, if that
+    /// existing row has no render yet but `combination` does, its image is
+    /// upgraded in place via `updateCombinationImage` — see that method).
+    /// Callers that reference `combination.id` afterward (recording
+    /// feedback, logging a wear) must use this return value instead, since
+    /// a dedup match means `combination` itself was never persisted.
+    @discardableResult
+    func saveCombination(_ combination: SavedCombination) throws -> UUID
     func deleteCombination(_ combination: SavedCombination) throws
+    /// Replaces a placeholder-rendered combination's image in place (Anti-
+    /// Repetition's "Generate Image" follow-up to a text-only "Wearing This
+    /// Today") — never creates a second `SavedCombination` row. No-ops if
+    /// `id` doesn't match an existing row.
+    func updateCombinationImage(id: UUID, assetName: String) throws
 
     /// User Style Profile (PRD §3.8) — single row, `nil` if never derived.
     /// Read by the recommendation call to personalize picks
@@ -161,7 +178,31 @@ protocol WardrobeRepository {
 
     /// The "Wore this" quick action — see `Models/WornLogEntry.swift`.
     func fetchWornLogEntries() throws -> [WornLogEntry]
+    /// Bounded to `wornAt >= cutoff` — feeds Anti-Repetition's rotation
+    /// novelty window (`Domain/RecentOutfitHistoryBuilder.swift`), which
+    /// only ever needs the last `FashionKnowledgeConstants.Rotation.softPenalizeWindowDays`,
+    /// never full history the way `fetchWornLogEntries()` above does.
+    func fetchWornLogEntries(since cutoff: Date) throws -> [WornLogEntry]
     func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws
+    /// Anti-Repetition, Action A ("Wearing This Today" from the text
+    /// recommendation card, before any try-on image exists): saves `combination`
+    /// and logs the wear as one call, so a `WornLogEntry` can never reference
+    /// a `SavedCombination.id` that didn't durably commit first. Returns the
+    /// id actually persisted — see `saveCombination`'s doc comment on
+    /// deduplication; the wear is always logged against that id, never
+    /// `combination.id` directly.
+    @discardableResult
+    func saveAndLogWorn(combination: SavedCombination, itemIDs: [UUID]) throws -> UUID
+
+    /// Anti-Repetition — the permanent "never recommend these two together"
+    /// veto (see `Models/ItemPairBan.swift`).
+    func fetchPairBans() throws -> [ItemPairBan]
+    /// Dedupes on write against the order-independent key — re-banning an
+    /// already-banned pair is a no-op, not a duplicate row.
+    func recordPairBan(itemAID: UUID, itemBID: UUID) throws
+    /// No "unban" UI ships yet, but the method exists now so a future one
+    /// needs no further protocol/migration change.
+    func removePairBan(id: UUID) throws
 }
 
 @MainActor
@@ -557,6 +598,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     func recordOutfitFeedback(outfitID: UUID, likedOverall: Bool) throws {
         modelContext.insert(OutfitFeedback(outfitID: outfitID, likedOverall: likedOverall))
         try modelContext.save()
+        WardrobeMutationTracker.shared.markMutated()
     }
 
     func recordItemFeedback(itemID: UUID, likedFit: Bool) throws {
@@ -698,9 +740,57 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         return try modelContext.fetch(descriptor)
     }
 
-    func saveCombination(_ combination: SavedCombination) throws {
+    @discardableResult
+    func saveCombination(_ combination: SavedCombination) throws -> UUID {
+        let candidateItemIDs = Set(combination.itemIDsBySlot.values).union(combination.supplementaryAccessoryItemIDs)
+        if let existing = try fetchSavedCombinations().first(where: {
+            Set($0.itemIDsBySlot.values).union($0.supplementaryAccessoryItemIDs) == candidateItemIDs
+        }) {
+            if !existing.hasRenderedImage && combination.hasRenderedImage {
+                // Upgrade the existing placeholder in place rather than
+                // leaving a second, image-bearing row for the same outfit.
+                try updateCombinationImage(id: existing.id, assetName: combination.imageAssetName)
+            } else if combination.hasRenderedImage {
+                // A real render was already generated for `combination`
+                // before this call (the caller writes the file, then builds
+                // the row) but it's going unused — best-effort cleanup so it
+                // doesn't leak on disk, same posture as `deleteCombination`.
+                ImageStorage.delete(combination.imageAssetName)
+            }
+            return existing.id
+        }
+
         modelContext.insert(combination)
         try modelContext.save()
+        // Deliberately does NOT call `WardrobeMutationTracker.shared.markMutated()`:
+        // `fetchFeedbackHistory()`'s cache (the only consumer of that version
+        // counter besides `fetchInventory()`) never reads `SavedCombination`
+        // rows except by joining through `OutfitFeedback.outfitID` — a bare
+        // save with no feedback yet changes nothing that cache aggregates.
+        // Bumping the version here anyway (a prior version of this method
+        // did) forced a full, expensive recompute (Vision embeddings +
+        // attribute profile) on the very next `fetchFeedbackHistory()` call
+        // for zero benefit — see `recordOutfitFeedback` for where this
+        // invalidation actually belongs.
+        return combination.id
+    }
+
+    func updateCombinationImage(id: UUID, assetName: String) throws {
+        let descriptor = FetchDescriptor<SavedCombination>(predicate: #Predicate { $0.id == id })
+        guard let existing = try modelContext.fetch(descriptor).first else { return }
+        let previousAssetName = existing.imageAssetName
+        existing.imageAssetName = assetName
+        try modelContext.save()
+        // No `markMutated()` — same reasoning as `saveCombination` above;
+        // an image swap changes nothing `fetchFeedbackHistory()` reads.
+        // Best-effort — an orphaned placeholder file doesn't exist on disk
+        // (it's a sentinel string, not a real `ImageStorage` filename) so
+        // this only ever has real cleanup work to do for a genuine
+        // re-render (a previously-rendered combination generating a new
+        // image), never for the placeholder-replacement path.
+        if previousAssetName != assetName && previousAssetName != SavedCombination.noRenderPlaceholderAssetName {
+            ImageStorage.delete(previousAssetName)
+        }
     }
 
     func deleteCombination(_ combination: SavedCombination) throws {
@@ -894,8 +984,50 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.fetch(FetchDescriptor<WornLogEntry>(sortBy: [SortDescriptor(\.wornAt, order: .reverse)]))
     }
 
+    func fetchWornLogEntries(since cutoff: Date) throws -> [WornLogEntry] {
+        try modelContext.fetch(FetchDescriptor<WornLogEntry>(
+            predicate: #Predicate { $0.wornAt >= cutoff },
+            sortBy: [SortDescriptor(\.wornAt, order: .reverse)]
+        ))
+    }
+
     func logWorn(savedCombinationID: UUID, itemIDs: [UUID]) throws {
         modelContext.insert(WornLogEntry(savedCombinationID: savedCombinationID, itemIDs: itemIDs))
+        try modelContext.save()
+        // No `markMutated()` — `WornLogEntry` isn't read by
+        // `fetchFeedbackHistory()` at all; Anti-Repetition's rotation
+        // history (`DailyAssistantViewModel.fetchRecentOutfitHistory()`)
+        // deliberately reads this table directly/uncached rather than
+        // through that cache, so there is nothing here for the version
+        // counter to protect — bumping it only forced an unrelated,
+        // expensive recompute on the next unrelated `fetchFeedbackHistory()`
+        // call (observed: contributed to a recommendation request blowing
+        // past its 15s deadline and being cancelled).
+    }
+
+    @discardableResult
+    func saveAndLogWorn(combination: SavedCombination, itemIDs: [UUID]) throws -> UUID {
+        let persistedID = try saveCombination(combination)
+        try logWorn(savedCombinationID: persistedID, itemIDs: itemIDs)
+        return persistedID
+    }
+
+    func fetchPairBans() throws -> [ItemPairBan] {
+        try modelContext.fetch(FetchDescriptor<ItemPairBan>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))
+    }
+
+    func recordPairBan(itemAID: UUID, itemBID: UUID) throws {
+        let candidate = ItemPairBan(itemA: itemAID, itemB: itemBID)
+        let existing = try fetchPairBans()
+        guard !existing.contains(where: { $0.itemAID == candidate.itemAID && $0.itemBID == candidate.itemBID }) else { return }
+        modelContext.insert(candidate)
+        try modelContext.save()
+    }
+
+    func removePairBan(id: UUID) throws {
+        let descriptor = FetchDescriptor<ItemPairBan>(predicate: #Predicate { $0.id == id })
+        guard let existing = try modelContext.fetch(descriptor).first else { return }
+        modelContext.delete(existing)
         try modelContext.save()
     }
 }

@@ -60,6 +60,8 @@ struct PulledWardrobeDelta {
     var analyticsSnapshots: [PulledChange<AnalyticsSnapshotDTO>] = []
     var recommendationAnalyticsSnapshots: [PulledChange<RecommendationAnalyticsSnapshotDTO>] = []
     var wornLogEntries: [PulledChange<WornLogEntryDTO>] = []
+    /// Anti-Repetition — see `Models/ItemPairBan.swift`.
+    var itemPairBans: [PulledChange<ItemPairBanDTO>] = []
     var userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>?
     var visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>?
     /// Captured before this pull's queries ran — the candidate new
@@ -99,6 +101,8 @@ protocol WardrobeSyncService {
     func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws
     /// Analytics & Insights (Phase 3) — see `Models/WornLogEntry.swift`.
     func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws
+    /// Anti-Repetition — see `Models/ItemPairBan.swift`.
+    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws
 
     /// Soft-deletes (tombstones) an entity — only meaningful for the 6
     /// event/row-per-entity types, not the 2 single-row `meta` docs (nothing
@@ -217,6 +221,10 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         try await setDocument(usersDoc(uid).collection("wornLogEntries").document(dto.id), dto: dto)
     }
 
+    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {
+        try await setDocument(usersDoc(uid).collection("itemPairBans").document(dto.id), dto: dto)
+    }
+
     // MARK: - Delete (tombstone)
 
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
@@ -236,6 +244,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         case .analyticsSnapshot: return "analyticsSnapshots"
         case .recommendationAnalyticsSnapshot: return "recommendationAnalyticsSnapshots"
         case .wornLogEntry: return "wornLogEntries"
+        case .itemPairBan: return "itemPairBans"
         // Single-row meta docs are never deleted; `swipeEvent` is legacy-only
         // (see `Models/SyncMetadata.swift`) and never pushed/deleted either.
         case .userStyleProfile, .visualPreferenceState, .swipeEvent: return nil
@@ -258,6 +267,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         async let analyticsSnapshots: [PulledChange<AnalyticsSnapshotDTO>] = Self.fetchCollection(usersRef.collection("analyticsSnapshots"), since: since)
         async let recommendationAnalyticsSnapshots: [PulledChange<RecommendationAnalyticsSnapshotDTO>] = Self.fetchCollection(usersRef.collection("recommendationAnalyticsSnapshots"), since: since)
         async let wornLogEntries: [PulledChange<WornLogEntryDTO>] = Self.fetchCollection(usersRef.collection("wornLogEntries"), since: since)
+        async let itemPairBans: [PulledChange<ItemPairBanDTO>] = Self.fetchCollection(usersRef.collection("itemPairBans"), since: since)
         async let userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("styleProfile"), since: since)
         async let visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("visualPreferenceState"), since: since)
 
@@ -272,6 +282,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
                 analyticsSnapshots: try await analyticsSnapshots,
                 recommendationAnalyticsSnapshots: try await recommendationAnalyticsSnapshots,
                 wornLogEntries: try await wornLogEntries,
+                itemPairBans: try await itemPairBans,
                 userStyleProfile: try await userStyleProfile,
                 visualPreferenceState: try await visualPreferenceState,
                 queryStartTime: queryStartTime
@@ -514,6 +525,9 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
     func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {
         try await current.pushWornLogEntry(dto, uid: uid)
     }
+    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {
+        try await current.pushItemPairBan(dto, uid: uid)
+    }
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {
         try await current.deleteEntity(type: type, id: id, uid: uid)
     }
@@ -569,6 +583,7 @@ final class MockWardrobeSyncService: WardrobeSyncService {
     func pushAnalyticsSnapshot(_ dto: AnalyticsSnapshotDTO, uid: String) async throws {}
     func pushRecommendationAnalyticsSnapshot(_ dto: RecommendationAnalyticsSnapshotDTO, uid: String) async throws {}
     func pushWornLogEntry(_ dto: WornLogEntryDTO, uid: String) async throws {}
+    func pushItemPairBan(_ dto: ItemPairBanDTO, uid: String) async throws {}
     func deleteEntity(type: SyncEntityType, id: UUID, uid: String) async throws {}
     func pullChanges(uid: String, since: Date?) async throws -> PulledWardrobeDelta {
         PulledWardrobeDelta(queryStartTime: Date())

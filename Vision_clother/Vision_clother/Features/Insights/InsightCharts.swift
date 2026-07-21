@@ -25,6 +25,22 @@
 import Charts
 import SwiftUI
 
+/// Small provenance line every Insights card shows under its title, so it's
+/// always explicit whether a number comes from the closet, ratings/feedback,
+/// worn history, or saved combos — never implied.
+struct InsightSourceCaption: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "info.circle")
+            Text(text)
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+    }
+}
+
 struct RankedBarShareChart: View {
     struct Row: Identifiable, Equatable {
         let id: String

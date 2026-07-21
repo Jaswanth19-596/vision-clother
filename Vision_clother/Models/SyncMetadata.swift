@@ -61,6 +61,8 @@ enum SyncEntityType: String, Codable {
     case recommendationAnalyticsSnapshot
     /// Analytics & Insights (Phase 3) — see `Models/WornLogEntry.swift`.
     case wornLogEntry
+    /// Anti-Repetition — see `Models/ItemPairBan.swift`.
+    case itemPairBan
 }
 
 @Model

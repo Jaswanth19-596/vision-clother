@@ -182,6 +182,8 @@ final class SyncOutboxWorker {
             try await syncService.pushRecommendationAnalyticsSnapshot(decoder.decode(RecommendationAnalyticsSnapshotDTO.self, from: payload), uid: uid)
         case .wornLogEntry:
             try await syncService.pushWornLogEntry(decoder.decode(WornLogEntryDTO.self, from: payload), uid: uid)
+        case .itemPairBan:
+            try await syncService.pushItemPairBan(decoder.decode(ItemPairBanDTO.self, from: payload), uid: uid)
         }
     }
 

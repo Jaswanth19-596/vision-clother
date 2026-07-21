@@ -79,8 +79,11 @@ struct OverviewView: View {
         HStack(alignment: .top, spacing: VCSpacing.md) {
             Image(systemName: "sparkles")
                 .foregroundStyle(VCAccentColor.brand)
-            Text(summary)
-                .font(.subheadline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(summary)
+                    .font(.subheadline)
+                InsightSourceCaption(text: "From your closet's colors and categories")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .premiumCard()
@@ -90,6 +93,7 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text(title)
                 .font(.headline)
+            InsightSourceCaption(text: "From what's currently in your closet")
             RankedBarShareChart(rows: rows.map { .init(id: $0.label, label: $0.label, percentage: $0.percentage) })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -106,6 +110,7 @@ struct OverviewView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            InsightSourceCaption(text: "From your ratings and logged wears")
             PeriodLegend()
             activityRow(label: "Outfits rated", delta: snapshot.ratingActivity)
             activityRow(label: "Wears logged", delta: snapshot.wearLogActivity)
@@ -128,6 +133,7 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: VCSpacing.sm) {
                 Text("Discoveries")
                     .font(.headline)
+                InsightSourceCaption(text: "From your recent ratings, wears, and closet mix")
                 ForEach(snapshot.discoveries) { discovery in
                     HStack(alignment: .top, spacing: VCSpacing.sm) {
                         Image(systemName: "lightbulb")

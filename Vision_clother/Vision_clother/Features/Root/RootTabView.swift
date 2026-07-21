@@ -45,7 +45,7 @@ struct RootTabView: View {
 #Preview {
     let container = try! ModelContainer(
         for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self, UserStyleProfile.self,
-        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self, WornLogEntry.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)

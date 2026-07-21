@@ -77,6 +77,7 @@ struct TrendsView: View {
         VStack(alignment: .leading, spacing: VCSpacing.sm) {
             Text(title)
                 .font(.headline)
+            InsightSourceCaption(text: "From your ratings, feedback, and worn items over time")
             if chart.hasEnoughData {
                 TrendLineChart(chart: chart)
             } else {

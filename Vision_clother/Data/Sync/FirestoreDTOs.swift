@@ -511,6 +511,30 @@ struct WornLogEntryDTO: Codable {
     }
 }
 
+/// Anti-Repetition — the permanent "never recommend these two together"
+/// veto, pushed to `users/{uid}/itemPairBans/{id}`. See
+/// `Models/ItemPairBan.swift`.
+struct ItemPairBanDTO: Codable {
+    var id: String
+    var itemAID: String
+    var itemBID: String
+    var createdAt: Date
+
+    static func from(_ model: ItemPairBan) -> ItemPairBanDTO {
+        ItemPairBanDTO(
+            id: model.id.uuidString,
+            itemAID: model.itemAID.uuidString,
+            itemBID: model.itemBID.uuidString,
+            createdAt: model.createdAt
+        )
+    }
+
+    func toModel() -> ItemPairBan? {
+        guard let uuid = UUID(uuidString: id), let aUUID = UUID(uuidString: itemAID), let bUUID = UUID(uuidString: itemBID) else { return nil }
+        return ItemPairBan(itemA: aUUID, itemB: bUUID, id: uuid, createdAt: createdAt)
+    }
+}
+
 /// Bookkeeping-only doc (`users/{uid}/meta/syncStatus`) — no `@Model`
 /// counterpart. `hasCompletedInitialSync` gates the bootstrap-vs-steady-state
 /// split (`Data/WardrobeSyncCoordinator.swift`). Unlike every other

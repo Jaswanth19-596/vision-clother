@@ -34,4 +34,17 @@ enum FashionKnowledgeConstants {
         /// validator's cap (`Domain/OutfitRecommendationValidator.swift`).
         static let maxSupplementaryAccessories = 2
     }
+
+    /// Anti-Repetition's rotation-novelty window (`Domain/RecentOutfitHistoryBuilder.swift`).
+    /// Same rationale as `DressCode` above: these two numbers appear both in
+    /// `RecentOutfitHistoryBuilder`'s bucketing logic and in `StylistBrain`'s
+    /// prompt prose ("last 7 days" / "8-14 days"), so they live once here.
+    enum Rotation {
+        /// A whole-outfit combination worn within this many days is a hard
+        /// avoid — see `StylistBrain`'s OUTFIT ROTATION section.
+        static let hardAvoidWindowDays = 7
+        /// A combination worn up to this many days ago is soft-penalized
+        /// (deprioritized, not blocked). Beyond this window, no penalty.
+        static let softPenalizeWindowDays = 14
+    }
 }
