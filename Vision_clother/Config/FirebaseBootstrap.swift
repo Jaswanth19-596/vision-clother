@@ -20,5 +20,16 @@ enum FirebaseBootstrap {
         if let clientID = FirebaseApp.app()?.options.clientID {
             GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
         }
+
+        // Best-effort, fire-and-forget — `RemoteConfigManager`'s registered
+        // defaults (`Config/RemoteConfigManager.swift`) already make every
+        // AI model/payload reader correct before this ever completes, so
+        // nothing needs to await it. Constructing `.shared` also registers
+        // those defaults synchronously, which must happen before the first
+        // service reads `Config/ModelConfig.swift`'s Remote-Config-backed
+        // properties.
+        Task {
+            await RemoteConfigManager.shared.fetchAndActivate()
+        }
     }
 }

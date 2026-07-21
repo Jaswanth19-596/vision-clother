@@ -19,42 +19,85 @@
 //  Swap the active value by editing the constant; the commented
 //  alternatives below are known-good OpenRouter slugs worth trying.
 //
+//  Every model constant below (`textToText`, `imageToText`, `imageToImage`,
+//  `imageEdit`) is a computed property backed by Firebase Remote Config
+//  (`Config/RemoteConfigManager.swift`), so any of them can be hotfixed from
+//  the Firebase Console with no rebuild — e.g. if a provider deprecates a
+//  model or an image model starts erroring. `textToText` additionally has
+//  Remote-Config-backed payload knobs (temperature, max tokens,
+//  strict-JSON-schema, a fallback model) that only apply to its own call
+//  shape. `Prompts` below stays plain hardcoded literals — prompt text isn't
+//  in scope for this hotfix path.
+//
 
 import Foundation
 
 enum ModelConfig {
     /// Used by: `OpenRouterOutfitRecommendationService` (primary
-    /// LLM-as-Recommender call, CLAUDE.md core invariant) and
+    /// LLM-as-Recommender call, CLAUDE.md core invariant),
     /// `OpenRouterIntentExtractionService` (deterministic-fallback
-    /// constraint extraction). Both are pure text in, JSON text out.
-//     static let textToText = "deepseek/deepseek-v4-flash"
-    static let textToText = "google/gemini-3.1-flash-lite"
-    
-    // Alternatives: "google/gemini-3.1-flash-lite", "openai/gpt-5-mini",
-    // "anthropic/claude-haiku-4.5"
+    /// constraint extraction), and `StylistQAService`. All are pure text in,
+    /// JSON text out.
+    ///
+    /// Backed by Firebase Remote Config (`Config/RemoteConfigManager.swift`,
+    /// key `ai_primary_model_name`) so the active model can be hotfixed from
+    /// the Firebase Console with no app build — `RemoteConfigManager.Defaults`
+    /// holds the same literal this constant used to be, and is what every
+    /// reader gets offline or before the first fetch.
+    static var textToText: String { RemoteConfigManager.shared.primaryModelName }
+
+    /// Emergency-hotfix backup for `textToText` — `OpenRouterOutfitRecommendationService`
+    /// retries with this model (Remote Config key `ai_fallback_model_name`)
+    /// when the primary model's structured-output attempt comes back
+    /// empty/malformed/rejected, so a broken upstream model doesn't need an
+    /// app release to route around.
+    static var textToTextFallback: String { RemoteConfigManager.shared.fallbackModelName }
+
+    /// `OpenRouterOutfitRecommendationService`'s request temperature (Remote
+    /// Config key `ai_temperature`) — `0` minimizes run-to-run
+    /// non-determinism on top of the validator's hard guarantees.
+    static var temperature: Double { RemoteConfigManager.shared.temperature }
+
+    /// Whether `OpenRouterOutfitRecommendationService`'s structured-output
+    /// attempt asks for `strict: true` JSON Schema mode (Remote Config key
+    /// `ai_enable_strict_json_schema`) — a hotfix escape hatch for a model
+    /// that accepts `response_format: json_schema` but rejects strict mode.
+    static var enableStrictJSONSchema: Bool { RemoteConfigManager.shared.enableStrictJSONSchema }
+
+    /// `OpenRouterOutfitRecommendationService`'s `max_tokens` cap (Remote
+    /// Config key `ai_max_tokens`).
+    static var maxTokens: Int { RemoteConfigManager.shared.maxTokens }
 
     /// Used by: `OpenRouterVisionMetadataExtractionService` (garment
     /// tagging from one photo) and `OpenRouterUserProfileDerivationService`
     /// (style profile from the onboarding portrait). Both send exactly one
     /// image and return structured JSON text, never an image.
-    static let imageToText = "minimax/minimax-m3"
+    ///
+    /// Remote-Config-backed (key `ai_image_to_text_model_name`) — see the
+    /// file header.
     // Alternatives: "google/gemini-3.1-flash-lite", "openai/gpt-5-mini",
     // "qwen/qwen3-vl-30b-a3b-instruct"
+    static var imageToText: String { RemoteConfigManager.shared.imageToTextModelName }
 
     /// Used by: `OpenRouterTryOnRenderService` (virtual try-on render —
-    /// base portrait + garment images in, a generated photo out).
-    // static let imageToImage = "bytedance-seed/seedream-4.5"
-    static let imageToImage = "google/gemini-3.1-flash-lite-image"
-    // Alternatives: "google/gemini-2.5-flash-image" (chat-completion image
-    // model — see OpenRouterTryOnRenderService's `isChatModel` branch)
+    /// base portrait + garment images in, a generated photo out). Nicknamed
+    /// "nano banana (lite)" for the underlying Gemini image-generation model.
+    ///
+    /// Remote-Config-backed (key `ai_image_to_image_model_name`) — see the
+    /// file header.
+    // Alternatives: "bytedance-seed/seedream-4.5", "google/gemini-2.5-flash-image"
+    // (chat-completion image model — see OpenRouterTryOnRenderService's
+    // `isChatModel` branch)
+    static var imageToImage: String { RemoteConfigManager.shared.imageToImageModelName }
 
     /// Used by: `OpenRouterBackgroundIsolationService` (AI-assisted
     /// background removal — one garment/upload photo in, an isolated
     /// flatlay product photo out). A different call shape from
     /// `imageToImage` (single reference image + edit prompt, not a
-    /// multi-image compose), so it gets its own constant even though it
-    /// currently points at the same model.
-    static let imageEdit = "google/gemini-3.1-flash-lite-image"
+    /// multi-image compose), so it gets its own Remote Config key
+    /// (`ai_image_edit_model_name`) even though it currently defaults to the
+    /// same model.
+    static var imageEdit: String { RemoteConfigManager.shared.imageEditModelName }
 
     /// OpenRouter only exposes Google's Gemini image-generation models via
     /// the `/chat/completions` endpoint (`modalities: ["text","image"]`) —

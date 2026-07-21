@@ -510,42 +510,76 @@ final class DailyAssistantViewModel {
     /// free-text turn — tries `resolveWardrobeQuestion` first (behind
     /// `Domain/QuestionIntentHeuristic.swift`'s cheap on-device gate, so an
     /// ordinary "dress me for X" turn never pays for it) and only falls
-    /// through to the existing, completely unmodified `resolveOutfits` when
-    /// that returns nil — either the heuristic didn't trigger, the QA call
-    /// itself decided this wasn't a wardrobe question, or the QA call
-    /// failed outright. `resolveOutfits` itself is untouched by this
-    /// feature on purpose (see `Services/StylistQAService.swift`'s header).
+    /// through to `resolveOutfits` when that returns nil — either the
+    /// heuristic didn't trigger, the QA call itself decided this wasn't a
+    /// wardrobe question, or the QA call failed outright.
+    ///
+    /// HIGH perf fix (2026-07-21): the heuristic fires on any question-
+    /// phrased scenario request too ("What should I wear to a rooftop
+    /// party?"), so the QA-then-fallback path used to pay for the wardrobe
+    /// snapshot + catalog build TWICE — once inside the old
+    /// `resolveWardrobeQuestion`, again inside `resolveOutfits` when QA
+    /// correctly routed back. Fetched once here instead and threaded through
+    /// both as `PrefetchedWardrobeContext` — `resolveOutfits` still does its
+    /// own fetch/build when called from the non-question fast path below
+    /// (`prefetched` stays nil), so that path is exactly as before.
     private func resolveTurn(userText: String, conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
-        if QuestionIntentHeuristic.looksLikeWardrobeQuestion(userText),
-           let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory) {
-            return .answer(answer)
+        guard QuestionIntentHeuristic.looksLikeWardrobeQuestion(userText) else {
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
         }
-        return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+        guard !Task.isCancelled else { return .timedOut }
+        do {
+            let (inventory, history) = try await wardrobeSnapshot()
+            guard !inventory.filter({ !$0.isGhostElement }).isEmpty else {
+                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+            }
+            let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history)
+            guard !catalog.isEmpty else {
+                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+            }
+            let context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog)
+            if let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory, context: context) {
+                return .answer(answer)
+            }
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, prefetched: context)
+        } catch {
+            MLLog.logger.notice("wardrobeSnapshot for QA gate failed, falling through to recommendation flow — \(String(describing: error))")
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+        }
+    }
+
+    /// Already-fetched/built inputs shared between `resolveWardrobeQuestion`
+    /// and `resolveOutfits` on the question-phrased path — see
+    /// `resolveTurn`'s 2026-07-21 perf-fix comment. `catalog` is the LLM-
+    /// facing entries only (matches the `_`-discarded index at every prior
+    /// call site: `resolveOutfits` always re-fetches a fresh index after its
+    /// own network call anyway, to dodge the SwiftData invalidation race
+    /// documented at its `freshIndex` line).
+    private struct PrefetchedWardrobeContext {
+        let inventory: [WardrobeItem]
+        let history: FeedbackHistory
+        let catalog: [CatalogEntry]
     }
 
     /// Returns the answer text when this turn really is a wardrobe/Insights
     /// question the QA call could confidently answer; `nil` in every other
-    /// case (not a question, ambiguous, empty wardrobe, or any failure) so
-    /// `resolveTurn` falls through to the ordinary recommendation flow —
-    /// never surfaces a QA-specific error to the user, since a failure here
-    /// should degrade to today's existing behavior, not a dead end.
-    private func resolveWardrobeQuestion(conversationHistory: [ConversationTurn]) async -> String? {
+    /// case (not a question, ambiguous, or any failure) so `resolveTurn`
+    /// falls through to the ordinary recommendation flow — never surfaces a
+    /// QA-specific error to the user, since a failure here should degrade to
+    /// today's existing behavior, not a dead end.
+    private func resolveWardrobeQuestion(conversationHistory: [ConversationTurn], context: PrefetchedWardrobeContext) async -> String? {
         guard !Task.isCancelled else { return nil }
         do {
-            let (inventory, history) = try await wardrobeSnapshot()
-            guard !inventory.filter({ !$0.isGhostElement }).isEmpty else { return nil }
-            let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history)
-            guard !catalog.isEmpty else { return nil }
-            let catalogData = try JSONEncoder().encode(catalog)
+            let catalogData = try JSONEncoder().encode(context.catalog)
             let catalogText = String(decoding: catalogData, as: UTF8.self)
 
             let insightsSummary = InsightsSummaryBuilder.buildSummaryText(
-                inventory: inventory,
+                inventory: context.inventory,
                 itemRatings: try repository.fetchAllItemRatings(),
                 outfitFeedbacks: try repository.fetchAllOutfitFeedback(),
                 wornLogEntries: try repository.fetchWornLogEntries(),
                 savedCombinations: try repository.fetchSavedCombinations(),
-                attributeProfile: history.attributeProfile
+                attributeProfile: context.history.attributeProfile
             )
 
             loadingStage = .consultingStylist
@@ -572,25 +606,34 @@ final class DailyAssistantViewModel {
         }
     }
 
-    private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
+    /// `prefetched` is non-nil only when `resolveTurn` already fetched the
+    /// wardrobe snapshot and built the catalog to feed the QA call first
+    /// (question-phrased turn, see `resolveTurn`) — reused here instead of
+    /// redone. `nil` on the ordinary non-question fast path, which fetches/
+    /// builds exactly as before.
+    private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool, prefetched: PrefetchedWardrobeContext? = nil) async -> RequestOutcome {
         do {
-            // Weather, the wardrobe snapshot, and the profile don't depend on
-            // each other — only the catalog build (below) needs the
-            // snapshot's inventory/history, so fan all three out instead of
-            // stacking their round-trips sequentially.
+            // Weather and the profile don't depend on the wardrobe snapshot/
+            // catalog build, so fan them out concurrently with it rather
+            // than stacking their round-trips sequentially.
             async let weatherResult = PerfLog.time("weather") { await weatherProvider.currentWeather() }
-            async let snapshotResult = wardrobeSnapshot()
             async let profileResult = PerfLog.time("profile") { await resolvedUserProfile() }
 
-            let (inventory, history) = try await snapshotResult
-            let weather = await weatherResult
-            let profile = await profileResult
-
-            loadingStage = .buildingCatalog
-            let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
+            let context: PrefetchedWardrobeContext
+            if let prefetched {
+                context = prefetched
+            } else {
+                let (inventory, history) = try await wardrobeSnapshot()
+                loadingStage = .buildingCatalog
+                let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
+                context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog)
+            }
+            let (inventory, history, catalog) = (context.inventory, context.history, context.catalog)
             guard !catalog.isEmpty else {
                 return .failure("Your wardrobe appears to be empty. Add some items and try again.")
             }
+            let weather = await weatherResult
+            let profile = await profileResult
 
             let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
 

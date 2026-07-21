@@ -8,17 +8,54 @@ Every OpenRouter/Pexels call previously went straight from the iOS client to the
 
 **Correction to an earlier draft of this doc:** Fal was never actually called anywhere in this codebase — `APIKeys.fal` had zero call sites before it was removed. Try-on render (`OpenRouterTryOnRenderService.swift`) and background isolation (`BackgroundIsolationService.swift`'s `OpenRouterBackgroundIsolationService`) both go through OpenRouter, not Fal. The proxy covers **OpenRouter and Pexels only**.
 
-## Design: thin passthrough, 3 routes
+## Design: passthrough proxy + 4 server-side routes, split across 3 Cloud Functions
 
-One Cloud Function (`api`, `backend/functions/src/index.ts`) serving three HTTPS routes via Express (`backend/functions/src/app.ts`):
+Three Cloud Functions (`backend/functions/src/index.ts`), each its own Express app (`backend/functions/src/app.ts`'s `buildProxyApp`/`buildHeavyApp`/`buildAccountApp`), grouped by cost/latency profile rather than deployed as one monolithic function:
 
-1. `POST /openrouter/chat` → `https://openrouter.ai/api/v1/chat/completions`
-2. `POST /openrouter/images` → `https://openrouter.ai/api/v1/images`
-3. `GET /pexels/search` → `https://api.pexels.com/v1/search`
+| Function | Routes | Config | Why |
+|---|---|---|---|
+| `proxyApi` | `/openrouter/chat`, `/openrouter/recommend`, `/pexels/search` | 256MiB, 60s timeout, 30 max instances | Low memory and a high instance ceiling for fan-out; timeout is 60s (not the original 15s) because `/openrouter/chat` and `/openrouter/recommend` are real LLM completion calls that routinely exceed 15s |
+| `heavyApi` | `/openrouter/tryon`, `/openrouter/images` | 512MiB, 180s timeout, 10 max instances | Real image-generation cost, slow upstream — needs headroom on memory and timeout; capped lower since each instance is costlier |
+| `accountApi` | `/account/delete`, `/iap/verify`, `/entitlement/limits`, `/analytics/config` | 256MiB, 30s timeout, 20 max instances | Payments/account-management, isolated so a provider outage or quota spike on the other two can never starve deletes, purchase verification, or config reads |
 
-Each route: verify Firebase Auth ID token → per-uid rate limit (Firestore counter) → loose top-level body-shape check (Zod) → inject the real provider key → forward verbatim → return the upstream status/body unchanged.
+All three share the same request pipeline (`app.ts`'s `baseApp()`: request-id + logging → `verifyAuth` → `rateLimit`) and are `invoker: "public"` at the Cloud Run/IAM layer for the same reason the original single function was — the real auth gate is `middleware/verifyAuth.ts` (Firebase ID token bearer), not IAM. `proxyApi` and `heavyApi` bind `openRouterApiKey`/`pexelsApiKey` as needed; `accountApi` binds no provider secrets since none of its four routes call OpenRouter or Pexels.
 
-This is intentionally **not** one Cloud Function per iOS service. All prompt/schema construction (`Config/ModelConfig.swift`'s `Prompts` enum, each service's JSON Schema) stays client-side, exactly as before — the proxy does no business logic (see `docs/backend/conventions.md`). Six iOS services all point at the same `/openrouter/chat` or `/openrouter/images` route:
+**iOS client impact:** `Config/ProxyConfig.swift` now holds three base URLs (one per function) instead of one — see that file's TODO for filling in the real per-function URLs after `firebase deploy --only functions`.
+
+These 9 routes fall into two categories:
+
+### Passthrough proxy routes (5)
+
+These hold API keys server-side and forward requests verbatim — no business logic past `verifyAuth`:
+
+| # | Route | Upstream | Middleware |
+|---|---|---|---|
+| 1 | `POST /openrouter/recommend` | `https://openrouter.ai/api/v1/chat/completions` | `responseCache("recommendation")` → `quotaGate("recommendation")` |
+| 2 | `POST /openrouter/tryon` | `https://openrouter.ai/api/v1/chat/completions` | `quotaGate("tryOn")` |
+| 3 | `POST /openrouter/chat` | `https://openrouter.ai/api/v1/chat/completions` | _(none beyond global auth + rate limit)_ |
+| 4 | `POST /openrouter/images` | `https://openrouter.ai/api/v1/images` | `quotaGate("tryOn")` |
+| 5 | `GET /pexels/search` | `https://api.pexels.com/v1/search` | _(none beyond global auth + rate limit)_ |
+
+Routes 1, 2, and 4 are quota-gated (real generation cost); 3 and 5 are uncapped beyond the global `rateLimit` guardrail. `/openrouter/recommend` and `/openrouter/tryon` reuse the same `openrouterChatRouter` handler as `/openrouter/chat` — the separate mount points exist solely to attach per-feature `quotaGate` and `responseCache` middleware. `/openrouter/images` is the dedicated-Images-API branch the try-on and background-isolation services fall back to when `ModelConfig.isChatCompletionImageModel` is false.
+
+Each passthrough route: verify Firebase Auth ID token → per-uid rate limit (Firestore counter) → optional quota gate / response cache → loose top-level body-shape check (Zod) → inject the real provider key → forward verbatim → return the upstream status/body unchanged.
+
+### Server-side routes with business logic (4)
+
+These are **deliberate exceptions** to the passthrough posture, each individually justified in code comments (see `app.ts`):
+
+| # | Route | What it does | Why it can't be client-side |
+|---|---|---|---|
+| 6 | `POST /account/delete` | Bulk Firestore recursive delete, Storage prefix wipe, Auth user deletion | Requires Admin SDK privileges the client can never safely hold; doing N separate client-side deletes would be slow and half-finished on a dropped connection |
+| 7 | `POST /iap/verify` | StoreKit 2 JWS verification + Firestore transactional balance credit | The `users/{uid}/meta/usage` balance doc is server-only-write — the one mutation that must never be client-reachable — and deduplication (via `processedTransactions/{transactionId}`) must be atomic with the balance increment |
+| 8 | `GET /entitlement/limits` | Resolves the caller's tier → concrete quota numbers | Prevents the client from hardcoding a tier→number table that could drift from `middleware/quota.ts`'s enforcement; read-only, no mutation |
+| 9 | `GET /analytics/config` | Returns analytics confidence/unlock thresholds | Same rationale as entitlement/limits — prevents client/server threshold drift; read-only, wrapped in `responseCache("analyticsConfig")` |
+
+> **Important:** every one of these exceptions was added as a "deliberate exception" to the original thin-proxy charter. The pattern of exceptions is how thin proxies drift toward accidental monoliths. Before adding a new server-side route, verify it genuinely requires Admin SDK privileges or server-only-write access — if it doesn't, keep the logic client-side and use the passthrough path.
+
+### Shared architecture
+
+This is intentionally **not** one Cloud Function per iOS service — the 3-way split above is grouped by cost/latency profile, not by service. All prompt/schema construction (`Config/ModelConfig.swift`'s `Prompts` enum, each service's JSON Schema) stays client-side, exactly as before — the passthrough proxy routes do no business logic (see `docs/backend/conventions.md`). Six iOS services all point at the same `/openrouter/chat`, `/openrouter/recommend`, `/openrouter/tryon`, or `/openrouter/images` routes (now split across `proxyApi`/`heavyApi` per the table above):
 
 | Service | File | Route |
 |---|---|---|
@@ -41,7 +78,7 @@ This is intentionally **not** one Cloud Function per iOS service. All prompt/sch
 
 ## What NOT to do
 
-Don't move `Domain/PairCompatibilityScoring.swift` or `Domain/OutfitRecommendationEngine.swift` server-side — no credentials touch that layer, and the offline-first requirement assumes it runs locally regardless of backend choice. Don't add business logic (prompt construction, response validation) to the proxy — see `docs/backend/conventions.md`.
+Don't move `Domain/PairCompatibilityScoring.swift` or `Domain/OutfitRecommendationEngine.swift` server-side — no credentials touch that layer, and the offline-first requirement assumes it runs locally regardless of backend choice. Don't add business logic (prompt construction, response validation) to the **passthrough proxy routes** — see `docs/backend/conventions.md`. The 4 server-side routes documented above (`/account/delete`, `/iap/verify`, `/entitlement/limits`, `/analytics/config`) are deliberate, justified exceptions — don't add new exceptions without verifying the route genuinely requires Admin SDK privileges or server-only-write access.
 
 ## Not yet built
 

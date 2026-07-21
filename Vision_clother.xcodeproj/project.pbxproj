@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 925AC4A168A2D38F747732A6 /* FirebaseFirestore */; };
+		1C2F5AF33969B0519CBA810A /* FirebaseRemoteConfig in Frameworks */ = {isa = PBXBuildFile; productRef = 579066FE3533E02A3646E463 /* FirebaseRemoteConfig */; };
 		247F9BC74FF38B55A65D6DB6 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 90460C2D24468B54CB94D949 /* FirebaseStorage */; };
 		ACC9820030090FEA00E07357 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ACC981FF30090FEA00E07357 /* FirebaseAuth */; };
 		ACC9820230090FEA00E07357 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ACC9820130090FEA00E07357 /* FirebaseCore */; };
@@ -38,7 +39,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */ = {
+		AC5796C02FFF8A8D00DEEE33 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Config/URLSchemes.plist,
@@ -63,7 +64,7 @@
 		AC5796922FFF8A8C00DEEE33 /* Vision_clother */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */,
+				AC5796C02FFF8A8D00DEEE33 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
 			);
 			path = Vision_clother;
 			sourceTree = "<group>";
@@ -90,6 +91,7 @@
 				04256399A9A97F10CD316EE9 /* FirebaseFirestore in Frameworks */,
 				E3F66F56BD2BAE37B524748C /* GoogleSignIn in Frameworks */,
 				247F9BC74FF38B55A65D6DB6 /* FirebaseStorage in Frameworks */,
+				1C2F5AF33969B0519CBA810A /* FirebaseRemoteConfig in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -155,6 +157,7 @@
 				925AC4A168A2D38F747732A6 /* FirebaseFirestore */,
 				6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */,
 				90460C2D24468B54CB94D949 /* FirebaseStorage */,
+				579066FE3533E02A3646E463 /* FirebaseRemoteConfig */,
 			);
 			productName = Vision_clother;
 			productReference = AC5796902FFF8A8C00DEEE33 /* Vision_clother.app */;
@@ -557,6 +560,9 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -577,6 +583,9 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -650,6 +659,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		579066FE3533E02A3646E463 /* FirebaseRemoteConfig */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ACC981FE30090FEA00E07357 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseRemoteConfig;
+		};
 		6FBC03DCB9439EC38A1100F5 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 1242530FB979697EA900946D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;

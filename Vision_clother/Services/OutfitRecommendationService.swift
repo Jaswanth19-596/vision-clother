@@ -96,7 +96,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 try await performRequest(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
-                    recentWornHistory: recentWornHistory, pairBans: pairBans, useStructuredOutput: true
+                    recentWornHistory: recentWornHistory, pairBans: pairBans, model: model, useStructuredOutput: true
                 )
             }
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
@@ -105,11 +105,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             // itself isn't supported) — one fallback attempt with the schema
             // embedded in the prompt instead of retrying the same mode twice,
             // which only doubles latency for a failure mode retrying won't fix.
+            // Also swaps to `ModelConfig.textToTextFallback` (Remote Config
+            // key `ai_fallback_model_name`) rather than retrying the same
+            // primary model — a hotfixable escape hatch for when the
+            // primary model itself is the thing that's broken upstream.
             return try await PerfLog.time("recommendation.unstructuredFallbackAttempt") {
                 try await performRequest(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
-                    recentWornHistory: recentWornHistory, pairBans: pairBans, useStructuredOutput: false
+                    recentWornHistory: recentWornHistory, pairBans: pairBans,
+                    model: ModelConfig.textToTextFallback, useStructuredOutput: false
                 )
             }
         }
@@ -124,10 +129,11 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
+        model: String,
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
         let requestID = AppLog.newRequestID()
-        AppLog.info(.recommendation, "[\(requestID)] recommend: POST \(endpoint.path) structured=\(useStructuredOutput) catalogSize=\(catalog.count) turns=\(conversationHistory.count) isFinalTurn=\(isFinalTurn)")
+        AppLog.info(.recommendation, "[\(requestID)] recommend: POST \(endpoint.path) model=\(model) structured=\(useStructuredOutput) catalogSize=\(catalog.count) turns=\(conversationHistory.count) isFinalTurn=\(isFinalTurn)")
 
         let proxyHeaders: [String: String]
         do {
@@ -259,9 +265,13 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             return ["role": turn.role.rawValue, "content": turn.text]
         }
 
+        // temperature/max_tokens/strict-schema below are Remote-Config-backed
+        // (`Config/ModelConfig.swift`, `Config/RemoteConfigManager.swift`) —
+        // hotfixable from the Firebase Console with no app build.
         var body: [String: Any] = [
             "model": model,
-            "temperature": 0,
+            "temperature": ModelConfig.temperature,
+            "max_tokens": ModelConfig.maxTokens,
             // Structured-JSON path with a hard 15s client-side timeout
             // (DailyAssistantViewModel's requestTimeoutNanoseconds) — the
             // configured model may support extended "thinking" reasoning,
@@ -275,7 +285,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 "type": "json_schema",
                 "json_schema": [
                     "name": "OutfitRecommendationResponse",
-                    "strict": true,
+                    "strict": ModelConfig.enableStrictJSONSchema,
                     "schema": outfitRecommendationJSONSchema,
                 ],
             ]

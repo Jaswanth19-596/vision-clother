@@ -32,6 +32,7 @@ enum AppLog {
         case jobQueue = "JobQueue"
         case viewModel = "ViewModel"
         case payments = "Payments"
+        case remoteConfig = "RemoteConfig"
         case app = "App"
     }
 

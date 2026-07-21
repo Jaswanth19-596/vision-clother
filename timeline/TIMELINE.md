@@ -2,6 +2,104 @@
 
 ---
 
+## 2026-07-21 — Perf fix: eliminate duplicate wardrobe fetch/catalog build + second LLM round-trip on question-phrased recommendation turns
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green
+
+### Context
+Code-review finding: `Domain/QuestionIntentHeuristic.swift` fires on any question-*phrased* free-text turn, including ordinary scenario requests ("What should I wear to a rooftop party?"), not just genuine wardrobe/Insights questions. When it fires, the old `resolveWardrobeQuestion` independently fetched the wardrobe snapshot and rebuilt the catalog, called `StylistQAService`, and — when the QA call correctly classified the turn as `isWardrobeQuestion == false` (the common case for a scenario request) — fell through to `resolveOutfits`, which fetched the snapshot and rebuilt the catalog *again* before making a second, separate LLM call. Worst case: two full network round-trips (each with its own structured→unstructured retry) for one user turn, racing the same 15s deadline.
+
+User initially asked to merge `StylistBrain`/`StylistQABrain` into a single prompt/call so one LLM decides inquiry-vs-recommendation itself. Flagged that this directly contradicts a documented, deliberate decision (`Domain/CLAUDE.md`, `docs/decisions/resolved-v1.md`'s Q&A section: folding Q&A into `StylistBrain`'s ~150-line Decision Hierarchy prompt risks "lost in the middle" degradation of tuned recommendation behavior). User chose instead to keep the two calls/prompts separate and fix the plumbing — reuse the QA call's own classification as the routing signal, and stop redoing the wardrobe fetch/catalog build on the fallback path.
+
+### What shipped
+1. **`Vision_clother/Vision_clother/Features/DailyAssistant/DailyAssistantViewModel.swift`:**
+   - New private `PrefetchedWardrobeContext` (inventory, history, catalog entries).
+   - `resolveTurn` now fetches the wardrobe snapshot and builds the catalog once (only on the heuristic-fires branch), passes that context into `resolveWardrobeQuestion`, and — only if the QA call falls through (not a question / ambiguous / failed) — passes the same context into `resolveOutfits` via a new `prefetched:` parameter instead of letting it refetch/rebuild.
+   - `resolveWardrobeQuestion` no longer does its own fetch/catalog build — takes `context: PrefetchedWardrobeContext`.
+   - `resolveOutfits` gained `prefetched: PrefetchedWardrobeContext? = nil`: when nil (the ordinary non-question fast path, heuristic never fired), it fetches/builds exactly as before, so that path is unchanged.
+2. **Docs:** `Features/DailyAssistant/CLAUDE.md` and `docs/decisions/resolved-v1.md`'s Q&A section updated to describe the shared-context plumbing and explicitly note the single-prompt merge was considered and rejected again for the same reason as the original split.
+
+### Verification
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — BUILD SUCCEEDED. No test run (project convention — tests skipped, see root `CLAUDE.md`).
+
+---
+
+## 2026-07-21 — Fix: bump `proxyApi`'s timeout from 15s to 60s
+
+**Status:** ✅ Shipped — backend build green
+
+### Context
+Direct follow-up to the 3-function split below. That entry flagged `proxyApi`'s original 15s timeout as a likely source of spurious 504s on `/openrouter/chat` and `/openrouter/recommend` (real LLM completion calls, up to `ModelConfig.maxTokens`, sometimes retried against a fallback model) — user asked to bump it.
+
+### What shipped
+1. **`backend/functions/src/index.ts`** — `proxyApi`'s `timeoutSeconds` changed `15` → `60`, with a comment explaining why. `/pexels/search` (also on `proxyApi`) is fast and unaffected by the larger ceiling.
+2. **Docs:** `docs/backend/architecture.md`'s Cloud Functions table and `backend/README.md`'s route list both updated to say 60s instead of 15s, with the reasoning inline.
+
+`npm run build` (tsc) — zero errors. No route/middleware/secret changes, so the existing 41 Vitest tests weren't re-run (nothing they cover changed).
+
+## 2026-07-21 — Refactor: split the monolithic `api` Cloud Function into `proxyApi`/`heavyApi`/`accountApi`
+
+**Status:** ✅ Backend build/tests green — client not yet deployable (see below)
+
+### Context
+User asked for the single `api` Cloud Function (all 9 HTTPS routes, one 256MiB/180s deployment) to be split into 3 functions grouped by cost/latency profile, to right-size memory/timeout/instance ceilings per route group instead of one config for everything.
+
+### What shipped
+1. **`backend/functions/src/app.ts`** — replaced the single `buildApp()` with `buildProxyApp()` / `buildHeavyApp()` / `buildAccountApp()`, each its own `express.Express` built on a shared `baseApp()` helper (request-id/logging → `verifyAuth` → `rateLimit`, unchanged). Route→middleware chains (`quotaGate`, `responseCache`) preserved exactly as before, just redistributed:
+   - `buildProxyApp`: `/openrouter/chat`, `/openrouter/recommend` (quota+cache), `/pexels/search`
+   - `buildHeavyApp`: `/openrouter/tryon` (quota), `/openrouter/images` (quota)
+   - `buildAccountApp`: `/account/delete`, `/iap/verify`, `/entitlement/limits`, `/analytics/config` (cache)
+2. **`backend/functions/src/index.ts`** — now exports `proxyApi` (256MiB/15s/30 max instances, both provider secrets), `heavyApi` (512MiB/180s/10 max instances, `openRouterApiKey` only), `accountApi` (256MiB/30s/20 max instances, no provider secrets — none of its 4 routes call OpenRouter/Pexels) instead of one `api` export.
+3. **`Vision_clother/Config/ProxyConfig.swift`** — split the single `baseURL` into `proxyBaseURL`/`heavyBaseURL`/`accountBaseURL`; each route property now points at the base matching its new function. **All three are still placeholder-set to the old `api` URL** — real per-function URLs aren't known until `firebase deploy --only functions` actually runs (left a `TODO` in the file).
+4. **Docs:** `docs/backend/architecture.md`'s "Design" section rewritten with the 3-function table (routes/memory/timeout/maxInstances/why); `backend/README.md`'s route list and deploy section updated (3 functions, 3 URLs to configure, migration note about deleting the old `api` function once traffic has moved).
+
+### Known risk — flagged, not silently fixed
+`proxyApi`'s 15s timeout covers `/openrouter/chat` and `/openrouter/recommend`, both real LLM completion calls (`ModelConfig.maxTokens` up to 4096) that can plausibly exceed 15s, especially on a fallback-model retry. This was an explicit user-specified number, implemented as requested — but it's a likely source of new 504s that the previous single function's 180s timeout never had. Worth revisiting before relying on this in production.
+
+### Verification
+`npm run build` (tsc) — zero errors. `npm test` — all 41 existing Vitest tests pass unmodified (none imported `buildApp` directly). iOS side: Swift changes are config-only (URL construction), not run against a real device/simulator this session since the backend split hasn't been deployed yet — nothing to exercise end-to-end until real URLs are filled in.
+
+### Manual steps still required (not done by this change)
+1. `cd backend && firebase deploy --only functions` — deploys all three new functions (old `api` keeps running alongside until explicitly deleted).
+2. Copy the three printed HTTPS URLs into `ProxyConfig.swift`'s `proxyBaseURL`/`heavyBaseURL`/`accountBaseURL`.
+3. Rebuild/redeploy the iOS app pointing at the new URLs.
+4. Once traffic has moved, `firebase functions:delete api` to stop paying for the now-unused old function.
+
+## 2026-07-21 — Extended Firebase Remote Config to the image-model constants (`imageToText`/`imageToImage`/`imageEdit`) + published the live template
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+Follow-up to the same-day Remote Config entry below: user asked whether the image models (`imageToImage`/`imageEdit`, both defaulting to `google/gemini-3.1-flash-lite-image` — community nickname "nano banana") were also covered. They weren't — only `textToText` was Remote-Config-backed. Extended the same pattern to all three remaining `ModelConfig` constants, then actually published the parameters to the live Firebase Console (the previous entry only wrote the client code).
+
+### What shipped
+1. **`Config/RemoteConfigManager.swift`** — added 3 keys/defaults/accessors: `ai_image_to_text_model_name` (`minimax/minimax-m3`), `ai_image_to_image_model_name` (`google/gemini-3.1-flash-lite-image`), `ai_image_edit_model_name` (`google/gemini-3.1-flash-lite-image`) — same `setDefaults`-backed graceful-degradation pattern as the original 5 keys.
+2. **`Config/ModelConfig.swift`** — `imageToText`, `imageToImage`, `imageEdit` changed from `static let` literals to `static var` computed properties reading the new keys (same non-breaking access pattern as `textToText`'s earlier conversion — no call-site changes needed at their 4 existing `init` default-parameter usages).
+3. **Firebase Console (`visionclother` project)** — published all 8 parameters via the Firebase MCP server's `remoteconfig_get_template`/`remoteconfig_update_template` tools (version 3), values identical to the client defaults. Two publish attempts failed silently until parameter `description` fields were stripped of em dashes/embedded smart quotes — the REST API rejects them without a useful error message; kept descriptions plain ASCII from then on.
+4. **Docs:** `docs/backend/conventions.md`'s parameter table extended to all 8 rows plus a note on the ASCII-description gotcha; `docs/ios/architecture.md` and `docs/decisions/resolved-v1.md` updated to describe full 4-constant coverage instead of just `textToText`.
+
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — BUILD SUCCEEDED (scratch `-derivedDataPath`, same as the previous entry).
+
+## 2026-07-21 — Feature: Firebase Remote Config for the text-in/JSON-out AI model + payload knobs
+
+**Status:** ✅ Shipped — Build Succeeded
+
+### Context
+User asked for a zero-deployment emergency hotfix path for the OpenRouter model/payload settings that back the text-in/JSON-out LLM call shape (recommendation, intent extraction, Q&A) — previously plain hardcoded constants in `Config/ModelConfig.swift` requiring a rebuild + App Store release to change.
+
+### What shipped
+1. **`Vision_clother/Config/RemoteConfigManager.swift`** (new) — `RemoteConfigManager.shared` wraps `FirebaseRemoteConfig`. Registers 5 keys (`ai_primary_model_name`, `ai_fallback_model_name`, `ai_temperature`, `ai_enable_strict_json_schema`, `ai_max_tokens`) with baked-in `Defaults` via `setDefaults` at init, so every reader is correct offline/pre-fetch/on fetch failure with no manual branching. `fetchAndActivate()` is best-effort/never-throwing; `minimumFetchInterval` set to 1 hour.
+2. **`Config/ModelConfig.swift`** — `textToText` changed from a `static let` literal to a `static var` reading `RemoteConfigManager.shared.primaryModelName` (same access pattern for all 3 existing callers — `OpenRouterOutfitRecommendationService`, `OpenRouterIntentExtractionService`, `StylistQAService` — no call-site changes needed). Added `textToTextFallback`, `temperature`, `enableStrictJSONSchema`, `maxTokens`, all Remote-Config-backed. `imageToText`/`imageToImage`/`imageEdit` untouched.
+3. **`Services/OutfitRecommendationService.swift`** — `performRequest`/`encodeRequestBody` now take an explicit `model:` parameter (previously closed over `self.model` implicitly); the unstructured-JSON retry path (fires on an empty/malformed/rejected structured-output attempt) now passes `ModelConfig.textToTextFallback` instead of retrying the same primary model. Request body's `"temperature": 0` literal replaced with `ModelConfig.temperature`; `response_format.json_schema.strict`'s hardcoded `true` replaced with `ModelConfig.enableStrictJSONSchema`; added `"max_tokens": ModelConfig.maxTokens` (previously not sent at all).
+4. **`Config/FirebaseBootstrap.swift`** — fires a background `Task { await RemoteConfigManager.shared.fetchAndActivate() }` after `FirebaseApp.configure()`; nothing awaits it, since the registered defaults already make every reader correct before it completes.
+5. **`Diagnostics/AppLog.swift`** — added `.remoteConfig` category (`[RemoteConfig]` prefix, same pattern as every other subsystem here).
+6. **Xcode project** — added the `FirebaseRemoteConfig` SPM product (firebase-ios-sdk was already a package dependency at 12.16.0, just missing this product) via the `xcode-project-setup` skill's script. The script mis-wired the product onto the `Vision_clotherUITests` target instead of the main `Vision_clother` app target — hand-corrected in `project.pbxproj` (moved the `packageProductDependencies` entry and `Frameworks` build-phase file from the UI test target to the main target).
+7. **Docs:** `docs/backend/conventions.md` gained an "AI model hotfix via Firebase Remote Config" section with the full parameter table (key/type/default/consumer) and console procedure — this is the artifact to hand-import into the Firebase Console. `docs/ios/architecture.md`'s Networking section and `docs/decisions/resolved-v1.md` both updated to describe the new Remote-Config-backed knobs.
+
+**No backend change** — `backend/functions/src/routes/openrouterChat.ts`'s `bodySchema` was already `z.object({ model, messages }).passthrough()`, so the new `max_tokens` field and variable `temperature`/`strict` values pass through untouched.
+
+`xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` — BUILD SUCCEEDED (built against a scratch `-derivedDataPath`; the project's default DerivedData directory was corrupted by an unrelated interrupted delete mid-session and left alone rather than force-cleaned).
+
 ## 2026-07-20 — Feature: Default body photo option in Profile (mannequin alternative to a real photo)
 
 **Status:** ✅ Shipped — Build Succeeded
