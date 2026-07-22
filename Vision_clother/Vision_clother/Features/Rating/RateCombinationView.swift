@@ -62,6 +62,8 @@ struct RateCombinationView: View {
                     if let outfitViewModel {
                         RateCombinationQuestionsView(
                             imageAssetName: combination.imageAssetName,
+                            hasRenderedImage: combination.hasRenderedImage,
+                            flatlayItems: items,
                             viewModel: outfitViewModel,
                             submitLabel: items.isEmpty ? "Finish" : "Next: Rate Items",
                             onSaved: advanceFromOutfit
@@ -141,6 +143,15 @@ struct RateCombinationView: View {
 /// `docs/decisions/stylist-intelligence-engine.md` for the mapping.
 private struct RateCombinationQuestionsView: View {
     let imageAssetName: String
+    /// Mirrors `CombinationDetailView.CombinationDetailPage`'s
+    /// `hasRenderedImage`/`resolvedItems` gate — an outfit saved with no
+    /// try-on render (e.g. "Wearing This Today") has `imageAssetName ==
+    /// SavedCombination.noRenderPlaceholderAssetName`, which
+    /// `CachedWardrobeImage` can never resolve; without this, `combinationImage`
+    /// showed a permanent "Couldn't load this image" instead of falling back
+    /// to the item flatlay the Worn list and detail page already show.
+    let hasRenderedImage: Bool
+    let flatlayItems: [WardrobeItem]
     @Bindable var viewModel: RateCombinationViewModel
     let submitLabel: String
     let onSaved: () -> Void
@@ -322,15 +333,69 @@ private struct RateCombinationQuestionsView: View {
     /// rating it overall.
     @ViewBuilder
     private var combinationImage: some View {
-        CachedWardrobeImage(assetName: imageAssetName) { image in
-            image
-                .resizable()
-                .scaledToFit()
+        if hasRenderedImage {
+            CachedWardrobeImage(assetName: imageAssetName) { image in
+                ZoomableImageContainer {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                }
                 .frame(maxWidth: .infinity)
                 .clipShape(VCRadius.shape(VCRadius.card))
+            } placeholder: {
+                Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            itemFlatlay
+        }
+    }
+
+    /// No generated render yet — same per-slot flatlay
+    /// `CombinationDetailPage.itemFlatlay` shows full-screen, condensed to
+    /// fit this form's image section.
+    private var itemFlatlay: some View {
+        VStack(spacing: 8) {
+            ForEach(flatlayItems) { item in
+                HStack {
+                    thumbnail(for: item)
+
+                    VStack(alignment: .leading) {
+                        Text(item.slot.rawValue.capitalized)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(item.displayLabel)
+                            .font(.subheadline)
+                    }
+
+                    Spacer()
+                }
+            }
+        }
+        .premiumCard(radius: VCRadius.prominent, material: .regularMaterial)
+    }
+
+    /// Same rendering rule `CombinationDetailPage.thumbnail(for:)` uses: an
+    /// ingested item's real isolated photo, or a flat color swatch (Ghost
+    /// Elements have no photo).
+    @ViewBuilder
+    private func thumbnail(for item: WardrobeItem) -> some View {
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            image
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 44, height: 44)
+                .clipShape(VCRadius.shape(VCRadius.swatch))
         } placeholder: {
-            Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
-                .foregroundStyle(.secondary)
+            VCRadius.shape(VCRadius.swatch)
+                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+                .frame(width: 44, height: 44)
+                .overlay {
+                    if item.isGhostElement {
+                        Image(systemName: "sparkle")
+                            .foregroundStyle(.white)
+                    }
+                }
         }
     }
 }

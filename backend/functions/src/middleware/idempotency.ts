@@ -2,8 +2,8 @@ import type { NextFunction, Response } from "express";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
-import { refundQuota } from "./quota";
-import type { QuotaFeature } from "./quota";
+import { refundQuota } from "./governance";
+import type { QuotaFeature } from "./governance";
 
 type LockStatus = "IN_PROGRESS" | "COMPLETED" | "FAILED";
 
@@ -25,7 +25,7 @@ interface IdempotencyRecord {
  * (`/openrouter/recommend`, `/openrouter/tryon`, `/openrouter/images` — see
  * `app.ts`) against duplicate quota debits and duplicate paid upstream calls
  * when a client retries, the network is flaky, or the app backgrounds/gets
- * killed mid-request. Must run BEFORE `quotaGate`/`responseCache` in the
+ * killed mid-request. Must run BEFORE `governanceGate`/`responseCache` in the
  * mount chain — a `COMPLETED` replay answers directly and never reaches
  * either.
  *
@@ -122,7 +122,7 @@ export function idempotencyGate(feature: QuotaFeature) {
       return;
     }
 
-    // PROCEED — lock acquired. Let quotaGate debit and the route call
+    // PROCEED — lock acquired. Let governanceGate debit and the route call
     // upstream, then finalize the lock from whatever status code the
     // response eventually carries. Wrapping `res.send` (not `res.on("finish")`)
     // because a COMPLETED replay must be able to reproduce the exact original

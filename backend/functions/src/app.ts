@@ -1,8 +1,7 @@
 import express from "express";
 import type { Express, NextFunction, Response } from "express";
 import { verifyAuth } from "./middleware/verifyAuth";
-import { rateLimit } from "./middleware/rateLimit";
-import { quotaGate } from "./middleware/quota";
+import { rateLimitOnly, governanceGate } from "./middleware/governance";
 import { responseCache } from "./middleware/responseCache";
 import { idempotencyGate } from "./middleware/idempotency";
 import { openrouterChatRouter } from "./routes/openrouterChat";
@@ -47,17 +46,27 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
 /**
  * Shared pipeline for all three split deployments (`proxyApi`/`heavyApi`/
  * `accountApi` in `index.ts`): mint/echo `X-Request-Id` + start/finish log
- * lines, then Firebase Auth verification, then the shared per-uid rate
- * limiter. Splitting into three Cloud Functions only changes which routes
- * (and which memory/timeout/maxInstances/secrets) get bundled into a given
- * deployed function — never this common request pipeline. See
+ * lines, then Firebase Auth verification. Splitting into three Cloud
+ * Functions only changes which routes (and which
+ * memory/timeout/maxInstances/secrets) get bundled into a given deployed
+ * function — never this common request pipeline. See
  * `docs/backend/architecture.md`'s "Cloud Functions" section.
+ *
+ * Governance (the per-uid daily request cap, and — on the three
+ * quota-gated routes — the monthly quota/purchased-balance check) is
+ * deliberately NOT mounted here. `middleware/governance.ts`'s
+ * `rateLimitOnly` and `governanceGate` share one Firestore doc
+ * (`users/{uid}/meta/usage`) and a warm-instance cache; mounting both a
+ * blanket rate limiter here AND a per-route quota gate on top of it would
+ * touch that doc twice per quota-gated request, exactly the double round
+ * trip this consolidation removes. Each `buildXApp()` below mounts
+ * exactly one governance middleware per route instead.
  */
 function baseApp(): Express {
   const app = express();
   app.use(express.json({ limit: "15mb" })); // headroom over the ~10MB post-downscale image payloads
   app.use(requestLogger);
-  app.use(verifyAuth, rateLimit);
+  app.use(verifyAuth);
   return app;
 }
 
@@ -65,17 +74,17 @@ function baseApp(): Express {
  * Low-memory/short-timeout deployment (`proxyApi`): cheap passthrough calls
  * only — `/openrouter/chat` (vision-tagging, profile derivation,
  * intent-extraction, background isolation) and `/pexels/search` are
- * uncapped beyond the global rateLimit guardrail above.
+ * uncapped beyond `rateLimitOnly`'s daily guardrail.
  * `/openrouter/recommend` reuses the same `openrouterChatRouter` handler as
  * `/openrouter/chat` — the separate mount point exists solely to attach
  * `idempotencyGate("recommendation")` + `responseCache("recommendation")` +
- * `quotaGate("recommendation")`. `idempotencyGate` runs first (see
+ * `governanceGate("recommendation")`. `idempotencyGate` runs first (see
  * `middleware/idempotency.ts`) so a client-declared retry (same
  * `X-Idempotency-Key`) of an already-completed call short-circuits before
  * either the content-hash cache or the quota debit — and so a failed
- * upstream call downstream of quotaGate can be refunded. `/openrouter/chat`
- * is deliberately NOT idempotency-gated: it's uncapped/no quota cost, so
- * there's nothing to deduplicate.
+ * upstream call downstream of `governanceGate` can be refunded.
+ * `/openrouter/chat` is deliberately NOT idempotency-gated: it's
+ * uncapped/no quota cost, so there's nothing to deduplicate.
  */
 export function buildProxyApp(): Express {
   const app = baseApp();
@@ -83,11 +92,11 @@ export function buildProxyApp(): Express {
     "/openrouter/recommend",
     idempotencyGate("recommendation"),
     responseCache("recommendation"),
-    quotaGate("recommendation"),
+    governanceGate("recommendation"),
     openrouterChatRouter
   );
-  app.use("/openrouter/chat", openrouterChatRouter);
-  app.use("/pexels/search", pexelsSearchRouter);
+  app.use("/openrouter/chat", rateLimitOnly, openrouterChatRouter);
+  app.use("/pexels/search", rateLimitOnly, pexelsSearchRouter);
   return app;
 }
 
@@ -98,14 +107,14 @@ export function buildProxyApp(): Express {
  * `/openrouter/images` (the dedicated-Images-API branch the same two
  * services fall back to when `ModelConfig.isChatCompletionImageModel` is
  * false — see `docs/decisions/resolved-v1.md`). Both are `idempotencyGate`d
- * before `quotaGate` — see `buildProxyApp`'s doc comment above; the
+ * before `governanceGate` — see `buildProxyApp`'s doc comment above; the
  * rationale is identical, and matters even more here given the 60-180s
  * upstream latency these routes' long timeouts exist to accommodate.
  */
 export function buildHeavyApp(): Express {
   const app = baseApp();
-  app.use("/openrouter/tryon", idempotencyGate("tryOn"), quotaGate("tryOn"), openrouterChatRouter);
-  app.use("/openrouter/images", idempotencyGate("tryOn"), quotaGate("tryOn"), openrouterImagesRouter);
+  app.use("/openrouter/tryon", idempotencyGate("tryOn"), governanceGate("tryOn"), openrouterChatRouter);
+  app.use("/openrouter/images", idempotencyGate("tryOn"), governanceGate("tryOn"), openrouterImagesRouter);
   return app;
 }
 
@@ -118,13 +127,14 @@ export function buildHeavyApp(): Express {
  * comment history and `docs/backend/architecture.md` for the individual
  * justifications (Admin SDK privileges / server-only-write access). None
  * of the four touch `openRouterApiKey`/`pexelsApiKey`, so this deployment
- * binds no provider secrets.
+ * binds no provider secrets. All four are behind `rateLimitOnly`'s daily
+ * guardrail — none carry a per-feature quota.
  */
 export function buildAccountApp(): Express {
   const app = baseApp();
-  app.use("/account/delete", accountDeleteRouter);
-  app.use("/iap/verify", iapVerifyRouter);
-  app.use("/entitlement/limits", entitlementLimitsRouter);
-  app.use("/analytics/config", responseCache("analyticsConfig"), analyticsConfigRouter);
+  app.use("/account/delete", rateLimitOnly, accountDeleteRouter);
+  app.use("/iap/verify", rateLimitOnly, iapVerifyRouter);
+  app.use("/entitlement/limits", rateLimitOnly, entitlementLimitsRouter);
+  app.use("/analytics/config", rateLimitOnly, responseCache("analyticsConfig"), analyticsConfigRouter);
   return app;
 }

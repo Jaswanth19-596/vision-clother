@@ -168,7 +168,9 @@ struct ManualPairingView: View {
                 AsyncImage(url: imageURL) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().scaledToFit()
+                        ZoomableImageContainer {
+                            image.resizable().scaledToFit()
+                        }
                     case .failure:
                         Label("Couldn't load the preview", systemImage: "photo.badge.exclamationmark")
                     default:

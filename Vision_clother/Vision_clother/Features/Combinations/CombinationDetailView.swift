@@ -52,7 +52,8 @@ struct CombinationDetailView: View {
                     generationState: viewModel.generationState(for: combination),
                     onRate: { rateSheetCombination = combination },
                     onBanPair: { banSheetCombination = combination },
-                    onGenerateImage: { await viewModel.generateImage(for: combination) }
+                    onGenerateImage: { await viewModel.generateImage(for: combination) },
+                    onWearToday: { viewModel.logWorn(combination) }
                 )
                 .tag(Optional(combination.id))
             }
@@ -116,8 +117,19 @@ private struct CombinationDetailPage: View {
     let onRate: () -> Void
     let onBanPair: () -> Void
     let onGenerateImage: () async -> Void
+    /// Same `CombinationsViewModel.logWorn` the list's leading swipe action
+    /// (`CombinationsView.swift`) and the post-generation sheet
+    /// (`TryOnResultView.swift`'s "Wear This Today") both already call — this
+    /// is the third entry point onto the same "Worn" segment membership, for
+    /// a combination the user is looking at full-screen after the fact
+    /// rather than right after generating it or browsing the list.
+    let onWearToday: () -> Void
 
     @State private var detailItem: WardrobeItem?
+    /// Per-page lock, same convention as `TryOnResultView.didMarkWorn` — logging
+    /// twice from one screening isn't useful, even though `logWorn` itself
+    /// tolerates repeat calls (see its doc comment).
+    @State private var didLogWornThisVisit = false
 
     var body: some View {
         ScrollView {
@@ -139,12 +151,25 @@ private struct CombinationDetailPage: View {
                 }
 
                 Button {
+                    onWearToday()
+                    didLogWornThisVisit = true
+                } label: {
+                    Label(
+                        didLogWornThisVisit ? "Marked Worn Today" : "Wearing This Today",
+                        systemImage: didLogWornThisVisit ? "checkmark.circle.fill" : "checkmark.circle"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(didLogWornThisVisit)
+
+                Button {
                     onRate()
                 } label: {
                     Label("Rate this outfit", systemImage: "star.bubble")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(PrimaryButtonStyle())
+                .buttonStyle(SecondaryButtonStyle())
 
                 Button {
                     onBanPair()
@@ -165,11 +190,13 @@ private struct CombinationDetailPage: View {
     private var image: some View {
         if combination.hasRenderedImage {
             CachedWardrobeImage(assetName: combination.imageAssetName) { image in
-                image
-                    .resizable()
-                    .scaledToFit()
-                    .clipShape(VCRadius.shape(VCRadius.card))
-                    .vcShadow()
+                ZoomableImageContainer {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                }
+                .clipShape(VCRadius.shape(VCRadius.card))
+                .vcShadow()
             } placeholder: {
                 Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
                     .foregroundStyle(.secondary)

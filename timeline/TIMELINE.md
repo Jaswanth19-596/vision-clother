@@ -2,6 +2,56 @@
 
 ---
 
+## 2026-07-21 — Security fix: quota bypass via forgeable `responseCache` Firestore doc
+
+**Status:** ✅ Shipped — Firestore rules + docs only, no build required (rules/doc-only change).
+
+### Problem
+Security audit (`security_issues.md` Finding 1) found that `backend/functions/src/middleware/responseCache.ts` caches successful `/openrouter/recommend` responses at `users/{uid}/responseCache/{sha256(body)}` and is mounted **before** `governanceGate` in `app.ts`, so a cache hit skips the quota check and the paid OpenRouter call entirely. `backend/firestore.rules`'s catch-all rule granted the doc owner full read/write on any subcollection except `meta`/`wardrobeItems`, and `responseCache` fell through to owner-writable. Since the cache key is just `sha256(JSON.stringify(req.body))` of the client's own request, an attacker could precompute the key for an intended request, write a fabricated `{status: 200, body, expiresAt: <future>}` doc directly via the Firestore SDK, then call the real endpoint and have the forged response served with zero quota debit and zero upstream call — fully defeating the quota/purchased-balance system on that account (no cross-user leakage).
+
+### Fix
+1. **`backend/firestore.rules`:** added an explicit `match /responseCache/{document=**} { allow read: if isOwner(); allow write: if false; }` block, mirroring the existing `meta/usage`/`meta/entitlement` owner-read/server-only-write pattern. Updated the trailing catch-all rule (`match /{collection}/{document}`) to also exclude `"responseCache"` from its owner-write grant, and extended the file's header comment to document the new rule. No change to `responseCache.ts`/`app.ts` — its writes go through the Admin SDK, which bypasses security rules by design, so only client-side forgery is closed.
+2. **Docs:** `docs/backend/architecture.md`'s "Not yet built" section now notes `responseCache`'s server-only-write treatment alongside the governance/entitlement/idempotency collections. `security_issues.md` Finding 1 marked fixed and its Pre-Production Launch Checklist item checked off.
+
+---
+
+## 2026-07-21 — Feature: "Wearing This Today" from the Combinations detail page
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention).
+
+### Problem
+User asked to be able to open an already-generated combination (Combinations tab → "Generated" segment → tap into the full-screen detail page) and mark it worn today, so it moves into the "Worn" segment. That entry point didn't exist: logging a wear (`CombinationsViewModel.logWorn`, which writes a `WornLogEntry`) was only reachable from the Combinations list's leading swipe action (`CombinationsView.swift`'s "Wore This") or from the post-generation `TryOnResultView` sheet's "Wear This Today" button right after a fresh render — not from `CombinationDetailView`'s full-screen paging page, which only offered "Rate this outfit" and "Never recommend these together".
+
+### Fix
+**`Vision_clother/Features/Combinations/CombinationDetailView.swift`:** `CombinationDetailPage` gained an `onWearToday: () -> Void` closure and a new primary "Wearing This Today" button (above "Rate this outfit", which moved to a secondary style), locking to a disabled "Marked Worn Today" state via a per-page `@State private var didLogWornThisVisit` after one tap — same lock convention `TryOnResultView.didMarkWorn` uses, even though `logWorn` itself tolerates repeat calls. `CombinationDetailView`'s `TabView` `ForEach` wires `onWearToday: { viewModel.logWorn(combination) }` — the same `CombinationsViewModel.logWorn` method the other two entry points already call, so this is a third caller onto the same "Worn" segment membership rule (`CombinationsView.swift`'s `wornCombinations`, keyed off `WornLogEntry` existence), not a new code path.
+
+---
+
+## 2026-07-21 — Fix: rating a render-less outfit showed "Couldn't load this image"
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention).
+
+### Problem
+Follow-up to the "Worn" tab fix directly below: that fix made `CombinationsView` and `CombinationDetailView` correctly fall back to an item flatlay for combinations with no generated try-on render (`SavedCombination.hasRenderedImage == false`, e.g. logged via "Wearing This Today"). But `RateCombinationView.swift` — opened via "Rate this outfit" from the detail page — was not updated: `RateCombinationQuestionsView.combinationImage` unconditionally tried `CachedWardrobeImage(assetName: combination.imageAssetName)`, which for a render-less combination is the `"__no_render__"` sentinel that can never resolve, so its placeholder — a literal "Couldn't load this image" label — showed permanently instead of the outfit's items.
+
+### Fix
+**`Vision_clother/Features/Rating/RateCombinationView.swift`:** `RateCombinationQuestionsView` now takes `hasRenderedImage: Bool` and `flatlayItems: [WardrobeItem]` (both already available on the caller, `RateCombinationView`, via `combination.hasRenderedImage` and its existing `items` state — no new data plumbing needed upstream). `combinationImage` branches the same way `CombinationDetailPage.image` does: real renders keep the original `CachedWardrobeImage` path unchanged; render-less combinations now show a new `itemFlatlay` (per-item thumbnail + slot label + display label), mirroring `CombinationDetailPage.itemFlatlay`'s pattern.
+
+---
+
+## 2026-07-21 — Fix: "Worn" tab showed a generic no-image icon for render-less logged outfits
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention).
+
+### Problem
+User reported that in the Combinations tab's "Worn" segment, selecting a combination whose try-on image was never generated (e.g. logged via "Wearing This Today", which saves a `SavedCombination` with `hasRenderedImage == false`) showed a bare gray "no image" icon in the row. `CombinationsView.swift`'s shared `CombinationRow` unconditionally tried to load `combination.imageAssetName` regardless of `hasRenderedImage`, so the sentinel placeholder asset name always fell through to the generic broken-image icon. The "Generated" segment never hits this because it's already filtered to `hasRenderedImage == true`.
+
+### Fix
+1. **`Vision_clother/Features/Combinations/CombinationsViewModel.swift`:** extracted `resolveItems(for:)`'s id-resolution logic into a private `resolveItems(for:itemsByID:)` helper, and added a batch form `resolveItemsByCombinationID(_:)` that fetches the inventory and builds the id→item dictionary once for a whole set of combinations, instead of once per combination — needed so resolving items for every render-less row in a list of up to 300 doesn't rebuild that dictionary 300 times.
+2. **`Vision_clother/Features/Combinations/CombinationsView.swift`:** `list(_:viewModel:)` now calls `resolveItemsByCombinationID` once per render (only for rows lacking a render) and passes the resolved `[WardrobeItem]` into `CombinationRow`. `CombinationRow.thumbnail` now branches on `combination.hasRenderedImage`: real renders keep the original image path unchanged; render-less rows with resolvable items show a new `itemThumbnailStrip` (up to 3 small 26x26 item thumbnails, reusing the same `CachedWardrobeImage`-with-color-swatch-fallback pattern `CombinationDetailPage.thumbnail(for:)` already established); render-less rows whose items have all since been deleted keep the original generic "photo" placeholder.
+
+---
+
 ## 2026-07-21 — Perf/reliability fix: batched Firestore outbox writes (`WriteBatch`) + bootstrap push no longer re-uploads clean rows
 
 **Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention — no existing tests touched this sync layer either).

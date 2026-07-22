@@ -162,12 +162,22 @@ struct CombinationsView: View {
 
     private func list(_ rows: [(combination: SavedCombination, date: Date)], viewModel: CombinationsViewModel) -> some View {
         let orderedIDs = rows.map(\.combination.id)
+        // Only render-less rows need their items resolved (rows with a real
+        // render just show that image) — batched once per list render rather
+        // than once per row, see `CombinationsViewModel.resolveItemsByCombinationID`.
+        let itemsByCombinationID = viewModel.resolveItemsByCombinationID(
+            rows.filter { !$0.combination.hasRenderedImage }.map(\.combination)
+        )
         return List {
             ForEach(Array(rows.enumerated()), id: \.element.combination.id) { index, row in
                 Button {
                     detailRequest = DetailRequest(orderedIDs: orderedIDs, startIndex: index)
                 } label: {
-                    CombinationRow(combination: row.combination, date: row.date)
+                    CombinationRow(
+                        combination: row.combination,
+                        date: row.date,
+                        resolvedItems: itemsByCombinationID[row.combination.id] ?? []
+                    )
                 }
                 .buttonStyle(.plain)
                 .swipeActions(edge: .trailing) {
@@ -201,6 +211,9 @@ struct CombinationsView: View {
 private struct CombinationRow: View {
     let combination: SavedCombination
     let date: Date
+    /// Only populated (and only looked at) when `!combination.hasRenderedImage`
+    /// — feeds `itemThumbnailStrip` below. Empty for rows with a real render.
+    let resolvedItems: [WardrobeItem]
 
     var body: some View {
         HStack(spacing: 12) {
@@ -221,16 +234,68 @@ private struct CombinationRow: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+        if combination.hasRenderedImage {
+            CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                noImagePlaceholder
+            }
+        } else if resolvedItems.isEmpty {
+            // No render, and every source item has since been deleted —
+            // nothing left to show a thumbnail of.
+            noImagePlaceholder
+        } else {
+            itemThumbnailStrip
+        }
+    }
+
+    private var noImagePlaceholder: some View {
+        VCRadius.shape(VCRadius.swatch)
+            .fill(.thinMaterial)
+            .overlay {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+            }
+    }
+
+    /// "Wearing This Today" saves a combination with no try-on render —
+    /// rather than showing a bare "no image" icon for these rows, show the
+    /// outfit's own items, same idea `CombinationDetailPage.itemFlatlay`
+    /// uses full-screen, just condensed into a strip that fits the row's
+    /// existing 60x60 thumbnail slot.
+    private var itemThumbnailStrip: some View {
+        HStack(spacing: 2) {
+            ForEach(resolvedItems.prefix(3)) { item in
+                itemThumbnail(for: item)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.thinMaterial)
+    }
+
+    /// Same rendering rule `CombinationDetailPage.thumbnail(for:)` /
+    /// `OutfitCardView.thumbnail(for:)` use, sized for this row's strip
+    /// instead of the full-screen flatlay.
+    @ViewBuilder
+    private func itemThumbnail(for item: WardrobeItem) -> some View {
+        CachedWardrobeImage(assetName: item.imageAssetName) { image in
             image
                 .resizable()
                 .aspectRatio(contentMode: .fill)
+                .frame(width: 26, height: 26)
+                .clipShape(VCRadius.shape(VCRadius.swatch))
         } placeholder: {
             VCRadius.shape(VCRadius.swatch)
-                .fill(.thinMaterial)
+                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+                .frame(width: 26, height: 26)
                 .overlay {
-                    Image(systemName: "photo")
-                        .foregroundStyle(.secondary)
+                    if item.isGhostElement {
+                        Image(systemName: "sparkle")
+                            .font(.caption2)
+                            .foregroundStyle(.white)
+                    }
                 }
         }
     }

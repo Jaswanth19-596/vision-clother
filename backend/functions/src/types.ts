@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import type { QuotaFeature } from "./middleware/quota";
+import type { QuotaFeature } from "./middleware/governance";
 
 /**
  * Populated by verifyAuth after a valid Firebase ID token is checked.
@@ -16,12 +16,13 @@ export interface AuthedRequest extends Request {
    */
   requestId?: string;
   /**
-   * Set by `middleware/quota.ts`'s `quotaGate` the moment it actually debits
-   * usage (fast-path count increment, or the slow-path "ok"/"ok_purchased"
-   * transaction outcomes) — absent when quotaGate rejected the request
-   * (429/403) or never ran at all. `middleware/idempotency.ts` reads this
-   * after the downstream handler finishes to decide whether a failure needs
-   * `quota.ts`'s `refundQuota` to undo a real debit.
+   * Set by `middleware/governance.ts`'s `governanceGate` the moment it
+   * actually debits usage (fast-path count increment, or the slow-path
+   * "ok"/"ok_purchased" transaction outcomes) — absent when governanceGate
+   * rejected the request (429/403) or never ran at all.
+   * `middleware/idempotency.ts` reads this after the downstream handler
+   * finishes to decide whether a failure needs `governance.ts`'s
+   * `refundQuota` to undo a real debit.
    */
   quotaDebit?: { feature: QuotaFeature; kind: "count" | "purchased" };
 }

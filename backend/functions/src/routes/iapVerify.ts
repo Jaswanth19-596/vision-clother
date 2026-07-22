@@ -18,7 +18,7 @@ const bodySchema = z.object({
  * /account/delete). StoreKit 2 consumable purchases are verified and
  * ledgered here because the credit balance lives in the server-only-write
  * `users/{uid}/meta/usage` doc: only the Admin SDK can mutate it, which is
- * exactly what makes the balance trustworthy to quota.ts.
+ * exactly what makes the balance trustworthy to governance.ts.
  *
  * Contract with the iOS client (`Services/StoreKitPaymentManager.swift`):
  * the client calls `Transaction.finish()` ONLY after this route returns
@@ -35,7 +35,7 @@ const bodySchema = z.object({
  * reinstall, which would orphan paid credits — the client hides the store
  * from guests and this 403 is the backstop.
  *
- * Fails CLOSED on Firestore errors (unlike quotaGate's linked-account
+ * Fails CLOSED on Firestore errors (unlike governanceGate's linked-account
  * fail-open): granting credits is not availability-critical, and the
  * client's unfinished transaction retries later.
  */
@@ -134,11 +134,11 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
       const usageData = usageSnap.exists ? usageSnap.data() : undefined;
       const newBalance = ((usageData?.[balanceField] as number) ?? 0) + grant.amount;
 
-      // Field-scoped merge write: quota.ts owns periodKey/counts and may be
-      // committing concurrently in its own transaction — this side must
-      // never touch those fields. If the usage doc doesn't exist yet the
-      // merge-set creates it with just the balance, which quota.ts already
-      // tolerates (missing count fields read as 0).
+      // Field-scoped merge write: governance.ts owns dayKey/periodKey/counts
+      // and may be committing concurrently in its own transaction — this
+      // side must never touch those fields. If the usage doc doesn't exist
+      // yet the merge-set creates it with just the balance, which
+      // governance.ts already tolerates (missing count fields read as 0).
       tx.set(
         usageRef,
         { [balanceField]: newBalance, updatedAt: Date.now() },

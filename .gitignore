@@ -21,3 +21,6 @@ Vision_clother/Config/Secrets.plist
 
 # Tool-generated output (graphify, etc.)
 graphify-out/
+
+security_issues.md
+Issues.md

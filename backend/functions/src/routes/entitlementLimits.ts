@@ -10,14 +10,14 @@ export const entitlementLimitsRouter = Router();
  * Deliberate third exception to this file's usual "no business logic past
  * verifyAuth" posture (see app.ts, alongside accountDelete/iapVerify) — the
  * whole point of this route is resolving a tier into concrete numbers
- * server-side, the same computation `middleware/quota.ts`'s `quotaGate`
- * does, so `Data/UsageTracker.swift` never has to hardcode a tier→number
- * table of its own (previously `Domain/EntitlementLimits.swift`, deleted
- * when this route was added — see docs/timeline.md). Read-only, no
+ * server-side, the same computation `middleware/governance.ts`'s
+ * `governanceGate` does, so `Data/UsageTracker.swift` never has to hardcode
+ * a tier→number table of its own (previously `Domain/EntitlementLimits.swift`,
+ * deleted when this route was added — see docs/timeline.md). Read-only, no
  * mutation, so there's no client-controllable input to worry about beyond
  * the already-verified `req.uid`.
  *
- * Tier resolution mirrors `quotaGate` exactly: anonymous is always
+ * Tier resolution mirrors `governanceGate` exactly: anonymous is always
  * "guest" regardless of any entitlement doc; otherwise "premium" only if
  * `meta/entitlement.tier` says so, else "free". A Firestore read failure
  * here fails open to "free" (never "premium") — this route grants no

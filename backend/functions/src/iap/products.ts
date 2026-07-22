@@ -7,7 +7,7 @@
  * Kept in sync by hand with the client's display-only mirror
  * (`Vision_clother/Domain/CreditPack.swift`) and the App Store Connect /
  * `.storekit` product definitions — same posture as `TIER_LIMITS`
- * (middleware/quota.ts) vs `Domain/EntitlementLimits.swift`.
+ * (middleware/governance.ts) vs `Domain/EntitlementLimits.swift`.
  */
 
 export type CreditType = "recommendation" | "tryOn";
@@ -26,9 +26,9 @@ export const PRODUCT_GRANTS: Record<string, ProductGrant> = {
 
 /**
  * The lifetime purchased-balance field each credit type lives under on
- * `users/{uid}/meta/usage`. Lifetime fields: never reset by quota.ts's
+ * `users/{uid}/meta/usage`. Lifetime fields: never reset by governance.ts's
  * monthly `periodKey` rollover, written only by `routes/iapVerify.ts`
- * (grant) and quota.ts's drawdown path (spend), always via field-scoped
+ * (grant) and governance.ts's drawdown path (spend), always via field-scoped
  * `merge: true` sets so the two writers stay commutative.
  */
 export const BALANCE_FIELD: Record<CreditType, "purchasedRecommendationBalance" | "purchasedTryOnBalance"> = {

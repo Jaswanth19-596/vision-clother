@@ -1,6 +1,6 @@
 /**
  * Single canonical source for every tier's numeric limits — imported by
- * `middleware/quota.ts` (enforcement) and `routes/entitlementLimits.ts`
+ * `middleware/governance.ts` (enforcement) and `routes/entitlementLimits.ts`
  * (the resolved-numbers readout the iOS client fetches instead of
  * hardcoding its own copy, see `Vision_clother/Services/EntitlementLimitsService.swift`).
  *

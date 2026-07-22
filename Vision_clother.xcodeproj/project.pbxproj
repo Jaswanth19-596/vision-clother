@@ -39,7 +39,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		AC5796C02FFF8A8D00DEEE33 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Config/URLSchemes.plist,
@@ -64,7 +64,7 @@
 		AC5796922FFF8A8C00DEEE33 /* Vision_clother */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				AC5796C02FFF8A8D00DEEE33 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+				AC5796C02FFF8A8D00DEEE33 /* Exceptions for "Vision_clother" folder in "Vision_clother" target */,
 			);
 			path = Vision_clother;
 			sourceTree = "<group>";
@@ -560,9 +560,7 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"-ObjC",
-				);
+				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -583,9 +581,7 @@
 				DEVELOPMENT_TEAM = 79QZ3H49GZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"-ObjC",
-				);
+				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.Vision-clotherUITests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;

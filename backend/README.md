@@ -8,7 +8,7 @@ Routes, behind Firebase Auth (guest-first anonymous sessions; Google Sign-In or 
 
 - **`proxyApi`** (256MiB, 60s timeout — bumped from an initial 15s, which caused spurious 504s on the two LLM routes below)
   - `POST /openrouter/chat` → `https://openrouter.ai/api/v1/chat/completions`
-  - `POST /openrouter/recommend` → same handler, quota-gated (`src/middleware/quota.ts`)
+  - `POST /openrouter/recommend` → same handler, quota-gated (`src/middleware/governance.ts`)
   - `GET /pexels/search` → `https://api.pexels.com/v1/search`
 - **`heavyApi`** (512MiB, 180s timeout)
   - `POST /openrouter/tryon` → same handler as `/openrouter/chat`, quota-gated as `tryOn`
@@ -25,7 +25,7 @@ App Check and Sign in with Apple are both deferred — both need a paid Apple De
 Project `visionclother` (number `1008598090428`) is already wired up — most of this was done via `npx -y firebase-tools@latest` rather than the console:
 
 1. ~~Create project~~ / ~~register iOS app~~ / ~~fetch `GoogleService-Info.plist`~~ — done (`apps:create IOS`, `apps:sdkconfig IOS`, saved to `Vision_clother/Vision_clother/Config/GoogleService-Info.plist`, safe to commit — it's not a secret, unlike `Secrets.plist`).
-2. ~~Firestore~~ — Standard-edition default database provisioned (used only for the rate-limit counter — no wardrobe data goes here), security rules deny all client access (`backend/firestore.rules`) since only the Admin SDK touches it.
+2. ~~Firestore~~ — Standard-edition default database provisioned, holding the governance (`users/{uid}/meta/usage`: daily rate-limit + monthly quota + purchased-credit balance, see `src/middleware/governance.ts`), entitlement, and idempotency-lock collections — no wardrobe data goes here. Security rules deny all client access (`backend/firestore.rules`) since only the Admin SDK touches it.
 3. ~~Google Sign-In~~ — enabled via `firebase.json`'s `auth` block + `firebase deploy --only auth` (config-as-code, no console click needed).
 4. **Phone Number sign-in — one manual step, not CLI-automatable**: Firebase Console → your project → Authentication → Sign-in method → **Phone** → Enable. (Only anonymous/email-password/Google are scriptable via `firebase.json`'s `auth` block today.)
 5. If you fork this to a different Firebase project: replace `visionclother` in `.firebaserc`, re-run the `apps:create`/`apps:sdkconfig` steps for your own bundle ID, and repeat steps 2–4.
@@ -70,4 +70,4 @@ cd backend/functions
 npm test
 ```
 
-Vitest unit tests cover: Auth middleware rejection paths (missing/invalid token), the rate-limit boundary, and each route's request-forwarding + upstream-error-passthrough behavior. No live network calls are made in tests — `fetch` and `firebase-admin` are mocked.
+Vitest unit tests cover: Auth middleware rejection paths (missing/invalid token), the rate-limit/quota boundary and fast-path/slow-path cache behavior (`test/governance.test.ts`), and each route's request-forwarding + upstream-error-passthrough behavior. No live network calls are made in tests — `fetch` and `firebase-admin` are mocked.

@@ -132,16 +132,36 @@ final class CombinationsViewModel {
 
     /// Resolves `combination.itemIDsBySlot` back to real `WardrobeItem`s for
     /// `RateCombinationView` — including its Favorite/Weakest Item picker,
-    /// which needs every real slot in the outfit, not just top/bottom. An id
-    /// can be missing (deleted since save, or a slot a Manual Pairing save
-    /// never populated) — those are silently skipped rather than surfaced as
-    /// an error, since `SavedCombination` denormalizes labels/image
-    /// precisely so it stays browsable even after a source item is gone.
+    /// which needs every real slot in the outfit, not just top/bottom — and
+    /// for the render-less item thumbnail strip `CombinationsView`'s "Worn"
+    /// row shows in place of a missing try-on image. An id can be missing
+    /// (deleted since save, or a slot a Manual Pairing save never
+    /// populated) — those are silently skipped rather than surfaced as an
+    /// error, since `SavedCombination` denormalizes labels/image precisely
+    /// so it stays browsable even after a source item is gone.
     func resolveItems(for combination: SavedCombination) -> [WardrobeItem] {
         guard let inventory = try? repository.fetchInventory() else { return [] }
         let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
-        // `itemIDsBySlot` is an unordered Dictionary — iterate `Slot.allCases`
-        // for a deterministic order, same pattern as `SavedCombination.displayTitle`.
+        return Self.resolveItems(for: combination, itemsByID: itemsByID)
+    }
+
+    /// Batch form of `resolveItems(for:)` — fetches the inventory and builds
+    /// `itemsByID` once for every combination, instead of once per
+    /// combination. `CombinationsView`'s "Worn" row list can have up to
+    /// `recentCombinationsLimit` render-less rows needing this per render;
+    /// resolving them one at a time would rebuild the same id→item
+    /// dictionary that many times.
+    func resolveItemsByCombinationID(_ combinations: [SavedCombination]) -> [UUID: [WardrobeItem]] {
+        guard let inventory = try? repository.fetchInventory() else { return [:] }
+        let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
+        return Dictionary(uniqueKeysWithValues: combinations.map { combination in
+            (combination.id, Self.resolveItems(for: combination, itemsByID: itemsByID))
+        })
+    }
+
+    // `itemIDsBySlot` is an unordered Dictionary — iterate `Slot.allCases`
+    // for a deterministic order, same pattern as `SavedCombination.displayTitle`.
+    private static func resolveItems(for combination: SavedCombination, itemsByID: [UUID: WardrobeItem]) -> [WardrobeItem] {
         let slotItems = Slot.allCases.compactMap { combination.itemIDsBySlot[$0] }.compactMap { itemsByID[$0] }
         let supplementaryAccessories = combination.supplementaryAccessoryItemIDs.compactMap { itemsByID[$0] }
         return slotItems + supplementaryAccessories
