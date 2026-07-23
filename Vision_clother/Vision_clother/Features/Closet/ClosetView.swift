@@ -246,7 +246,7 @@ private struct ClosetItemCell: View {
     /// fall back to the flat-color swatch from `colorProfile`.
     @ViewBuilder
     private var swatch: some View {
-        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+        CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 84, height: 84)) { image in
             image
                 .resizable()
                 .aspectRatio(contentMode: .fill)

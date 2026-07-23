@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import type { QuotaFeature } from "./middleware/governance";
+import type { OperationType } from "./pricing.config";
 
 /**
  * Populated by verifyAuth after a valid Firebase ID token is checked.
@@ -16,13 +16,14 @@ export interface AuthedRequest extends Request {
    */
   requestId?: string;
   /**
-   * Set by `middleware/governance.ts`'s `governanceGate` the moment it
-   * actually debits usage (fast-path count increment, or the slow-path
-   * "ok"/"ok_purchased" transaction outcomes) — absent when governanceGate
-   * rejected the request (429/403) or never ran at all.
-   * `middleware/idempotency.ts` reads this after the downstream handler
-   * finishes to decide whether a failure needs `governance.ts`'s
-   * `refundQuota` to undo a real debit.
+   * Set by `middleware/creditGate.ts`'s `creditGate` the moment it actually
+   * debits credits (its ALLOWED outcome) — absent when creditGate rejected
+   * the request (429) or never ran at all. Split into the two wallet buckets
+   * actually debited (subscription first, purchased for the remainder) so
+   * `refundCredit` can restore credits to the exact bucket(s) they came from
+   * instead of guessing. `middleware/idempotency.ts` reads this after the
+   * downstream handler finishes to decide whether a failure needs
+   * `creditGate.ts`'s `refundCredit` to undo a real debit.
    */
-  quotaDebit?: { feature: QuotaFeature; kind: "count" | "purchased" };
+  quotaDebit?: { operation: OperationType; subscriptionDebited: number; purchasedDebited: number };
 }

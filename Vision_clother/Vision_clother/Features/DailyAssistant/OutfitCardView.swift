@@ -151,7 +151,7 @@ struct OutfitCardView: View {
     /// to the flat-color swatch from `colorProfile`.
     @ViewBuilder
     private func thumbnail(for item: WardrobeItem) -> some View {
-        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+        CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 44, height: 44)) { image in
             image
                 .resizable()
                 .aspectRatio(contentMode: .fill)

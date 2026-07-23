@@ -4,34 +4,28 @@
  * so a tampered client can at worst buy a real product and receive exactly
  * what that product grants.
  *
+ * Credits are fully fungible across operation types: a purchased top-up adds
+ * to `purchased_credits_remaining`, spendable on any operation
+ * (UPLOAD/IMAGE_GEN/RECOMMENDATION) — collapsed from the previous per-feature-
+ * scoped balances as part of the single-credit-currency rewrite (see
+ * docs/timeline.md). Kept in a separate, permanent bucket from
+ * `subscription_credits_remaining` (`middleware/creditGate.ts`) so a paid
+ * top-up is never wiped by a subscription's monthly billing-cycle reset —
+ * required for Apple IAP compliance (a purchased consumable must remain the
+ * user's property until spent).
+ *
  * Kept in sync by hand with the client's display-only mirror
  * (`Vision_clother/Domain/CreditPack.swift`) and the App Store Connect /
- * `.storekit` product definitions — same posture as `TIER_LIMITS`
- * (middleware/governance.ts) vs `Domain/EntitlementLimits.swift`.
+ * `.storekit` product definitions.
  */
 
-export type CreditType = "recommendation" | "tryOn";
-
 export interface ProductGrant {
-  creditType: CreditType;
   amount: number;
 }
 
 export const PRODUCT_GRANTS: Record<string, ProductGrant> = {
-  "com.visionclother.credits.recs50": { creditType: "recommendation", amount: 50 },
-  "com.visionclother.credits.recs200": { creditType: "recommendation", amount: 200 },
-  "com.visionclother.credits.tryon10": { creditType: "tryOn", amount: 10 },
-  "com.visionclother.credits.tryon40": { creditType: "tryOn", amount: 40 },
-};
-
-/**
- * The lifetime purchased-balance field each credit type lives under on
- * `users/{uid}/meta/usage`. Lifetime fields: never reset by governance.ts's
- * monthly `periodKey` rollover, written only by `routes/iapVerify.ts`
- * (grant) and governance.ts's drawdown path (spend), always via field-scoped
- * `merge: true` sets so the two writers stay commutative.
- */
-export const BALANCE_FIELD: Record<CreditType, "purchasedRecommendationBalance" | "purchasedTryOnBalance"> = {
-  recommendation: "purchasedRecommendationBalance",
-  tryOn: "purchasedTryOnBalance",
+  "com.visionclother.credits.recs50": { amount: 50 },
+  "com.visionclother.credits.recs200": { amount: 200 },
+  "com.visionclother.credits.tryon10": { amount: 10 },
+  "com.visionclother.credits.tryon40": { amount: 40 },
 };

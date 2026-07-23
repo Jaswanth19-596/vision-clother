@@ -204,7 +204,7 @@ struct WardrobeInsightsView: View {
 
     private func itemChip(item: WardrobeItem, caption: String?) -> some View {
         VStack(spacing: 4) {
-            CachedWardrobeImage(assetName: item.imageAssetName) { image in
+            CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 56, height: 56)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)

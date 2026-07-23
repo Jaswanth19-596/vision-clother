@@ -3,6 +3,7 @@ import { z } from "zod";
 import { openRouterApiKey } from "../secrets";
 import type { AuthedRequest } from "../types";
 import { logEvent, upstreamErrorSnippet } from "../logger";
+import { assertModelAllowed } from "../modelAllowlist";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -26,6 +27,17 @@ openrouterChatRouter.post("/", async (req: AuthedRequest, res) => {
   if (!parsed.success) {
     logEvent("warn", "openrouterChat.invalidBody", { requestId: req.requestId, uid: req.uid });
     res.status(400).json({ error: "invalid_request_body" });
+    return;
+  }
+
+  const isAllowed = await assertModelAllowed(parsed.data.model, req.requestId);
+  if (!isAllowed) {
+    logEvent("warn", "openrouterChat.modelNotAllowed", {
+      requestId: req.requestId,
+      uid: req.uid,
+      model: parsed.data.model,
+    });
+    res.status(403).json({ error: "model_not_allowed" });
     return;
   }
 

@@ -141,37 +141,59 @@ describe("POST /iap/verify", () => {
     mockedVerify.mockResolvedValueOnce(verifiedTransaction());
     const res = await request(appWith("user-1", false)).post("/iap/verify").send({ jws: "signed" });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ granted: true, creditType: "recommendation", amount: 50, newBalance: 50, alreadyProcessed: false });
-    expect(usageDoc?.purchasedRecommendationBalance).toBe(50);
+    expect(res.body).toMatchObject({ granted: true, amount: 50, newBalance: 50, alreadyProcessed: false });
+    expect(usageDoc?.purchased_credits_remaining).toBe(50);
     expect(processedDocs["2000000123456789"]).toMatchObject({
       uid: "user-1",
       productId: "com.visionclother.credits.recs50",
-      creditType: "recommendation",
       amount: 50,
       revoked: false,
     });
   });
 
-  it("adds on top of an existing balance without touching monthly counters", async () => {
-    usageDoc = { periodKey: "2026-07", recommendationCount: 42, tryOnCount: 3, purchasedRecommendationBalance: 5 };
+  it("adds fungible credits on top of an existing purchased balance without touching tier/subscription/usage fields", async () => {
+    usageDoc = {
+      tier_id: "FREE",
+      subscription_credits_remaining: 99,
+      purchased_credits_remaining: 5,
+      usage_counts: { UPLOAD: 0, IMAGE_GEN: 3, RECOMMENDATION: 42 },
+    };
     mockedVerify.mockResolvedValueOnce(verifiedTransaction());
     const res = await request(appWith("user-1", false)).post("/iap/verify").send({ jws: "signed" });
     expect(res.status).toBe(200);
     expect(res.body.newBalance).toBe(55);
-    expect(usageDoc?.purchasedRecommendationBalance).toBe(55);
-    expect(usageDoc?.recommendationCount).toBe(42);
-    expect(usageDoc?.tryOnCount).toBe(3);
-    expect(usageDoc?.periodKey).toBe("2026-07");
+    expect(usageDoc?.purchased_credits_remaining).toBe(55);
+    expect(usageDoc?.subscription_credits_remaining).toBe(99); // untouched — top-ups never touch the subscription bucket
+    expect(usageDoc?.tier_id).toBe("FREE");
+    expect((usageDoc?.usage_counts as Record<string, number>).RECOMMENDATION).toBe(42);
   });
 
   it("returns alreadyProcessed for a replayed transactionId and grants nothing", async () => {
     processedDocs["2000000123456789"] = { uid: "user-1", amount: 50 };
-    usageDoc = { purchasedRecommendationBalance: 50 };
+    usageDoc = { purchased_credits_remaining: 50 };
     mockedVerify.mockResolvedValueOnce(verifiedTransaction());
     const res = await request(appWith("user-1", false)).post("/iap/verify").send({ jws: "signed" });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ granted: true, alreadyProcessed: true });
-    expect(usageDoc?.purchasedRecommendationBalance).toBe(50);
+    expect(usageDoc?.purchased_credits_remaining).toBe(50);
+  });
+
+  it("survives a subscription billing-cycle reset without losing the purchased top-up", async () => {
+    // Simulates a PRO subscriber who topped up, then their subscription's
+    // autoReset fired (creditGate.ts only ever rewrites
+    // subscription_credits_remaining on reset) — the purchased balance this
+    // route wrote earlier must still be exactly what was granted.
+    usageDoc = {
+      tier_id: "PRO",
+      subscription_credits_remaining: 500, // just reset by creditGate.ts
+      purchased_credits_remaining: 30,
+    };
+    mockedVerify.mockResolvedValueOnce(verifiedTransaction());
+    const res = await request(appWith("user-1", false)).post("/iap/verify").send({ jws: "signed" });
+    expect(res.status).toBe(200);
+    expect(res.body.newBalance).toBe(80);
+    expect(usageDoc?.purchased_credits_remaining).toBe(80);
+    expect(usageDoc?.subscription_credits_remaining).toBe(500); // untouched
   });
 
   it("rejects an unknown product with 400 and writes nothing", async () => {

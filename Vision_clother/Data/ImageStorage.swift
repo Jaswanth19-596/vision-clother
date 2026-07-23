@@ -11,6 +11,7 @@
 
 import CryptoKit
 import Foundation
+import ImageIO
 import UIKit
 
 enum ImageStorage {
@@ -53,8 +54,75 @@ enum ImageStorage {
         }.value
     }
 
+    /// Per-filename bucket of already-downsampled thumbnails, keyed by pixel
+    /// size (e.g. `"168"`) so the same source photo can serve several grid
+    /// sizes (Closet 84pt, Combinations 60pt, etc.) without re-decoding. A
+    /// plain class (not a struct) so `NSCache` can hold it by reference and
+    /// evict it as a unit — bucketing by filename means invalidation below
+    /// only needs one `removeObject(forKey:)`, not per-size bookkeeping.
+    private final class ThumbnailBucket {
+        private let lock = NSLock()
+        private var images: [String: UIImage] = [:]
+
+        func image(for sizeKey: String) -> UIImage? {
+            lock.lock()
+            defer { lock.unlock() }
+            return images[sizeKey]
+        }
+
+        func setImage(_ image: UIImage, for sizeKey: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            images[sizeKey] = image
+        }
+    }
+
+    /// Downsampled-thumbnail cache, separate from `imageCache` so requesting
+    /// a small grid swatch never promotes a full-resolution decode into
+    /// memory, and vice versa. Same bound as `imageCache` — see its doc
+    /// comment.
+    private static let thumbnailCache: NSCache<NSString, ThumbnailBucket> = {
+        let cache = NSCache<NSString, ThumbnailBucket>()
+        cache.countLimit = 300
+        return cache
+    }()
+
+    /// Cache-first, off-main-actor ImageIO downsample — decodes straight to
+    /// `maxPixelSize` via `CGImageSourceCreateThumbnailAtIndex` so grid/list
+    /// cells (Closet, Combinations, Pairing, etc.) never materialize a
+    /// full-resolution bitmap just to render an 80pt swatch. Reserved for
+    /// those call sites; detail/zoom views still use `cachedImage(for:)`.
+    static func cachedThumbnail(for filename: String, maxPixelSize: CGFloat) async -> UIImage? {
+        let key = filename as NSString
+        let sizeKey = String(Int(maxPixelSize.rounded()))
+        if let cached = thumbnailCache.object(forKey: key)?.image(for: sizeKey) {
+            return cached
+        }
+        return await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithURL(url(for: filename) as CFURL, nil) else { return nil }
+            let options: [CFString: Any] = [
+                // These PNGs have no embedded thumbnail, so "Always" (not
+                // "IfAbsent") is required to get ImageIO to generate one —
+                // it downsamples during decode instead of decoding the full
+                // image and then resizing, which is the whole point here.
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ]
+            guard let cgThumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return nil
+            }
+            let thumbnail = UIImage(cgImage: cgThumbnail)
+            let bucket = thumbnailCache.object(forKey: key) ?? ThumbnailBucket()
+            bucket.setImage(thumbnail, for: sizeKey)
+            thumbnailCache.setObject(bucket, forKey: key)
+            return thumbnail
+        }.value
+    }
+
     private static func invalidateCache(_ filename: String) {
         imageCache.removeObject(forKey: filename as NSString)
+        thumbnailCache.removeObject(forKey: filename as NSString)
     }
 
     private static var directory: URL {
@@ -106,6 +174,7 @@ enum ImageStorage {
     /// for the previous account's photo files either.
     static func wipeAll() throws {
         imageCache.removeAllObjects()
+        thumbnailCache.removeAllObjects()
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         try FileManager.default.removeItem(at: directory)
     }

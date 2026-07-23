@@ -15,10 +15,10 @@ interface CachedResponse {
 }
 
 /**
- * Must run after verifyAuth (needs req.uid) and *before* governanceGate for
+ * Must run after verifyAuth (needs req.uid) and *before* creditGate for
  * `feature` in app.ts's mount chain — a cache hit responds directly and
  * returns without calling `next()`, which is what keeps a hit from ever
- * reaching governanceGate or the upstream OpenRouter fetch (zero quota charged,
+ * reaching creditGate or the upstream OpenRouter fetch (zero credits charged,
  * zero paid inference call) for a byte-identical repeat request (e.g. a
  * retry after a transient error, or the user re-triggering the same
  * scenario against an unchanged wardrobe).
@@ -53,7 +53,7 @@ export function responseCache(feature: string) {
       logEvent("error", "responseCache.lookupFailOpen", { requestId: req.requestId, uid, feature, error: String(error) });
     }
 
-    // Miss (or lookup failure) — let the request proceed to governanceGate/the
+    // Miss (or lookup failure) — let the request proceed to creditGate/the
     // real upstream call, but capture whatever `res.send` eventually gets
     // called with so a 2xx response can be written back to the cache.
     const originalSend = res.send.bind(res);

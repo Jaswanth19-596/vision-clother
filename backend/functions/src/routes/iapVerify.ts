@@ -3,7 +3,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { z } from "zod";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
-import { BALANCE_FIELD, PRODUCT_GRANTS } from "../iap/products";
+import { PRODUCT_GRANTS } from "../iap/products";
 import { IapVerifyError, verifyIapJws } from "../iap/verifyTransaction";
 
 export const iapVerifyRouter = Router();
@@ -18,7 +18,7 @@ const bodySchema = z.object({
  * /account/delete). StoreKit 2 consumable purchases are verified and
  * ledgered here because the credit balance lives in the server-only-write
  * `users/{uid}/meta/usage` doc: only the Admin SDK can mutate it, which is
- * exactly what makes the balance trustworthy to governance.ts.
+ * exactly what makes the balance trustworthy to `middleware/creditGate.ts`.
  *
  * Contract with the iOS client (`Services/StoreKitPaymentManager.swift`):
  * the client calls `Transaction.finish()` ONLY after this route returns
@@ -35,7 +35,7 @@ const bodySchema = z.object({
  * reinstall, which would orphan paid credits — the client hides the store
  * from guests and this 403 is the backstop.
  *
- * Fails CLOSED on Firestore errors (unlike governanceGate's linked-account
+ * Fails CLOSED on Firestore errors (unlike creditGate's linked-account
  * fail-open): granting credits is not availability-critical, and the
  * client's unfinished transaction retries later.
  */
@@ -94,7 +94,6 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
   const db = getFirestore();
   const processedRef = db.collection("processedTransactions").doc(transaction.transactionId);
   const usageRef = db.collection("users").doc(uid).collection("meta").doc("usage");
-  const balanceField = BALANCE_FIELD[grant.creditType];
 
   try {
     if (transaction.revoked) {
@@ -103,7 +102,6 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
       await processedRef.set({
         uid,
         productId: transaction.productId,
-        creditType: grant.creditType,
         amount: 0,
         transactionId: transaction.transactionId,
         originalTransactionId: transaction.originalTransactionId,
@@ -132,22 +130,28 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
       }
 
       const usageData = usageSnap.exists ? usageSnap.data() : undefined;
-      const newBalance = ((usageData?.[balanceField] as number) ?? 0) + grant.amount;
+      const newBalance = ((usageData?.purchased_credits_remaining as number) ?? 0) + grant.amount;
 
-      // Field-scoped merge write: governance.ts owns dayKey/periodKey/counts
-      // and may be committing concurrently in its own transaction — this
-      // side must never touch those fields. If the usage doc doesn't exist
-      // yet the merge-set creates it with just the balance, which
-      // governance.ts already tolerates (missing count fields read as 0).
+      // Field-scoped merge write: creditGate.ts owns tier_id/billing_cycle_start/
+      // subscription_credits_remaining/usage_counts and governance.ts owns
+      // dayKey/dailyRequestCount, both of which may be committing concurrently
+      // in their own transactions — this side must never touch those fields.
+      // Deliberately targets purchased_credits_remaining only (never
+      // subscription_credits_remaining): a paid top-up must survive the
+      // subscription's monthly autoReset untouched (Apple IAP compliance) —
+      // see creditGate.ts's doc comment on the split wallet. If the usage doc
+      // doesn't exist yet the merge-set creates it with just the purchased
+      // balance, which creditGate.ts's lazy-init already tolerates (reads it
+      // as the starting purchased_credits_remaining for a not-yet-migrated/
+      // fresh account).
       tx.set(
         usageRef,
-        { [balanceField]: newBalance, updatedAt: Date.now() },
+        { purchased_credits_remaining: newBalance, updatedAt: Date.now() },
         { merge: true }
       );
       tx.set(processedRef, {
         uid,
         productId: transaction.productId,
-        creditType: grant.creditType,
         amount: grant.amount,
         transactionId: transaction.transactionId,
         originalTransactionId: transaction.originalTransactionId,
@@ -177,7 +181,6 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
       uid,
       productId: transaction.productId,
       transactionId: transaction.transactionId,
-      creditType: grant.creditType,
       amount: grant.amount,
       newBalance: result.newBalance,
       environment: transaction.environment,
@@ -185,7 +188,6 @@ iapVerifyRouter.post("/", async (req: AuthedRequest, res) => {
     });
     res.status(200).json({
       granted: true,
-      creditType: grant.creditType,
       amount: grant.amount,
       newBalance: result.newBalance,
       alreadyProcessed: false,

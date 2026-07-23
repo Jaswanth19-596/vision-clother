@@ -7,6 +7,18 @@ vi.mock("../src/secrets", () => ({
   pexelsApiKey: { value: () => "test-pexels-key" },
 }));
 
+// No config/openrouterModels doc — modelAllowlist.ts falls back to its
+// hardcoded DEFAULT_ALLOWED_MODELS, which is what these tests exercise.
+vi.mock("firebase-admin/firestore", () => ({
+  getFirestore: () => ({
+    collection: () => ({
+      doc: () => ({
+        get: async () => ({ exists: false, data: () => undefined }),
+      }),
+    }),
+  }),
+}));
+
 import { openrouterChatRouter } from "../src/routes/openrouterChat";
 import { openrouterImagesRouter } from "../src/routes/openrouterImages";
 import { pexelsSearchRouter } from "../src/routes/pexelsSearch";
@@ -56,8 +68,17 @@ describe("openrouterChatRouter", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(429, { error: { message: "rate limited" } }));
     const res = await request(app)
       .post("/openrouter/chat")
-      .send({ model: "x", messages: [{ role: "user", content: "hi" }] });
+      .send({ model: "google/gemini-3.1-flash-lite", messages: [{ role: "user", content: "hi" }] });
     expect(res.status).toBe(429);
+  });
+
+  it("rejects a model not on the allowlist without calling upstream", async () => {
+    const res = await request(app)
+      .post("/openrouter/chat")
+      .send({ model: "anthropic/claude-opus-4", messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("model_not_allowed");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -71,11 +92,20 @@ describe("openrouterImagesRouter", () => {
 
     const res = await request(app)
       .post("/openrouter/images")
-      .send({ model: "seedream", prompt: "outfit render" });
+      .send({ model: "bytedance-seed/seedream-4.5", prompt: "outfit render" });
 
     expect(res.status).toBe(200);
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe("https://openrouter.ai/api/v1/images");
+  });
+
+  it("rejects a model not on the allowlist without calling upstream", async () => {
+    const res = await request(app)
+      .post("/openrouter/images")
+      .send({ model: "stability-ai/sdxl", prompt: "outfit render" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("model_not_allowed");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

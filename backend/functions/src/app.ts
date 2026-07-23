@@ -1,7 +1,8 @@
 import express from "express";
 import type { Express, NextFunction, Response } from "express";
 import { verifyAuth } from "./middleware/verifyAuth";
-import { rateLimitOnly, governanceGate } from "./middleware/governance";
+import { rateLimitOnly } from "./middleware/governance";
+import { creditGate } from "./middleware/creditGate";
 import { responseCache } from "./middleware/responseCache";
 import { idempotencyGate } from "./middleware/idempotency";
 import { openrouterChatRouter } from "./routes/openrouterChat";
@@ -53,14 +54,13 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
  * `docs/backend/architecture.md`'s "Cloud Functions" section.
  *
  * Governance (the per-uid daily request cap, and — on the three
- * quota-gated routes — the monthly quota/purchased-balance check) is
- * deliberately NOT mounted here. `middleware/governance.ts`'s
- * `rateLimitOnly` and `governanceGate` share one Firestore doc
- * (`users/{uid}/meta/usage`) and a warm-instance cache; mounting both a
- * blanket rate limiter here AND a per-route quota gate on top of it would
- * touch that doc twice per quota-gated request, exactly the double round
- * trip this consolidation removes. Each `buildXApp()` below mounts
- * exactly one governance middleware per route instead.
+ * credit-gated routes — the credit/cap check) is deliberately NOT mounted
+ * here. `middleware/governance.ts`'s `rateLimitOnly` and
+ * `middleware/creditGate.ts`'s `creditGate` both touch the same Firestore
+ * doc (`users/{uid}/meta/usage`); mounting both a blanket rate limiter here
+ * AND a per-route credit gate on top of it would touch that doc twice per
+ * credit-gated request. Each `buildXApp()` below mounts exactly one
+ * governance middleware per route instead.
  */
 function baseApp(): Express {
   const app = express();
@@ -77,22 +77,22 @@ function baseApp(): Express {
  * uncapped beyond `rateLimitOnly`'s daily guardrail.
  * `/openrouter/recommend` reuses the same `openrouterChatRouter` handler as
  * `/openrouter/chat` — the separate mount point exists solely to attach
- * `idempotencyGate("recommendation")` + `responseCache("recommendation")` +
- * `governanceGate("recommendation")`. `idempotencyGate` runs first (see
+ * `idempotencyGate("RECOMMENDATION")` + `responseCache("recommendation")` +
+ * `creditGate("RECOMMENDATION")`. `idempotencyGate` runs first (see
  * `middleware/idempotency.ts`) so a client-declared retry (same
  * `X-Idempotency-Key`) of an already-completed call short-circuits before
- * either the content-hash cache or the quota debit — and so a failed
- * upstream call downstream of `governanceGate` can be refunded.
+ * either the content-hash cache or the credit debit — and so a failed
+ * upstream call downstream of `creditGate` can be refunded.
  * `/openrouter/chat` is deliberately NOT idempotency-gated: it's
- * uncapped/no quota cost, so there's nothing to deduplicate.
+ * uncapped/no credit cost, so there's nothing to deduplicate.
  */
 export function buildProxyApp(): Express {
   const app = baseApp();
   app.use(
     "/openrouter/recommend",
-    idempotencyGate("recommendation"),
+    idempotencyGate("RECOMMENDATION"),
     responseCache("recommendation"),
-    governanceGate("recommendation"),
+    creditGate("RECOMMENDATION"),
     openrouterChatRouter
   );
   app.use("/openrouter/chat", rateLimitOnly, openrouterChatRouter);
@@ -102,19 +102,20 @@ export function buildProxyApp(): Express {
 
 /**
  * Higher-memory/long-timeout deployment (`heavyApi`): the two real
- * generation-cost image routes only, both quota'd under the same "tryOn"
- * feature — `/openrouter/tryon` (chat-completion image models) and
- * `/openrouter/images` (the dedicated-Images-API branch the same two
- * services fall back to when `ModelConfig.isChatCompletionImageModel` is
- * false — see `docs/decisions/resolved-v1.md`). Both are `idempotencyGate`d
- * before `governanceGate` — see `buildProxyApp`'s doc comment above; the
- * rationale is identical, and matters even more here given the 60-180s
- * upstream latency these routes' long timeouts exist to accommodate.
+ * generation-cost image routes only, both credit-gated under the same
+ * "IMAGE_GEN" operation type — `/openrouter/tryon` (chat-completion image
+ * models) and `/openrouter/images` (the dedicated-Images-API branch the
+ * same two services fall back to when `ModelConfig.isChatCompletionImageModel`
+ * is false — see `docs/decisions/resolved-v1.md`). Both are
+ * `idempotencyGate`d before `creditGate` — see `buildProxyApp`'s doc comment
+ * above; the rationale is identical, and matters even more here given the
+ * 60-180s upstream latency these routes' long timeouts exist to
+ * accommodate.
  */
 export function buildHeavyApp(): Express {
   const app = baseApp();
-  app.use("/openrouter/tryon", idempotencyGate("tryOn"), governanceGate("tryOn"), openrouterChatRouter);
-  app.use("/openrouter/images", idempotencyGate("tryOn"), governanceGate("tryOn"), openrouterImagesRouter);
+  app.use("/openrouter/tryon", idempotencyGate("IMAGE_GEN"), creditGate("IMAGE_GEN"), openrouterChatRouter);
+  app.use("/openrouter/images", idempotencyGate("IMAGE_GEN"), creditGate("IMAGE_GEN"), openrouterImagesRouter);
   return app;
 }
 

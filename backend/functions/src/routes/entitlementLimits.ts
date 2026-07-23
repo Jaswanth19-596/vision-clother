@@ -2,28 +2,30 @@ import { Router } from "express";
 import { getFirestore } from "firebase-admin/firestore";
 import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
-import { TIER_LIMITS, ITEM_CAP_LIMITS, CORE_SLOTS, ACCESSORY_SLOTS, type Tier } from "../entitlementLimits";
+import { CORE_SLOTS, ACCESSORY_SLOTS, getPricingConfig, getTierConfig } from "../pricing.config";
+import { totalCredits } from "../middleware/creditGate";
 
 export const entitlementLimitsRouter = Router();
 
 /**
- * Deliberate third exception to this file's usual "no business logic past
- * verifyAuth" posture (see app.ts, alongside accountDelete/iapVerify) — the
- * whole point of this route is resolving a tier into concrete numbers
- * server-side, the same computation `middleware/governance.ts`'s
- * `governanceGate` does, so `Data/UsageTracker.swift` never has to hardcode
- * a tier→number table of its own (previously `Domain/EntitlementLimits.swift`,
- * deleted when this route was added — see docs/timeline.md). Read-only, no
- * mutation, so there's no client-controllable input to worry about beyond
- * the already-verified `req.uid`.
+ * Deliberate business-logic exception to this file's usual "no business
+ * logic past verifyAuth" posture (see app.ts, alongside accountDelete/
+ * iapVerify) — the whole point of this route is resolving a tier into
+ * concrete numbers server-side, so `Data/UsageTracker.swift` never has to
+ * hardcode a tier→number table of its own. Read-only, no mutation, so
+ * there's no client-controllable input to worry about beyond the
+ * already-verified `req.uid`.
  *
- * Tier resolution mirrors `governanceGate` exactly: anonymous is always
- * "guest" regardless of any entitlement doc; otherwise "premium" only if
- * `meta/entitlement.tier` says so, else "free". A Firestore read failure
- * here fails open to "free" (never "premium") — this route grants no
- * quota itself, it only describes numbers the real gates enforce
- * independently, so worst case is a temporarily-wrong display/pre-check,
- * not a bypass.
+ * Tier resolution: reads `meta/usage.tier_id`, the same field
+ * `middleware/creditGate.ts` writes/reads — this route deliberately does
+ * NOT run the credit gate's lazy-init/migration logic (it's read-only), so
+ * a uid that has never made a credit-gated request yet reads as its
+ * about-to-be-assigned tier (GUEST for anonymous, else FREE) with FREE's
+ * numbers, matching what `creditGate` would actually initialize on first
+ * use. A Firestore read failure here falls back to FREE (never PRO) — this
+ * route grants no credits itself, it only describes numbers the real gate
+ * enforces independently, so worst case is a temporarily-wrong display, not
+ * a bypass.
  */
 entitlementLimitsRouter.get("/", async (req: AuthedRequest, res) => {
   const uid = req.uid;
@@ -32,37 +34,47 @@ entitlementLimitsRouter.get("/", async (req: AuthedRequest, res) => {
     return;
   }
 
-  let tier: Tier = "free";
-  if (req.isAnonymous) {
-    tier = "guest";
-  } else {
-    try {
-      const snap = await getFirestore().collection("users").doc(uid).collection("meta").doc("entitlement").get();
-      if (snap.exists && snap.data()?.tier === "premium") {
-        tier = "premium";
-      }
-    } catch (error) {
-      logEvent("warn", "entitlementLimits.entitlementReadFailed", { requestId: req.requestId, uid, error: String(error) });
+  const pricingConfig = await getPricingConfig(req.requestId);
+
+  let tierId = req.isAnonymous ? "GUEST" : "FREE";
+  let creditsRemaining: number | undefined;
+  let billingCycleStart: number | undefined;
+
+  try {
+    const snap = await getFirestore().collection("users").doc(uid).collection("meta").doc("usage").get();
+    const data = snap.exists ? snap.data() : undefined;
+    if (data?.tier_id) {
+      tierId = data.tier_id as string;
+      creditsRemaining = totalCredits(
+        (data.subscription_credits_remaining as number) ?? 0,
+        (data.purchased_credits_remaining as number) ?? 0
+      );
+      billingCycleStart = data.billing_cycle_start as number;
     }
+  } catch (error) {
+    logEvent("warn", "entitlementLimits.usageReadFailed", { requestId: req.requestId, uid, error: String(error) });
   }
 
-  const tierLimits = TIER_LIMITS[tier];
-  const itemCapLimits = ITEM_CAP_LIMITS[tier];
-  if (!tierLimits) {
-    logEvent("warn", "entitlementLimits.tierUnavailable", { requestId: req.requestId, uid, tier });
+  const tierConfig = getTierConfig(tierId, pricingConfig) ?? getTierConfig("FREE", pricingConfig);
+  if (!tierConfig) {
+    logEvent("warn", "entitlementLimits.tierUnavailable", { requestId: req.requestId, uid, tierId });
     res.status(403).json({ error: "tier_unavailable" });
     return;
   }
 
   const itemCap: Record<string, number> = {};
-  for (const slot of CORE_SLOTS) itemCap[slot] = itemCapLimits.core;
-  for (const slot of ACCESSORY_SLOTS) itemCap[slot] = itemCapLimits.accessory;
+  for (const slot of CORE_SLOTS) itemCap[slot] = tierConfig.itemCap.core;
+  for (const slot of ACCESSORY_SLOTS) itemCap[slot] = tierConfig.itemCap.accessory;
 
-  logEvent("debug", "entitlementLimits.ok", { requestId: req.requestId, uid, tier });
+  logEvent("debug", "entitlementLimits.ok", { requestId: req.requestId, uid, tier: tierId });
   res.status(200).json({
-    tier,
-    recommendationLimit: tierLimits.recommendation,
-    tryOnLimit: tierLimits.tryOn,
+    tier: tierId,
+    creditsRemaining: creditsRemaining ?? tierConfig.creditAllocation,
+    creditAllocation: tierConfig.creditAllocation,
+    operationCosts: pricingConfig.operationCosts,
+    operationCaps: tierConfig.hardCaps ?? {},
+    billingCycleStart: billingCycleStart ?? null,
+    autoReset: tierConfig.autoReset,
     itemCap,
   });
 });

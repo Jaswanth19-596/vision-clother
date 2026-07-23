@@ -255,7 +255,7 @@ private struct PairingItemCell: View {
 
     @ViewBuilder
     private var swatch: some View {
-        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+        CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 100, height: 100)) { image in
             image
                 .resizable()
                 .aspectRatio(contentMode: .fill)

@@ -235,7 +235,7 @@ private struct CombinationRow: View {
     @ViewBuilder
     private var thumbnail: some View {
         if combination.hasRenderedImage {
-            CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+            CachedWardrobeImage(assetName: combination.imageAssetName, thumbnailSize: CGSize(width: 60, height: 60)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -280,7 +280,7 @@ private struct CombinationRow: View {
     /// instead of the full-screen flatlay.
     @ViewBuilder
     private func itemThumbnail(for item: WardrobeItem) -> some View {
-        CachedWardrobeImage(assetName: item.imageAssetName) { image in
+        CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 26, height: 26)) { image in
             image
                 .resizable()
                 .aspectRatio(contentMode: .fill)

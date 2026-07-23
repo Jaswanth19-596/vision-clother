@@ -1,23 +1,37 @@
 rules_version = '2';
 
-// Three kinds of collections in this project:
+// Five kinds of collections in this project:
 // - processedTransactions/{transactionId}: the StoreKit purchase idempotency
 //   ledger (backend/functions/src/routes/iapVerify.ts) — Admin-SDK-only for
 //   the same reason, denied to every client outright.
 // - idempotencyKeys/{uid}_{idempotencyKey}: the request-dedup lock for the
-//   quota-gated OpenRouter routes (backend/functions/src/middleware/idempotency.ts)
+//   credit-gated OpenRouter routes (backend/functions/src/middleware/idempotency.ts)
 //   — Admin-SDK-only, same reason, denied to every client outright.
+// - config/openrouterModels: the exact-match OpenRouter model allowlist
+//   (backend/functions/src/modelAllowlist.ts) — Admin-SDK-only. Ops edits
+//   this doc via Firebase Console or an Admin SDK/MCP tool to add a newly
+//   adopted model without a redeploy; client read access would only leak
+//   the allowlist shape, since enforcement already happens server-side.
+// - config/pricing: the credit & tier management engine's operation costs
+//   and tier definitions (backend/functions/src/pricing.config.ts) —
+//   Admin-SDK-only for direct client reads/writes, same rationale as
+//   config/openrouterModels. Ops edits this doc to retune a cost, change an
+//   item cap, or add a brand-new tier without a redeploy. Also read
+//   internally by this file's own `itemCap()` (below) via `get()` — that's
+//   allowed because `get()`/`exists()` bypass a target doc's own rules; it's
+//   the PRIMARY source of truth for wardrobeItems' per-tier item caps.
 // - users/{uid}/**: Cloud Sync's per-account wardrobe data
 //   (docs/decisions/resolved-v1.md's "Cloud Sync" section) — the iOS client
 //   talks to these directly, scoped so an account can only ever read/write
 //   its own subtree. Three server-authoritative meta docs (usage,
 //   entitlement, itemCounts) carve out stricter rules than plain ownership —
-//   see the guest-first quota plan in docs/timeline.md. A fourth doc,
-//   responseCache, is owner-read/server-only-write for the same reason as
-//   meta/usage: it fronts the quota-gated OpenRouter routes
+//   see the guest-first quota plan and the credit-engine rewrite in
+//   docs/timeline.md. A fourth doc, responseCache, is owner-read/
+//   server-only-write for the same reason as meta/usage: it fronts the
+//   credit-gated OpenRouter routes
 //   (backend/functions/src/middleware/responseCache.ts), and a client-forged
 //   cache entry would let an account serve itself a fabricated response
-//   without ever reaching governanceGate or paying for the upstream call.
+//   without ever reaching creditGate or paying for the upstream call.
 service cloud.firestore {
   match /databases/{database}/documents {
     match /processedTransactions/{document=**} {
@@ -25,6 +39,14 @@ service cloud.firestore {
     }
 
     match /idempotencyKeys/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /config/pricing {
+      allow read, write: if false;
+    }
+
+    match /config/openrouterModels {
       allow read, write: if false;
     }
 
@@ -37,25 +59,59 @@ service cloud.firestore {
         return request.auth.token.firebase.sign_in_provider == "anonymous";
       }
 
-      // Mirrors governance.ts's tier resolution: anonymous is always "guest"
-      // regardless of any entitlement doc; otherwise "premium" only if the
-      // entitlement doc says so, else "free". Placeholder premium numbers —
-      // see entitlementLimits.ts's TIER_LIMITS comment.
-      function isPremium() {
-        return !isAnonymous() &&
-          exists(/databases/$(database)/documents/users/$(uid)/meta/entitlement) &&
-          get(/databases/$(database)/documents/users/$(uid)/meta/entitlement).data.get('tier', 'free') == 'premium';
+      // Mirrors middleware/creditGate.ts's tier resolution: anonymous is
+      // always "GUEST"; otherwise reads meta/usage.tier_id (written by
+      // creditGate.ts's lazy-init/migration, NOT meta/entitlement.tier
+      // anymore — tier now lives on the same doc as the credit balance).
+      // Defaults to "FREE" if the usage doc doesn't exist yet (a uid that
+      // has never made a credit-gated request).
+      function resolveTierId() {
+        return isAnonymous()
+          ? "GUEST"
+          : (exists(/databases/$(database)/documents/users/$(uid)/meta/usage)
+              ? get(/databases/$(database)/documents/users/$(uid)/meta/usage).data.get('tier_id', 'FREE')
+              : "FREE");
       }
 
       // top/bottom/footwear are the "core" slots (higher cap); everything
-      // else is an "accessory" slot. Numbers must match
-      // `backend/functions/src/entitlementLimits.ts`'s `ITEM_CAP_LIMITS` by
-      // hand — Firestore Rules has no module system, so this is the one
-      // place that constants file can't be imported from directly.
+      // else is an "accessory" slot. `config/pricing` (`backend/functions/
+      // src/pricing.config.ts`'s `DEFAULT_TIER_CONFIGS`/live Firestore doc)
+      // is the PRIMARY source of truth for a tier's item cap, read here
+      // directly via `get()` — this works even though `config/pricing`
+      // itself is `allow read, write: if false` for direct client requests,
+      // because Firestore Rules' `get()`/`exists()` calls are NOT subject to
+      // the target document's own security rules; that restriction only
+      // gates client-initiated reads/writes to that document, not internal
+      // cross-document lookups used to evaluate a different document's rule.
+      // A tier added ONLY via `config/pricing` (e.g. a new ULTRA_PRO) is
+      // therefore fully enforced here immediately too, no rules redeploy
+      // needed. `itemCapFallback` below is used ONLY as an emergency floor
+      // for the (expected to be rare/never) case where `config/pricing`
+      // doesn't exist yet — mirrors `pricing.config.ts`'s own hardcoded-
+      // defaults fallback philosophy so a missing doc fails safe, not open.
+      function itemCapFallback(tierId, isCore) {
+        return tierId == "GUEST"
+          ? (isCore ? 5 : 2)
+          : (tierId == "PRO"
+              ? (isCore ? 50 : 25)
+              : (isCore ? 10 : 4)); // FREE, and the safe floor for any unrecognized tier_id
+      }
+
+      function itemCapFromPricingDoc(pricing, tierId, isCore, fallback) {
+        let tierConfigs = "tierConfigs" in pricing ? pricing.tierConfigs : {};
+        let resolvedTier = tierId in tierConfigs ? tierId : ("FREE" in tierConfigs ? "FREE" : "");
+        return resolvedTier != "" && ("itemCap" in tierConfigs[resolvedTier])
+          ? (isCore ? tierConfigs[resolvedTier].itemCap.core : tierConfigs[resolvedTier].itemCap.accessory)
+          : fallback;
+      }
+
       function itemCap(slot) {
-        return slot in ["top", "bottom", "footwear"]
-          ? (isAnonymous() ? 5 : (isPremium() ? 50 : 10))
-          : (isAnonymous() ? 2 : (isPremium() ? 25 : 4));
+        let tierId = resolveTierId();
+        let isCore = slot in ["top", "bottom", "footwear"];
+        let fallback = itemCapFallback(tierId, isCore);
+        return exists(/databases/$(database)/documents/config/pricing)
+          ? itemCapFromPricingDoc(get(/databases/$(database)/documents/config/pricing).data, tierId, isCore, fallback)
+          : fallback;
       }
 
       function itemCountsField(data, slot) {
@@ -68,10 +124,17 @@ service cloud.firestore {
           : 0;
       }
 
-      // meta/usage and meta/entitlement are written exclusively by Cloud
-      // Functions (governance.ts / a future billing webhook) via the Admin
-      // SDK, which bypasses these rules — client access is read-only, for
-      // showing usage/tier in the UI.
+      // meta/usage (tier_id, subscription_credits_remaining,
+      // purchased_credits_remaining, billing_cycle_start, usage_counts,
+      // welcome_pack_claimed, plus rateLimitOnly's dayKey/dailyRequestCount)
+      // is written exclusively by Cloud Functions
+      // (middleware/creditGate.ts, middleware/governance.ts,
+      // routes/iapVerify.ts) via the Admin SDK, which bypasses these rules —
+      // client access is read-only, for showing usage/tier in the UI.
+      // meta/entitlement is legacy (tier used to live here before the
+      // credit-engine rewrite folded it into meta/usage.tier_id) — nothing
+      // writes it anymore; kept read-only for any stale doc still lingering
+      // on a not-yet-migrated account.
       match /meta/usage {
         allow read: if isOwner();
         allow write: if false;
@@ -84,7 +147,7 @@ service cloud.firestore {
       // responseCache/{sha256(requestBody)}: written exclusively by
       // middleware/responseCache.ts via the Admin SDK. Client write access
       // would let an account forge a cache hit for a request it hasn't
-      // actually paid for, bypassing governanceGate and the upstream
+      // actually paid for, bypassing creditGate and the upstream
       // OpenRouter call entirely — client access is read-only.
       match /responseCache/{document=**} {
         allow read: if isOwner();
@@ -136,10 +199,11 @@ service cloud.firestore {
       }
 
       // wardrobeItems creates are capped server-side as a backstop to the
-      // client-side pre-check (Domain/EntitlementLimits.swift) — reads the
-      // itemCounts doc as of the transaction's read snapshot, so it checks
-      // the pre-increment count even when the create and the itemCounts
-      // bump land in the same client transaction.
+      // client-side pre-check (fed by GET /entitlement/limits'
+      // `itemCap`) — reads the itemCounts doc as of the transaction's read
+      // snapshot, so it checks the pre-increment count even when the
+      // create and the itemCounts bump land in the same client
+      // transaction.
       match /wardrobeItems/{itemId} {
         allow read, update, delete: if isOwner();
         allow create: if isOwner() && currentItemCount(request.resource.data.slot) < itemCap(request.resource.data.slot);

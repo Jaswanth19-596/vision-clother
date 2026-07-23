@@ -2,6 +2,7 @@ import { initializeApp } from "firebase-admin/app";
 import { onRequest } from "firebase-functions/v2/https";
 import { buildProxyApp, buildHeavyApp, buildAccountApp } from "./app";
 import { openRouterApiKey, pexelsApiKey } from "./secrets";
+import { scalingConfig } from "./config/scaling";
 
 initializeApp();
 
@@ -19,9 +20,10 @@ initializeApp();
 
 /**
  * Cheap passthrough routes only (`/openrouter/chat`, `/openrouter/recommend`,
- * `/pexels/search`) — low memory, short timeout, high instance ceiling for
- * fan-out. Binds both provider secrets since all three routes need one or
- * the other.
+ * `/pexels/search`). CPU/memory/concurrency/instance limits come from
+ * `config/scaling.ts`'s `scalingConfig.proxyApi` — currently early-dev
+ * defaults sized for ~10 active users, not the documented production
+ * target; bump capacity there, not here.
  */
 export const proxyApi = onRequest(
   {
@@ -32,8 +34,7 @@ export const proxyApi = onRequest(
     // spurious 504s in practice. /pexels/search is fast and unaffected by
     // the larger ceiling.
     timeoutSeconds: 60,
-    memory: "256MiB",
-    maxInstances: 30,
+    ...scalingConfig.proxyApi,
     invoker: "public",
   },
   buildProxyApp()
@@ -41,17 +42,16 @@ export const proxyApi = onRequest(
 
 /**
  * Real-generation-cost image routes (`/openrouter/images`,
- * `/openrouter/tryon`) — higher memory and a long timeout for slow
- * upstream image generation, capped at a lower instance ceiling since each
- * instance is costlier and this traffic is inherently lower-volume than
- * the passthrough routes.
+ * `/openrouter/tryon`) — long timeout for slow upstream image generation.
+ * CPU/memory/concurrency/instance limits come from `config/scaling.ts`'s
+ * `scalingConfig.heavyApi` — currently early-dev defaults sized for ~10
+ * active users; bump capacity there, not here.
  */
 export const heavyApi = onRequest(
   {
     secrets: [openRouterApiKey],
     timeoutSeconds: 180,
-    memory: "512MiB",
-    maxInstances: 10,
+    ...scalingConfig.heavyApi,
     invoker: "public",
   },
   buildHeavyApp()
@@ -63,12 +63,14 @@ export const heavyApi = onRequest(
  * outage or quota spike on proxyApi/heavyApi can never starve account
  * deletion, purchase verification, or config reads. None of these routes
  * call OpenRouter/Pexels, so no provider secrets are bound here.
+ * CPU/memory/concurrency/instance limits come from `config/scaling.ts`'s
+ * `scalingConfig.accountApi` — currently early-dev defaults sized for ~10
+ * active users; bump capacity there, not here.
  */
 export const accountApi = onRequest(
   {
     timeoutSeconds: 30,
-    memory: "256MiB",
-    maxInstances: 20,
+    ...scalingConfig.accountApi,
     invoker: "public",
   },
   buildAccountApp()
