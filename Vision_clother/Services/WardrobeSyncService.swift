@@ -123,6 +123,15 @@ protocol WardrobeSyncService {
     func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws
     func downloadImage(filename: String, uid: String) async throws -> Data
 
+    /// Server-generated ~384px-longest-edge variant
+    /// (`backend/functions/src/triggers/wardrobeImageProcessing.ts`) at
+    /// `users/{uid}/wardrobeImages/thumbnails/{filename}`. Throws for any
+    /// item uploaded before this feature shipped, or briefly for a
+    /// just-uploaded item whose trigger hasn't finished yet (eventual
+    /// consistency) — callers must catch and fall back to `downloadImage`,
+    /// never treat this as fatal.
+    func downloadThumbnail(filename: String, uid: String) async throws -> Data
+
     /// Portrait sync: the user's own try-on base photo
     /// (`Services/UserPortraitStorage.swift`) is a single fixed file per
     /// account, not a `WardrobeItem`/`SavedCombination` row — so unlike
@@ -416,6 +425,10 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         storage.reference().child("users/\(uid)/wardrobeImages/\(filename)")
     }
 
+    private func thumbnailRef(filename: String, uid: String) -> StorageReference {
+        storage.reference().child("users/\(uid)/wardrobeImages/thumbnails/\(filename)")
+    }
+
     /// `contentType` must be set explicitly — `putDataAsync` without a
     /// `StorageMetadata` leaves the object's content type unset, which
     /// `backend/storage.rules`' `request.resource.contentType.matches('image/.*')`
@@ -443,6 +456,19 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
             return data
         } catch {
             AppLog.error(.sync, "downloadImage: \(filename) failed — \(String(describing: error))")
+            throw error
+        }
+    }
+
+    /// 15 MiB cap matches `backend/storage.rules`' upload-size limit, though
+    /// in practice the server-generated thumbnail is far smaller.
+    func downloadThumbnail(filename: String, uid: String) async throws -> Data {
+        do {
+            let data = try await thumbnailRef(filename: filename, uid: uid).data(maxSize: 15 * 1024 * 1024)
+            AppLog.info(.sync, "downloadThumbnail: \(filename) ok bytes=\(data.count)")
+            return data
+        } catch {
+            AppLog.error(.sync, "downloadThumbnail: \(filename) failed — \(String(describing: error))")
             throw error
         }
     }
@@ -527,6 +553,9 @@ final class AuthGatedWardrobeSyncService: WardrobeSyncService {
     func downloadImage(filename: String, uid: String) async throws -> Data {
         try await current.downloadImage(filename: filename, uid: uid)
     }
+    func downloadThumbnail(filename: String, uid: String) async throws -> Data {
+        try await current.downloadThumbnail(filename: filename, uid: uid)
+    }
     func uploadPortrait(data: Data, uid: String) async throws {
         try await current.uploadPortrait(data: data, uid: uid)
     }
@@ -559,6 +588,9 @@ final class MockWardrobeSyncService: WardrobeSyncService {
     func updateLastPulledAt(uid: String, date: Date) async throws {}
     func uploadImage(filename: String, data: Data, contentType: SyncImageContentType, uid: String) async throws {}
     func downloadImage(filename: String, uid: String) async throws -> Data {
+        throw CocoaError(.fileNoSuchFile)
+    }
+    func downloadThumbnail(filename: String, uid: String) async throws -> Data {
         throw CocoaError(.fileNoSuchFile)
     }
     func uploadPortrait(data: Data, uid: String) async throws {}

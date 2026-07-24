@@ -1,8 +1,10 @@
 import { initializeApp } from "firebase-admin/app";
 import { onRequest } from "firebase-functions/v2/https";
+import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { buildProxyApp, buildHeavyApp, buildAccountApp } from "./app";
 import { openRouterApiKey, pexelsApiKey } from "./secrets";
 import { scalingConfig } from "./config/scaling";
+import { handleWardrobeImageFinalized } from "./triggers/wardrobeImageProcessing";
 
 initializeApp();
 
@@ -74,4 +76,25 @@ export const accountApi = onRequest(
     invoker: "public",
   },
   buildAccountApp()
+);
+
+/**
+ * Storage-triggered, not HTTP — fires on every finalized object in the
+ * default bucket; `handleWardrobeImageFinalized` filters to
+ * users/{uid}/wardrobeImages/{fileName} internally and no-ops on
+ * everything else, including its own thumbnail/normalize writes (see
+ * that file's self-trigger-loop guard). `region` MUST match the default
+ * Storage bucket's region or the trigger silently fails to bind (Cloud
+ * Functions v2 Storage-trigger requirement) — this codebase pins no
+ * region anywhere else today, so us-central1 is the assumed project
+ * default; verify against the actual bucket region (Firebase Console →
+ * Storage, or `gcloud storage buckets describe`) before the first real
+ * deploy and update this literal if it differs.
+ */
+export const wardrobeImageProcessing = onObjectFinalized(
+  {
+    region: "us-central1",
+    ...scalingConfig.wardrobeImageProcessing,
+  },
+  handleWardrobeImageFinalized
 );

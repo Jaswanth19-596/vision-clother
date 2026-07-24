@@ -7,7 +7,7 @@
 - **Testing:** Vitest (`backend/functions/test/`), not Jest — mock `firebase-admin` and `fetch`, never make live network calls in a test. Cover middleware rejection paths (missing/invalid Auth token, rate-limit/credit boundary) and each route's forward/passthrough behavior (`backend/functions/test/middleware.test.ts`, `governance.test.ts`, `creditGate.test.ts`, `pricing.config.test.ts`, `routes.test.ts` are the reference examples).
 - **Auth verification lives in middleware** (`backend/functions/src/middleware/`), applied once in `backend/functions/src/app.ts`, not repeated per route. App Check is deferred (paid Apple Developer account required for App Attest) — see `docs/decisions/resolved-v1.md`.
 - **Secrets** via Firebase Functions secret manager (`firebase functions:secrets:set`, declared with `defineSecret` in `backend/functions/src/secrets.ts`) — never an `.env` file, never committed.
-- **Logging:** route, uid, upstream status, and latency only — never full request bodies (they carry prompt text and base64 image data).
+- **Logging:** route, uid, upstream status, and latency only — never full request bodies (they carry prompt text and base64 image data). Storage-triggered functions (no inbound HTTP request to key off) log the Storage object's `objectName`/`generation` in place of `route`/`requestId` — same rule against logging raw bytes applies (`wardrobeImageProcessing.ts` never logs image bytes/base64, only sizes/dimensions/durations).
 
 ## AI model hotfix via Firebase Remote Config
 

@@ -16,9 +16,12 @@ struct ClosetView: View {
     /// Photo-refresh reactivity: `Data/WardrobeSyncCoordinator.swift`'s
     /// background photo prefetch writes downloaded bytes straight to
     /// `ImageStorage`, entirely outside SwiftData — `@Query` never re-fires
-    /// for that, so without keying the grid off this tick, a photo that
-    /// wasn't cached locally yet at the first post-switch draw would never
-    /// appear until something unrelated forced a redraw.
+    /// for that, so without keying each cell off its own item's
+    /// `photoGeneration`, a photo that wasn't cached locally yet at the
+    /// first post-switch draw would never appear until something unrelated
+    /// forced a redraw. Keyed per-cell (see `slotSection` below), not on
+    /// this view's whole content container, so one photo landing doesn't
+    /// remount every cell in the grid.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Query private var storedItems: [WardrobeItem]
     @State private var isAddItemPresented = false
@@ -70,7 +73,6 @@ struct ClosetView: View {
                     }
                 }
                 .padding()
-                .id(syncCoordinator.photoRefreshTick)
             }
             .navigationTitle("My Closet")
             .toolbar {
@@ -165,6 +167,7 @@ struct ClosetView: View {
                             item: item,
                             ratingScore: ratingScores[item.id] ?? 50
                         )
+                        .id(syncCoordinator.photoGeneration(for: item.imageAssetName))
                         .onTapGesture {
                             detailSelection = DetailSelection(id: item.id, items: allItems)
                         }

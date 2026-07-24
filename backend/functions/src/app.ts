@@ -5,6 +5,7 @@ import { rateLimitOnly } from "./middleware/governance";
 import { creditGate } from "./middleware/creditGate";
 import { responseCache } from "./middleware/responseCache";
 import { idempotencyGate } from "./middleware/idempotency";
+import { prefetchPreLLMReads } from "./middleware/prefetchGates";
 import { openrouterChatRouter } from "./routes/openrouterChat";
 import { openrouterImagesRouter } from "./routes/openrouterImages";
 import { pexelsSearchRouter } from "./routes/pexelsSearch";
@@ -64,7 +65,17 @@ function requestLogger(req: AuthedRequest, res: Response, next: NextFunction): v
  */
 function baseApp(): Express {
   const app = express();
-  app.use(express.json({ limit: "15mb" })); // headroom over the ~10MB post-downscale image payloads
+  app.use(
+    express.json({
+      limit: "15mb", // headroom over the ~10MB post-downscale image payloads
+      // Captures the parsed buffer body-parser already holds in memory, so
+      // responseCache.ts can hash the wire bytes directly instead of paying
+      // for a second JSON.stringify of the parsed body.
+      verify: (req, _res, buf) => {
+        (req as AuthedRequest).rawBody = buf;
+      },
+    })
+  );
   app.use(requestLogger);
   app.use(verifyAuth);
   return app;
@@ -85,11 +96,24 @@ function baseApp(): Express {
  * upstream call downstream of `creditGate` can be refunded.
  * `/openrouter/chat` is deliberately NOT idempotency-gated: it's
  * uncapped/no credit cost, so there's nothing to deduplicate.
+ *
+ * `prefetchPreLLMReads()` (see `middleware/prefetchGates.ts`) runs BEFORE
+ * `idempotencyGate` here — it kicks off `responseCache`'s doc lookup,
+ * `creditGate`'s pricing-config read, and the model-allowlist read
+ * concurrently with `idempotencyGate`'s lock-claim transaction instead of
+ * after it resolves, since all three are side-effect-free reads with no
+ * dependency on the idempotency outcome. This collapses what used to be up
+ * to 4-5 sequential Firestore round trips before the upstream LLM call down
+ * to roughly 2. `idempotencyGate` itself, and the debit half of
+ * `creditGate`'s transaction, stay sequential — both of those write, and
+ * the debit must never fire before `idempotencyGate` confirms this isn't a
+ * duplicate/racing request.
  */
 export function buildProxyApp(): Express {
   const app = baseApp();
   app.use(
     "/openrouter/recommend",
+    prefetchPreLLMReads(),
     idempotencyGate("RECOMMENDATION"),
     responseCache("recommendation"),
     creditGate("RECOMMENDATION"),

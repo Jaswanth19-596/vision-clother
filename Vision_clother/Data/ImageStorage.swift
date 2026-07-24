@@ -99,7 +99,8 @@ enum ImageStorage {
             return cached
         }
         return await Task.detached(priority: .userInitiated) {
-            guard let source = CGImageSourceCreateWithURL(url(for: filename) as CFURL, nil) else { return nil }
+            guard let sourceURL = decodeSourceURL(for: filename),
+                  let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else { return nil }
             let options: [CFString: Any] = [
                 // These PNGs have no embedded thumbnail, so "Always" (not
                 // "IfAbsent") is required to get ImageIO to generate one —
@@ -130,6 +131,50 @@ enum ImageStorage {
         return documents.appendingPathComponent("WardrobeImages", isDirectory: true)
     }
 
+    /// Server-generated thumbnail variants
+    /// (`backend/functions/src/triggers/wardrobeImageProcessing.ts`), kept in
+    /// a directory separate from `directory` so "have the thumbnail" and
+    /// "have the full-resolution photo" are independently observable —
+    /// `Data/WardrobeSyncCoordinator.swift`'s bootstrap pull fetches
+    /// thumbnails eagerly and defers full-resolution to an on-demand fetch
+    /// (`ensureFullResolution(filename:)`) triggered only when a detail view
+    /// actually needs it.
+    private static var thumbnailDirectory: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return documents.appendingPathComponent("WardrobeThumbnails", isDirectory: true)
+    }
+
+    static func thumbnailURL(for filename: String) -> URL {
+        thumbnailDirectory.appendingPathComponent(filename)
+    }
+
+    static func hasFullResolution(for filename: String) -> Bool {
+        FileManager.default.fileExists(atPath: url(for: filename).path)
+    }
+
+    static func hasThumbnail(for filename: String) -> Bool {
+        FileManager.default.fileExists(atPath: thumbnailURL(for: filename).path)
+    }
+
+    /// Prefers the full-resolution file when present (unchanged, best-quality
+    /// behavior for a device that already has it), else falls back to the
+    /// locally cached thumbnail, else `nil` — lets grid/list cells render
+    /// correctly even on a device that has only ever fetched the thumbnail.
+    private static func decodeSourceURL(for filename: String) -> URL? {
+        if hasFullResolution(for: filename) { return url(for: filename) }
+        if hasThumbnail(for: filename) { return thumbnailURL(for: filename) }
+        return nil
+    }
+
+    /// Explicit-filename write for a server-generated thumbnail — the Cloud
+    /// Sync pull path only (`Data/WardrobeSyncCoordinator.swift`), mirroring
+    /// `write(_:filename:)` but into `thumbnailDirectory`.
+    static func writeThumbnail(_ data: Data, filename: String) throws {
+        try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
+        try data.write(to: thumbnailDirectory.appendingPathComponent(filename), options: .atomic)
+        thumbnailCache.removeObject(forKey: filename as NSString)
+    }
+
     /// Writes `data` under a fresh UUID filename and returns that filename
     /// (not a full URL — `WardrobeItem.imageAssetName` is deliberately
     /// storage-location-agnostic; resolve with `url(for:)` at render time).
@@ -154,6 +199,7 @@ enum ImageStorage {
     /// Best-effort cleanup — a missing file is not an error worth surfacing.
     static func delete(_ filename: String) {
         try? FileManager.default.removeItem(at: url(for: filename))
+        try? FileManager.default.removeItem(at: thumbnailURL(for: filename))
         invalidateCache(filename)
     }
 
@@ -175,6 +221,9 @@ enum ImageStorage {
     static func wipeAll() throws {
         imageCache.removeAllObjects()
         thumbnailCache.removeAllObjects()
+        if FileManager.default.fileExists(atPath: thumbnailDirectory.path) {
+            try FileManager.default.removeItem(at: thumbnailDirectory)
+        }
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         try FileManager.default.removeItem(at: directory)
     }

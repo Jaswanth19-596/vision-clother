@@ -27,6 +27,8 @@ struct CombinationsView: View {
     /// Photo-refresh reactivity — see `ClosetView.swift`'s matching comment;
     /// `WardrobeSyncCoordinator`'s background photo prefetch writes
     /// combination renders straight to `ImageStorage`, outside SwiftData.
+    /// Keyed per-row via `rowPhotoGeneration` below, not on this view's
+    /// whole `List`, so one photo landing doesn't remount every row.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Environment(UsageTracker.self) private var usageTracker
     /// Capped rather than the full all-time history — this backs a
@@ -170,15 +172,17 @@ struct CombinationsView: View {
         )
         return List {
             ForEach(Array(rows.enumerated()), id: \.element.combination.id) { index, row in
+                let resolvedItems = itemsByCombinationID[row.combination.id] ?? []
                 Button {
                     detailRequest = DetailRequest(orderedIDs: orderedIDs, startIndex: index)
                 } label: {
                     CombinationRow(
                         combination: row.combination,
                         date: row.date,
-                        resolvedItems: itemsByCombinationID[row.combination.id] ?? []
+                        resolvedItems: resolvedItems
                     )
                 }
+                .id(rowPhotoGeneration(row.combination, resolvedItems: resolvedItems))
                 .buttonStyle(.plain)
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
@@ -204,7 +208,17 @@ struct CombinationsView: View {
                 }
             }
         }
-        .id(syncCoordinator.photoRefreshTick)
+    }
+
+    /// Matches what a row actually renders: a row with a real render only
+    /// cares about the combination's own asset; a renderless row only
+    /// cares about the (up to 3) item thumbnails `itemThumbnailStrip`
+    /// shows — see `CombinationRow.thumbnail` below.
+    private func rowPhotoGeneration(_ combination: SavedCombination, resolvedItems: [WardrobeItem]) -> Int {
+        if combination.hasRenderedImage {
+            return syncCoordinator.photoGeneration(for: combination.imageAssetName)
+        }
+        return resolvedItems.prefix(3).reduce(0) { max($0, syncCoordinator.photoGeneration(for: $1.imageAssetName)) }
     }
 }
 

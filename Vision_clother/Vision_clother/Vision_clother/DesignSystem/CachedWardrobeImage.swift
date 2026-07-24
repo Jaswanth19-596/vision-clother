@@ -26,6 +26,11 @@ struct CachedWardrobeImage<ImageContent: View, Placeholder: View>: View {
     @ViewBuilder var placeholder: () -> Placeholder
 
     @Environment(\.displayScale) private var displayScale
+    /// Optional, not `WardrobeSyncCoordinator.self` non-optional like
+    /// `ClosetView` — a missing environment value (e.g. a preview context)
+    /// must degrade the same way a missing network path does: show
+    /// whatever's already on disk, never crash.
+    @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator: WardrobeSyncCoordinator?
     @State private var uiImage: UIImage?
 
     var body: some View {
@@ -44,7 +49,18 @@ struct CachedWardrobeImage<ImageContent: View, Placeholder: View>: View {
             if let thumbnailSize {
                 let maxPixelSize = max(thumbnailSize.width, thumbnailSize.height) * displayScale
                 uiImage = await ImageStorage.cachedThumbnail(for: assetName, maxPixelSize: maxPixelSize)
-            } else {
+                return
+            }
+            // Detail path: show whatever's already on disk immediately —
+            // full-res if present, else a thumbnail-quality bitmap, never a
+            // blank placeholder while a fetch is pending.
+            uiImage = await ImageStorage.cachedImage(for: assetName)
+            if uiImage == nil {
+                uiImage = await ImageStorage.cachedThumbnail(for: assetName, maxPixelSize: 1024 * displayScale)
+            }
+            guard !ImageStorage.hasFullResolution(for: assetName) else { return }
+            await syncCoordinator?.ensureFullResolution(filename: assetName)
+            if ImageStorage.hasFullResolution(for: assetName) {
                 uiImage = await ImageStorage.cachedImage(for: assetName)
             }
         }

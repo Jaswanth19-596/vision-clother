@@ -82,7 +82,13 @@ export function isModelAllowed(model: string, allowedModels: readonly string[]):
   return allowedModels.includes(model);
 }
 
-/** Convenience wrapper for route handlers: one call, one `if`. */
+/**
+ * Convenience wrapper (fetch + check in one call) — kept for callers that
+ * have no reason to prefetch the allowlist separately. `routes/openrouterChat.ts`
+ * and `routes/openrouterImages.ts` call `getAllowedModels`/`isModelAllowed`
+ * directly instead so `/openrouter/recommend` can await an already-in-flight
+ * prefetch (`middleware/prefetchGates.ts`) rather than a fresh fetch.
+ */
 export async function assertModelAllowed(model: string, requestId: string | undefined): Promise<boolean> {
   const allowedModels = await getAllowedModels(requestId);
   return isModelAllowed(model, allowedModels);

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { openRouterApiKey } from "../secrets";
 import type { AuthedRequest } from "../types";
 import { logEvent, upstreamErrorSnippet } from "../logger";
-import { assertModelAllowed } from "../modelAllowlist";
+import { getAllowedModels, isModelAllowed } from "../modelAllowlist";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -30,7 +30,12 @@ openrouterChatRouter.post("/", async (req: AuthedRequest, res) => {
     return;
   }
 
-  const isAllowed = await assertModelAllowed(parsed.data.model, req.requestId);
+  // Prefers `middleware/prefetchGates.ts`'s already-in-flight allowlist read
+  // (mounted on `/openrouter/recommend`) over a fresh fetch — see that
+  // file's doc comment. `/openrouter/chat` has no prefetch, so it always
+  // takes the fresh-fetch branch (cache-backed, see modelAllowlist.ts).
+  const allowedModels = await (req.modelAllowlistPrefetch ?? getAllowedModels(req.requestId));
+  const isAllowed = isModelAllowed(parsed.data.model, allowedModels);
   if (!isAllowed) {
     logEvent("warn", "openrouterChat.modelNotAllowed", {
       requestId: req.requestId,

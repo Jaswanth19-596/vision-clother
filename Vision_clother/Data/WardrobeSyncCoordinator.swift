@@ -91,12 +91,32 @@ final class WardrobeSyncCoordinator {
     /// actually writes a file to disk — item/combination photos and the
     /// portrait alike. Those writes go straight to `ImageStorage`/
     /// `UserPortraitStorage`, entirely outside SwiftData, so no `@Query`
-    /// ever re-fires for them; `ClosetView`/`CombinationsView`/
-    /// `CombinationDetailView`/`ProfileView` key their image-bearing
-    /// containers off this counter instead, forcing a re-read of whatever
-    /// image file just landed. A single tick per prefetch batch, not one per
-    /// file — no need for callers to redraw more than once per pull.
+    /// ever re-fires for them; `CombinationDetailView`/`ProfileView` key
+    /// their image-bearing containers off this counter instead, forcing a
+    /// re-read of whatever image file just landed. A single tick per
+    /// prefetch batch, not one per file — fine for those callers since
+    /// they're either single-item or have no per-item identity to key off
+    /// (the portrait).
     private(set) var photoRefreshTick = 0
+
+    /// Per-filename companion to `photoRefreshTick`: incremented only for
+    /// the specific asset filename a write just landed under, so a
+    /// many-cell view (`ClosetView`/`CombinationsView`) can key an
+    /// individual cell's `.id()` off just its own photo's readiness instead
+    /// of the whole grid/list remounting on every unrelated photo's
+    /// arrival. Item and combination filenames share this one flat
+    /// namespace — asset filenames are already unique across both (see
+    /// `missingFilenames` below, which pools both the same way).
+    private(set) var photoGenerations: [String: Int] = [:]
+
+    /// `nil` (ghost elements have no `imageAssetName`) always reads as `0`,
+    /// same as any filename never (re)written this session — a cell whose
+    /// photo was already on disk before this coordinator ever ran a
+    /// prefetch has no reason to remount.
+    func photoGeneration(for filename: String?) -> Int {
+        guard let filename else { return 0 }
+        return photoGenerations[filename, default: 0]
+    }
 
     /// Attempts before giving up on a remote status/pull check during an
     /// account switch — covers the common transient case (Firestore's
@@ -836,6 +856,35 @@ final class WardrobeSyncCoordinator {
     /// acceptable at this app's current single-portrait-per-account scale).
     /// Bumps `photoRefreshTick` once at the end if anything was actually
     /// written, so views keyed off it redraw at most once per batch.
+    ///
+    /// Bounds how many photo downloads run concurrently in
+    /// `downloadMissingPhotos`'s fan-out below. Higher than
+    /// `SyncOutboxWorker.maxConcurrentBatches` (4) since each of these is a
+    /// single independent Storage GET, not a batched Firestore write — but
+    /// still capped in the single digits to bound peak memory (each in-flight
+    /// download holds its file's bytes, up to `downloadImage`'s 15 MiB cap,
+    /// until written to disk) and the blast radius of a connectivity blip
+    /// mid-batch.
+    private static let maxConcurrentPhotoDownloads = 8
+
+    private struct PhotoDownloadOutcome {
+        let filename: String
+        let wroteAnything: Bool
+        /// Non-nil only when the full-resolution asset (not just the
+        /// thumbnail) was downloaded — mirrors the original loop's rule that
+        /// only the full-res fetch backfills `imageFingerprint`.
+        let fullImageFingerprint: String?
+    }
+
+    /// Thumbnail-first: this eager background pass only fetches the small
+    /// server-generated thumbnail (`ImageStorage.hasThumbnail`), not the
+    /// full-resolution photo — grid/list views render fine from a thumbnail
+    /// alone (`CachedWardrobeImage`'s `decodeSourceURL` fallback). The full
+    /// asset is fetched lazily, on demand, only when a detail view actually
+    /// needs it (`ensureFullResolution(filename:)` below). A pre-feature
+    /// item or an upload whose Cloud Storage trigger hasn't finished yet has
+    /// no thumbnail object; `downloadThumbnail` throws in both cases and
+    /// this falls back to the full asset so the item is never photo-less.
     private func downloadMissingPhotos(uid: String, syncService: WardrobeSyncService) async {
         var missingFilenames: Set<String> = []
         // Keyed so a just-downloaded `WardrobeItem` photo can have its
@@ -844,24 +893,71 @@ final class WardrobeSyncCoordinator {
         var itemsByAssetName: [String: WardrobeItem] = [:]
 
         for item in (try? repository.fetchInventory()) ?? [] {
-            guard let assetName = item.imageAssetName, ImageStorage.loadData(for: assetName) == nil else { continue }
+            guard let assetName = item.imageAssetName, !ImageStorage.hasThumbnail(for: assetName) else { continue }
             missingFilenames.insert(assetName)
             itemsByAssetName[assetName] = item
         }
         for combination in (try? repository.fetchSavedCombinations()) ?? [] {
-            guard ImageStorage.loadData(for: combination.imageAssetName) == nil else { continue }
+            guard !ImageStorage.hasThumbnail(for: combination.imageAssetName) else { continue }
             missingFilenames.insert(combination.imageAssetName)
         }
 
         var didWriteAnything = false
         var touchedItems = false
-        for filename in missingFilenames {
-            guard let data = try? await syncService.downloadImage(filename: filename, uid: uid) else { continue }
-            try? ImageStorage.write(data, filename: filename)
-            didWriteAnything = true
-            if let item = itemsByAssetName[filename] {
-                item.imageFingerprint = ImageStorage.fingerprint(data)
-                touchedItems = true
+
+        // Bounded fan-out — mirrors `SyncOutboxWorker.drainNow`'s
+        // seed-then-refill `withTaskGroup` (`Data/SyncOutboxWorker.swift`):
+        // each filename's download+write is an independent network request,
+        // so running up to `maxConcurrentPhotoDownloads` at once cuts
+        // wall-clock time for a bootstrap pull with hundreds of missing
+        // photos instead of one file at a time. Each task only does network
+        // I/O + a disk write (both safe off the main actor); the
+        // `WardrobeItem.imageFingerprint` mutation and `itemsByAssetName`
+        // lookup stay below, back on this `@MainActor` method, since this
+        // layer is "the only place that touches `ModelContext`"
+        // (`Data/CLAUDE.md`).
+        let filenames = Array(missingFilenames)
+        await withTaskGroup(of: PhotoDownloadOutcome.self) { group in
+            var index = 0
+            func addNext() {
+                guard index < filenames.count else { return }
+                let filename = filenames[index]
+                index += 1
+                group.addTask {
+                    if let thumbData = try? await syncService.downloadThumbnail(filename: filename, uid: uid) {
+                        try? ImageStorage.writeThumbnail(thumbData, filename: filename)
+                        return PhotoDownloadOutcome(filename: filename, wroteAnything: true, fullImageFingerprint: nil)
+                    }
+                    // Backward compat: no thumbnail object yet (pre-feature
+                    // item, or this upload's trigger hasn't finished —
+                    // eventual consistency). Fall back to the full asset.
+                    // Only this branch produces a fingerprint —
+                    // `WardrobeRepository`'s embedding-cache check and
+                    // `WardrobeEmbeddingWorker` both hash the full-res file,
+                    // so a thumbnail-only fingerprint would desync from what
+                    // the embedding pipeline actually hashes later; it's
+                    // naturally backfilled once the full-res file exists via
+                    // the repository's existing fallback path.
+                    guard let data = try? await syncService.downloadImage(filename: filename, uid: uid) else {
+                        return PhotoDownloadOutcome(filename: filename, wroteAnything: false, fullImageFingerprint: nil)
+                    }
+                    try? ImageStorage.write(data, filename: filename)
+                    return PhotoDownloadOutcome(filename: filename, wroteAnything: true, fullImageFingerprint: ImageStorage.fingerprint(data))
+                }
+            }
+            for _ in 0..<min(Self.maxConcurrentPhotoDownloads, filenames.count) {
+                addNext()
+            }
+            while let outcome = await group.next() {
+                addNext()
+                if outcome.wroteAnything {
+                    didWriteAnything = true
+                    photoGenerations[outcome.filename, default: 0] += 1
+                }
+                if let fingerprint = outcome.fullImageFingerprint, let item = itemsByAssetName[outcome.filename] {
+                    item.imageFingerprint = fingerprint
+                    touchedItems = true
+                }
             }
         }
         // Direct `modelContext.save()`, not `repository.update` — same
@@ -882,6 +978,32 @@ final class WardrobeSyncCoordinator {
             AppLog.info(.sync, "downloadMissingPhotos: fetched \(missingFilenames.count) file(s)")
             photoRefreshTick += 1
         }
+    }
+
+    /// Filenames with a full-resolution fetch currently in flight — guards
+    /// `ensureFullResolution` against firing a duplicate network request
+    /// when multiple views race to render the same photo (e.g. a detail
+    /// view and its own re-render during scroll).
+    private var inFlightFullResolutionFetches: Set<String> = []
+
+    /// Lazy counterpart to `downloadMissingPhotos`' eager thumbnail
+    /// prefetch — called from `CachedWardrobeImage` when a detail view
+    /// needs real resolution but only a thumbnail (or nothing) is on disk.
+    /// No-op if the full-res file already exists, a fetch for this filename
+    /// is already in flight, or nobody's signed in. Best-effort: failure is
+    /// logged, not surfaced — the caller already has a thumbnail-quality
+    /// bitmap to show and must never block/crash on this failing.
+    func ensureFullResolution(filename: String) async {
+        guard !ImageStorage.hasFullResolution(for: filename), !inFlightFullResolutionFetches.contains(filename) else { return }
+        guard let uid = AuthService.shared.uid else { return }
+        inFlightFullResolutionFetches.insert(filename)
+        defer { inFlightFullResolutionFetches.remove(filename) }
+        guard let data = try? await syncService.downloadImage(filename: filename, uid: uid) else {
+            AppLog.error(.sync, "ensureFullResolution: \(filename) failed")
+            return
+        }
+        try? ImageStorage.write(data, filename: filename)
+        AppLog.info(.sync, "ensureFullResolution: \(filename) ok bytes=\(data.count)")
     }
 }
 

@@ -6,6 +6,14 @@ rules_version = '2';
 // writable by that account. users/{uid}/portrait/ is the same posture for
 // the user's own try-on base photo (Services/UserPortraitStorage.swift) —
 // a single fixed filename per account rather than one file per item.
+// users/{uid}/wardrobeImages/thumbnails/ holds server-generated thumbnail
+// variants (backend/functions/src/triggers/wardrobeImageProcessing.ts) —
+// owner-read like the original, but client-write-false: only that Cloud
+// Function's Admin SDK write (which bypasses these rules entirely) ever
+// creates or updates a thumbnail object. Needs its own explicit `match`
+// block because Storage path wildcards don't recurse across `/` — the
+// `wardrobeImages/{fileName}` block's single-segment wildcard can't match
+// a nested `thumbnails/{fileName}` path.
 service firebase.storage {
   match /b/{bucket}/o {
     match /users/{uid}/wardrobeImages/{fileName} {
@@ -15,6 +23,10 @@ service firebase.storage {
       allow write: if request.auth != null && request.auth.uid == uid
         && request.resource.size < 15 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
+    }
+    match /users/{uid}/wardrobeImages/thumbnails/{fileName} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
     }
     match /users/{uid}/portrait/{fileName} {
       allow read: if request.auth != null && request.auth.uid == uid;

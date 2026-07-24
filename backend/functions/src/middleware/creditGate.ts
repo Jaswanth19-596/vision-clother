@@ -113,7 +113,11 @@ export function creditGate(operation: OperationType) {
     }
 
     try {
-      const pricingConfig = await getPricingConfig(req.requestId);
+      // Prefers the promise `middleware/prefetchGates.ts` already kicked off
+      // (on `/openrouter/recommend`) over a fresh call — see that file's doc
+      // comment. Falls back to a fresh call on routes without that prefetch
+      // (`/openrouter/tryon`, `/openrouter/images`).
+      const pricingConfig = await (req.pricingConfigPrefetch ?? getPricingConfig(req.requestId));
       const usageRef = usageRefFor(uid);
       const entitlementRef = entitlementRefFor(uid);
 

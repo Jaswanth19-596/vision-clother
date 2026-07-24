@@ -3,7 +3,7 @@ import { z } from "zod";
 import { openRouterApiKey } from "../secrets";
 import type { AuthedRequest } from "../types";
 import { logEvent, upstreamErrorSnippet } from "../logger";
-import { assertModelAllowed } from "../modelAllowlist";
+import { getAllowedModels, isModelAllowed } from "../modelAllowlist";
 
 const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images";
 
@@ -25,7 +25,11 @@ openrouterImagesRouter.post("/", async (req: AuthedRequest, res) => {
     return;
   }
 
-  const isAllowed = await assertModelAllowed(parsed.data.model, req.requestId);
+  // `/openrouter/images` has no prefetch middleware mounted, so this always
+  // takes the fresh-fetch branch (cache-backed, see modelAllowlist.ts) — see
+  // openrouterChat.ts for the route that does have a prefetch.
+  const allowedModels = await (req.modelAllowlistPrefetch ?? getAllowedModels(req.requestId));
+  const isAllowed = isModelAllowed(parsed.data.model, allowedModels);
   if (!isAllowed) {
     logEvent("warn", "openrouterImages.modelNotAllowed", {
       requestId: req.requestId,

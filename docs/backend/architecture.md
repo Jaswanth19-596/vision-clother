@@ -20,13 +20,14 @@ Three Cloud Functions (`backend/functions/src/index.ts`), each its own Express a
 
 **CPU/memory/concurrency/`maxInstances`/`minInstances` are centralized in `backend/functions/src/config/scaling.ts`'s `scalingConfig`**, spread into each `onRequest(...)` call in `index.ts` (`...scalingConfig.proxyApi`, etc.) rather than hardcoded per function — capacity is retuned by editing that one file, never `index.ts` itself. All three explicitly set `cpu: 1`: Cloud Functions v2 silently caps `concurrency` at 1 whenever CPU is fractional (the default below 1GiB memory), so `cpu: 1` is required for `concurrency > 1` to have any effect regardless of memory tier.
 
-**Current values are early-development defaults sized for ~10 active users** (not yet the 1,000-concurrent-user production target), with `minInstances: 0` on all three for scale-to-zero:
+**Current values are early-development defaults sized for ~10 active users** (not yet the 1,000-concurrent-user production target), with `minInstances: 0` on all four for scale-to-zero:
 
 | Function | memory | concurrency | maxInstances | Max in-flight (concurrency × maxInstances) |
 |---|---|---|---|---|
 | `proxyApi` | 256MiB | 5 | 3 | 15 |
 | `heavyApi` | 512MiB | 2 | 2 | 4 |
 | `accountApi` | 256MiB | 5 | 3 | 15 |
+| `wardrobeImageProcessing` | 512MiB | 2 | 4 | 8 |
 
 Before scaling toward production traffic, raise these values in `scaling.ts` (a prior pass sized `proxyApi`/`heavyApi`/`accountApi` at 512MiB–1GiB memory with concurrency 40–80 and `maxInstances` 20–30 for a ~4,800 in-flight ceiling — treat that as the production reference point, not these dev defaults).
 
@@ -42,7 +43,7 @@ These hold API keys server-side and forward requests verbatim — no business lo
 
 | # | Route | Upstream | Middleware |
 |---|---|---|---|
-| 1 | `POST /openrouter/recommend` | `https://openrouter.ai/api/v1/chat/completions` | `idempotencyGate("RECOMMENDATION")` → `responseCache("recommendation")` → `creditGate("RECOMMENDATION")` |
+| 1 | `POST /openrouter/recommend` | `https://openrouter.ai/api/v1/chat/completions` | `prefetchPreLLMReads()` → `idempotencyGate("RECOMMENDATION")` → `responseCache("recommendation")` → `creditGate("RECOMMENDATION")` |
 | 2 | `POST /openrouter/tryon` | `https://openrouter.ai/api/v1/chat/completions` | `idempotencyGate("IMAGE_GEN")` → `creditGate("IMAGE_GEN")` |
 | 3 | `POST /openrouter/chat` | `https://openrouter.ai/api/v1/chat/completions` | `rateLimitOnly` |
 | 4 | `POST /openrouter/images` | `https://openrouter.ai/api/v1/images` | `idempotencyGate("IMAGE_GEN")` → `creditGate("IMAGE_GEN")` |
@@ -50,7 +51,7 @@ These hold API keys server-side and forward requests verbatim — no business lo
 
 Routes 1, 2, and 4 are credit-gated (real generation cost) via `creditGate`; 3 and 5 are uncapped beyond `rateLimitOnly`'s daily guardrail. `/openrouter/recommend` and `/openrouter/tryon` reuse the same `openrouterChatRouter` handler as `/openrouter/chat` — the separate mount points exist solely to attach per-operation `idempotencyGate`, `creditGate`, and `responseCache` middleware. `/openrouter/images` is the dedicated-Images-API branch the try-on and background-isolation services fall back to when `ModelConfig.isChatCompletionImageModel` is false.
 
-Each passthrough route: verify Firebase Auth ID token → governance (`rateLimitOnly` daily cap, or `creditGate` credit/cap check on the 3 credit-gated routes) → optional idempotency gate / response cache → loose top-level body-shape check (Zod) → model allowlist check (`/openrouter/chat` and `/openrouter/images` only — see "Model allowlist" below) → inject the real provider key → forward verbatim → return the upstream status/body unchanged.
+Each passthrough route: verify Firebase Auth ID token → governance (`rateLimitOnly` daily cap, or `creditGate` credit/cap check on the 3 credit-gated routes) → optional idempotency gate / response cache → loose top-level body-shape check (Zod) → model allowlist check (see "Model allowlist" below) → inject the real provider key → forward verbatim → return the upstream status/body unchanged. On `/openrouter/recommend` specifically, `prefetchPreLLMReads()` (`middleware/prefetchGates.ts`) runs first and kicks off the response-cache lookup, the pricing-config read, and the model-allowlist read all at once — see "Pre-LLM read prefetch" below — so those three independent reads overlap with `idempotencyGate`'s lock-claim transaction instead of stacking sequentially after it.
 
 ### Credit gate middleware: `middleware/creditGate.ts` + `pricing.config.ts`
 
@@ -66,11 +67,17 @@ Replaces the earlier `middleware/governance.ts`'s `governanceGate`/`refundQuota`
 
 ### Model allowlist: `modelAllowlist.ts`
 
-`/openrouter/chat` and `/openrouter/images` (routes 3 and 4) previously accepted any non-empty `model` string and forwarded it to OpenRouter with the project's own API key — combined with free/unlimited Firebase anonymous guest-account creation (`AuthService.ensureGuestSession()`) and `rateLimitOnly`'s per-uid-only cap, a scripted caller could mint guest accounts and drive real spend by always requesting the most expensive model available. `modelAllowlist.ts`'s `assertModelAllowed(model, requestId)` closes this: an **exact-match** allowlist (not a provider-prefix match) checked right after the route's Zod body-shape check and before the upstream `fetch()`. A rejected model gets `403 { error: "model_not_allowed" }`, distinct from the existing `400 { error: "invalid_request_body" }` (a well-formed, authenticated request rejected on policy, not a malformed one).
+`openrouterChatRouter`/`openrouterImagesRouter` (and therefore every route that mounts them — 1, 2, 3, 4) previously accepted any non-empty `model` string and forwarded it to OpenRouter with the project's own API key — combined with free/unlimited Firebase anonymous guest-account creation (`AuthService.ensureGuestSession()`) and `rateLimitOnly`'s per-uid-only cap, a scripted caller could mint guest accounts and drive real spend by always requesting the most expensive model available. `modelAllowlist.ts`'s `getAllowedModels(requestId)` (the current allowlist, cache-aware) + `isModelAllowed(model, allowedModels)` (the exact-match check) close this, called right after the route's Zod body-shape check and before the upstream `fetch()`. A rejected model gets `403 { error: "model_not_allowed" }`, distinct from the existing `400 { error: "invalid_request_body" }` (a well-formed, authenticated request rejected on policy, not a malformed one). On `/openrouter/recommend`, the router awaits `req.modelAllowlistPrefetch` (see "Pre-LLM read prefetch" below) instead of calling `getAllowedModels` fresh; every other route has no prefetch and calls it directly.
 
 The allowlist is Firestore-backed (`config/openrouterModels`, `{ allowedModels: string[] }`) so ops can add a newly adopted model — the client's model names are Remote-Config-hotfixable with no app rebuild, see "AI model hotfix via Firebase Remote Config" in `docs/backend/conventions.md` — without a backend redeploy: write the updated list to that doc via the Firebase Console or an Admin SDK/MCP tool. A hardcoded `DEFAULT_ALLOWED_MODELS` array in `modelAllowlist.ts` is the fallback-of-last-resort (used when the doc doesn't exist yet, is malformed, or Firestore is unreachable with no prior cache), so the feature works correctly with zero manual seeding. A module-scope, 5-minute-TTL in-memory cache (same pattern as `governance.ts`'s warm-instance cache, simplified to a single global slot since there's only one config doc) avoids a Firestore read on every request; on a Firestore read failure, a still-cached-but-expired value is served in preference to the hardcoded defaults, so a transient outage doesn't transiently un-allow a model ops added between deploys. This never fails open to "allow everything."
 
 `config/openrouterModels` is a new top-level, Admin-SDK-only Firestore collection (`backend/firestore.rules` denies all client read/write) — this is the first global (non-`users/{uid}`) config doc in this codebase; see the "Three kinds" → "Four kinds" comment at the top of `firestore.rules`.
+
+### Pre-LLM read prefetch: `middleware/prefetchGates.ts` (route 1 only)
+
+`/openrouter/recommend` used to run `idempotencyGate` → `responseCache` → `creditGate`'s pricing-config read → `creditGate`'s debit transaction → the router's model-allowlist read fully sequentially before ever calling OpenRouter — up to 4-5 stacked Firestore round trips of pure latency tax. Two of those steps (`idempotencyGate`'s lock claim, and the debit half of `creditGate`'s transaction) atomically read *and* write, and the debit must never fire before `idempotencyGate` has confirmed the request isn't a duplicate/racing one — that ordering is a correctness requirement, not an artifact of code structure, so those two stay sequential. The other three — `responseCache`'s doc lookup, `creditGate`'s pricing-config read, and the model-allowlist read — are pure, side-effect-free reads with no dependency on `idempotencyGate`'s outcome.
+
+`prefetchPreLLMReads()` is mounted first in the `/openrouter/recommend` chain (before `idempotencyGate`) and kicks off all three of those reads immediately, stashing each as an in-flight promise on `req` (`responseCachePrefetch`/`pricingConfigPrefetch`/`modelAllowlistPrefetch`, `types.ts`). They run concurrently with `idempotencyGate`'s transaction instead of after it. `responseCache.ts`, `creditGate.ts`, and `openrouterChat.ts` each prefer their own prefetched promise over a fresh call when present; every other route (no prefetch mounted) falls back to fetching fresh, unchanged. If `idempotencyGate` ends up short-circuiting (a `COMPLETED` replay or an in-flight `conflict`), the three prefetched promises are simply never consumed — a wasted read, never a wasted write. None of the three prefetched calls can reject (`getPricingConfig`/`getAllowedModels` already catch every Firestore error internally; `responseCache.ts`'s `lookupResponseCache` is written the same way), so there's no unhandled-rejection risk in the window before a downstream middleware awaits them.
 
 ### Idempotency protection (routes 1, 2, 4 only)
 
@@ -97,6 +104,20 @@ These are **deliberate exceptions** to the passthrough posture, each individuall
 | 9 | `GET /analytics/config` | Returns analytics confidence/unlock thresholds | Same rationale as entitlement/limits — prevents client/server threshold drift; read-only, wrapped in `responseCache("analyticsConfig")` |
 
 > **Important:** every one of these exceptions was added as a "deliberate exception" to the original thin-proxy charter. The pattern of exceptions is how thin proxies drift toward accidental monoliths. Before adding a new server-side route, verify it genuinely requires Admin SDK privileges or server-only-write access — if it doesn't, keep the logic client-side and use the passthrough path.
+
+### Storage-triggered functions (1)
+
+Not an HTTP route — `wardrobeImageProcessing` (`backend/functions/src/index.ts`, handler in `backend/functions/src/triggers/wardrobeImageProcessing.ts`) is a Cloud Storage `onObjectFinalized` trigger, the first non-HTTP function in this codebase. It's the server-side counterpart to the client-only resize pipeline described in `docs/decisions/resolved-v1.md`'s "Cloud Sync" section (`ImageStorage.swift`'s `downscaledPNGForUpload`/`downscaledJPEGForUpload`), and is a deliberate exception to that section's former "no backend involvement" framing for the same reason the 4 HTTP routes above are exceptions to the passthrough charter: it needs Admin SDK write access the client can never safely hold (a client-writable thumbnail path would defeat the point of a server-generated, consistent variant).
+
+Fires on every finalized object in the default bucket (v2 Storage triggers have no path-glob filtering) and filters to `users/{uid}/wardrobeImages/{fileName}` internally, no-op'ing on everything else, including its own writes back into the bucket. Two independent guards prevent a self-trigger loop: (1) the path regex structurally excludes the `thumbnails/` sub-path its own thumbnail write lands in; (2) its normalize-in-place overwrite (see below) is tagged with custom metadata (`vcNormalized: "1"`) that the handler checks first and no-ops on, so the re-triggered finalize event on that overwrite doesn't recurse.
+
+Does two things per original upload, both via `sharp`:
+1. **Thumbnail generation** — a ~384px-longest-edge variant written to `users/{uid}/wardrobeImages/thumbnails/{fileName}` (owner-read, client-write-false — `backend/storage.rules`), so grid/list views (`Vision_clother/Vision_clother/Vision_clother/DesignSystem/CachedWardrobeImage.swift`) never need to download the full ~1024px asset.
+2. **Upload normalization** — if the original's longest edge exceeds ~1126px (10% over the 1024px target), it's re-encoded down to 1024px and overwritten in place. A safety net for a buggy/outdated client build that skipped or failed its own downscale — previously nothing server-side ever inspected an upload, so the entire storage/bandwidth budget rested on client behavior alone.
+
+**Region requirement:** Cloud Functions v2 Storage triggers must run in the same region as the Storage bucket or the trigger silently fails to bind, with no other signal. This codebase pins no region anywhere else (all four functions default/explicitly assume `us-central1`) — verify this against the `visionclother` project's actual default bucket region before the first deploy of this function.
+
+**Logging:** uses the same `logEvent` (`logger.ts`) convention as every other backend module, but since a Storage trigger has no inbound HTTP request, it logs the Storage object's `objectName`/`generation` in place of a route/`requestId` join key (`thumbnailGen.start`/`thumbnailGen.finish`/`thumbnailGen.failed`). Fails open — a processing error is logged and swallowed, never thrown, since an uncaught throw in an event-triggered function causes Cloud Functions to keep re-delivering the same finalize event.
 
 ### Shared architecture
 
