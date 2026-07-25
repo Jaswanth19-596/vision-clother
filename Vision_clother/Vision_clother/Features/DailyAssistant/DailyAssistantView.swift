@@ -58,6 +58,22 @@ struct DailyAssistantView: View {
     @State private var isProspectiveCameraPresented = false
     @State private var prospectivePhotoPickerItem: PhotosPickerItem?
 
+    /// @-mention feature (2026-07-24): drives the wardrobe-item picker sheet,
+    /// opened either by typing "@" in the prompt field or by the "Add items"
+    /// button — see `MentionPickerView`. Selected items are staged on the view
+    /// model (`viewModel.mentionedItems`) and shown as removable chips above
+    /// the text field.
+    /// @-mention feature (2026-07-24): drives the wardrobe-item picker sheet,
+    /// opened either by typing "@" in the prompt field or by the "Add items"
+    /// button — see `MentionPickerView`. Selected items are staged on the view
+    /// model (`viewModel.mentionedItems`) and shown as removable chips above
+    /// the text field.
+    @State private var showMentionPicker = false
+
+    /// Stores the outfit that was just marked worn today to trigger the
+    /// "Mark worn items as in laundry?" confirmation dialog.
+    @State private var wornOutfitForLaundryConfirmation: OutfitCombination? = nil
+
     var body: some View {
         NavigationStack {
             Group {
@@ -109,6 +125,24 @@ struct DailyAssistantView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Try-on rendering needs a linked account. Sign in on your Profile tab — your closet comes with you.")
+        }
+        .alert(
+            "Mark worn items as in laundry?",
+            isPresented: Binding(
+                get: { wornOutfitForLaundryConfirmation != nil },
+                set: { if !$0 { wornOutfitForLaundryConfirmation = nil } }
+            ),
+            presenting: wornOutfitForLaundryConfirmation
+        ) { outfit in
+            Button("Mark Dirty") {
+                viewModel?.markItemsLaundry(outfit.items, inLaundry: true)
+                wornOutfitForLaundryConfirmation = nil
+            }
+            Button("Keep Clean", role: .cancel) {
+                wornOutfitForLaundryConfirmation = nil
+            }
+        } message: { _ in
+            Text("Dirty items will be excluded from future outfit recommendations until marked clean.")
         }
         .fullScreenCover(isPresented: $isProspectiveCameraPresented) {
             CameraCaptureView { data in
@@ -245,6 +279,7 @@ struct DailyAssistantView: View {
                         },
                         onWearToday: { outfit in
                             viewModel.markWornToday(outfit)
+                            wornOutfitForLaundryConfirmation = outfit
                         }
                     )
                 }
@@ -279,6 +314,7 @@ struct DailyAssistantView: View {
                         },
                         onWearToday: { outfit in
                             viewModel.markWornToday(outfit)
+                            wornOutfitForLaundryConfirmation = outfit
                         },
                         onAddToCloset: { viewModel.addProspectiveItemToCloset(item) },
                         onDiscard: { viewModel.discardProspectiveItem(item) }
@@ -368,9 +404,25 @@ struct DailyAssistantView: View {
                 if viewModel.isProspectivePurchaseMode {
                     prospectivePurchaseInput(viewModel: viewModel)
                 } else {
+                    mentionChips(viewModel: viewModel)
+
                     TextField(
                         "What are you dressing for today?",
-                        text: Binding(get: { viewModel.prompt }, set: { viewModel.prompt = $0 }),
+                        // Typing "@" is a command, not content: strip it and
+                        // open the item picker instead of leaving a literal
+                        // "@" in the message (@-mention feature, 2026-07-24).
+                        text: Binding(
+                            get: { viewModel.prompt },
+                            set: { newValue in
+                                if newValue.count > viewModel.prompt.count, newValue.hasSuffix("@") {
+                                    viewModel.prompt = String(newValue.dropLast())
+                                    isPromptFocused = false
+                                    showMentionPicker = true
+                                } else {
+                                    viewModel.prompt = newValue
+                                }
+                            }
+                        ),
                         axis: .vertical
                     )
                     .textFieldStyle(.roundedBorder)
@@ -378,6 +430,20 @@ struct DailyAssistantView: View {
                     .focused($isPromptFocused)
                     .submitLabel(.search)
                     .onSubmit { submit(viewModel: viewModel) }
+
+                    HStack {
+                        Button {
+                            isPromptFocused = false
+                            showMentionPicker = true
+                        } label: {
+                            Label("Add items", systemImage: "at")
+                                .font(.footnote)
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(viewModel.extractionState == .loading)
+
+                        Spacer()
+                    }
 
                     recommendationQuotaCaption
 
@@ -398,6 +464,34 @@ struct DailyAssistantView: View {
             .padding(.bottom, 6)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
+        .sheet(isPresented: $showMentionPicker) {
+            MentionPickerView(viewModel: viewModel) { showMentionPicker = false }
+        }
+    }
+
+    /// @-mention feature (2026-07-24): the items staged for the next message,
+    /// shown as removable chips above the text field (reuses `FlowLayout` from
+    /// `ClarificationChipsView`). Empty until the user picks something, so the
+    /// input reads exactly as before for an ordinary turn.
+    @ViewBuilder
+    private func mentionChips(viewModel: DailyAssistantViewModel) -> some View {
+        if !viewModel.mentionedItems.isEmpty {
+            FlowLayout(spacing: 8) {
+                ForEach(viewModel.mentionedItems) { item in
+                    Button {
+                        viewModel.removeMention(item)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(item.displayLabel)
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .font(.footnote)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(viewModel.extractionState == .loading)
+                }
+            }
+        }
     }
 
     /// Replaces the free-text prompt entirely while "Buying something new?"
@@ -906,7 +1000,7 @@ private struct ConditionalElevatedShadow: ViewModifier {
 #Preview {
     let container = try! ModelContainer(
         for: WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self, SavedCombination.self, ItemRating.self,
-        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+        SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self, SwipeAttributeEvent.self,
         configurations: ModelConfiguration(isStoredInMemoryOnly: true)
     )
     let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)

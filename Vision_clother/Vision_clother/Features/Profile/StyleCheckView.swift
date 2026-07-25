@@ -35,7 +35,7 @@ struct StyleCheckView: View {
             guard viewModel == nil else { return }
             viewModel = StyleCheckViewModel(
                 repository: SyncingWardrobeRepository(modelContext: modelContext),
-                embeddingService: ServiceFactory.makeImageEmbeddingService()
+                visionService: ServiceFactory.makeVisionMetadataExtractionService()
             )
         }
         .fullScreenCover(isPresented: $isCameraPresented) {
@@ -153,8 +153,8 @@ private struct StyleCheckResultCard: View {
 
     private var caption: String {
         switch result.verdict {
-        case .matchesStyle: return "This is close to what you've been liking on the swipe deck."
-        case .notYourStyle: return "This is closer to what you've been passing on."
+        case .matchesStyle: return "This lines up with the colors, patterns and formality your swipes and ratings say you like."
+        case .notYourStyle: return "This leans toward attributes you've tended to pass on."
         case .mixedSignals: return "No strong pull either way based on what's been learned so far."
         case .notEnoughData: return "Swipe through a few photos in \u{201C}Discover Your Style\u{201D} first, so there's something to compare against."
         }
@@ -177,18 +177,20 @@ private struct StyleCheckResultCard: View {
 
             if let detail = result.detail {
                 VStack(spacing: VCSpacing.xs) {
-                    numberRow(label: "Match to things you like", value: detail.likedSimilarity)
-                    numberRow(label: "Match to things you dislike", value: detail.dislikedSimilarity)
-                    Divider()
-                    numberRow(label: "Net score", value: detail.bonus)
+                    ForEach(detail.components, id: \.label) { component in
+                        percentRow(label: component.label, percent: component.affinity * 100)
+                    }
+                    if !detail.components.isEmpty {
+                        Divider()
+                    }
+                    percentRow(label: "Overall match strength", percent: matchStrengthPercent(detail.bonus))
+                    Text("Each row is how strongly your swipes and ratings favor that attribute (50% = neutral). The overall score blends them.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, VCSpacing.xs)
                 }
                 .padding(.top, VCSpacing.xs)
-            }
-
-            if !result.isTrained {
-                Text("Based on early signal — \(Int((result.calibrationProgress * 100).rounded()))% calibrated so far.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity)
@@ -196,13 +198,21 @@ private struct StyleCheckResultCard: View {
         .premiumCard()
     }
 
-    private func numberRow(label: String, value: Double) -> some View {
+    /// `bonus` is `[-maxBonusMagnitude, +maxBonusMagnitude]`; remapped so 50%
+    /// reads as neutral, 100% as the strongest possible match, 0% as the
+    /// strongest possible mismatch — the same scale as the per-attribute rows
+    /// above it (each an affinity in `[0,1]`).
+    private func matchStrengthPercent(_ bonus: Double) -> Double {
+        ((bonus / AttributePreferenceProfile.maxBonusMagnitude) + 1) / 2 * 100
+    }
+
+    private func percentRow(label: String, percent: Double) -> some View {
         HStack {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text(String(format: "%+.2f", value))
+            Text("\(Int(percent.rounded()))%")
                 .font(.caption.monospacedDigit().weight(.semibold))
         }
     }
@@ -257,6 +267,7 @@ private struct StyleCheckCameraCaptureView: UIViewControllerRepresentable {
             WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
             SavedCombination.self, ItemRating.self, UserStyleProfile.self,
             SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+            SwipeAttributeEvent.self,
         ],
         inMemory: true
     )

@@ -135,6 +135,26 @@ final class WardrobeItem {
     /// `WardrobeItemEmbedding` table it exists to cheapen lookups against.
     var imageFingerprint: String? = nil
 
+    /// Whether this item is currently in the laundry basket — excluded from
+    /// the recommendation catalog (`Domain/WardrobeCatalogBuilder.swift`) and
+    /// hard-rejected by the validator (`Domain/OutfitRecommendationValidator.swift`)
+    /// when `true`. Defaulted so pre-existing rows decode as `false` under
+    /// SwiftData's automatic lightweight migration.
+    var inLaundry: Bool = false
+
+    /// Denormalized total wear count, incremented alongside `WornLogEntry`
+    /// inserts in `DailyAssistantViewModel.markWornToday` — a convenience for
+    /// `ItemDetailView`'s display without re-aggregating the full log. Not
+    /// the analytics source of truth (that remains
+    /// `Domain/WardrobeInsightsAggregator`'s `WornLogEntry`-based computation).
+    var wearCount: Int = 0
+
+    /// When this item was last included in a "Worn Today" action — `nil`
+    /// until the first wear. Used by `ItemDetailView` and future rotation
+    /// heuristics. Defaulted so pre-existing rows decode as `nil` under
+    /// SwiftData's automatic lightweight migration.
+    var lastWornDate: Date? = nil
+
     init(
         id: UUID = UUID(),
         slot: Slot,
@@ -152,7 +172,10 @@ final class WardrobeItem {
         silhouette: String? = nil,
         material: String? = nil,
         texture: String? = nil,
-        imageFingerprint: String? = nil
+        imageFingerprint: String? = nil,
+        inLaundry: Bool = false,
+        wearCount: Int = 0,
+        lastWornDate: Date? = nil
     ) {
         self.id = id
         self.slot = slot
@@ -171,6 +194,9 @@ final class WardrobeItem {
         self.material = material
         self.texture = texture
         self.imageFingerprint = imageFingerprint
+        self.inLaundry = inLaundry
+        self.wearCount = wearCount
+        self.lastWornDate = lastWornDate
     }
 
     /// Items may have no free-text description — this synthesizes a

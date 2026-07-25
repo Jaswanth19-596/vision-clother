@@ -36,10 +36,17 @@ protocol StylistQAService {
     /// right now, not next to some earlier message. Still wrapped as
     /// cacheable content so a byte-identical block across turns in the same
     /// conversation can still hit an OpenRouter/Anthropic prompt cache.
+    /// `referencedItemsText` is the @-mention feature (2026-07-24): a
+    /// text-only JSON block (same `CatalogEntry` schema, a subset of the
+    /// catalog) describing the specific items the user tapped in the mention
+    /// picker — never images, only ids + descriptions. Empty (`""`) when the
+    /// turn referenced nothing, in which case the request body is identical to
+    /// before. Attached to the LATEST turn alongside the catalog/insights.
     func answerWardrobeQuestion(
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
-        insightsSummaryText: String
+        insightsSummaryText: String,
+        referencedItemsText: String
     ) async throws -> StylistQAResponse
 }
 
@@ -79,7 +86,8 @@ final class OpenRouterStylistQAService: StylistQAService {
     func answerWardrobeQuestion(
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
-        insightsSummaryText: String
+        insightsSummaryText: String,
+        referencedItemsText: String
     ) async throws -> StylistQAResponse {
         do {
             return try await PerfLog.time("stylistQA.structuredAttempt") {
@@ -87,6 +95,7 @@ final class OpenRouterStylistQAService: StylistQAService {
                     conversationHistory: conversationHistory,
                     catalogDataText: catalogDataText,
                     insightsSummaryText: insightsSummaryText,
+                    referencedItemsText: referencedItemsText,
                     useStructuredOutput: true
                 )
             }
@@ -96,6 +105,7 @@ final class OpenRouterStylistQAService: StylistQAService {
                     conversationHistory: conversationHistory,
                     catalogDataText: catalogDataText,
                     insightsSummaryText: insightsSummaryText,
+                    referencedItemsText: referencedItemsText,
                     useStructuredOutput: false
                 )
             }
@@ -106,6 +116,7 @@ final class OpenRouterStylistQAService: StylistQAService {
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
         insightsSummaryText: String,
+        referencedItemsText: String,
         useStructuredOutput: Bool
     ) async throws -> StylistQAResponse {
         let requestID = AppLog.newRequestID()
@@ -130,6 +141,7 @@ final class OpenRouterStylistQAService: StylistQAService {
             conversationHistory: conversationHistory,
             catalogDataText: catalogDataText,
             insightsSummaryText: insightsSummaryText,
+            referencedItemsText: referencedItemsText,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -177,6 +189,7 @@ final class OpenRouterStylistQAService: StylistQAService {
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
         insightsSummaryText: String,
+        referencedItemsText: String,
         useStructuredOutput: Bool
     ) throws -> Data {
         var systemPrompt = StylistQABrain.systemPrompt
@@ -195,7 +208,8 @@ final class OpenRouterStylistQAService: StylistQAService {
                 let content = StylistQABrain.composeContent(
                     scenarioText: turn.text,
                     catalogDataText: catalogDataText,
-                    insightsSummaryText: insightsSummaryText
+                    insightsSummaryText: insightsSummaryText,
+                    referencedItemsText: referencedItemsText
                 )
                 return ["role": turn.role.rawValue, "content": Self.cacheableContent(content)]
             }
@@ -278,9 +292,20 @@ struct MockStylistQAService: StylistQAService {
     func answerWardrobeQuestion(
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
-        insightsSummaryText: String
+        insightsSummaryText: String,
+        referencedItemsText: String
     ) async throws -> StylistQAResponse {
-        guard let latest = conversationHistory.last(where: { $0.role == .user })?.text.lowercased(),
+        let latest = conversationHistory.last(where: { $0.role == .user })?.text.lowercased()
+        // @-mention demo: a turn that referenced items and reads like a
+        // pairing question ("what goes with these") answers directly on the
+        // keyless Simulator path, so the feature is visible without a key.
+        if !referencedItemsText.isEmpty, let latest, latest.contains("go") || latest.contains("wear") || latest.contains("pair") || latest.hasSuffix("?") {
+            return StylistQAResponse(
+                isWardrobeQuestion: true,
+                answerText: "For the items you referenced, a neutral layering piece works well — try something in a complementary tone."
+            )
+        }
+        guard let latest,
               latest.contains("how many") || latest.contains("what colors") || latest.contains("style dna") else {
             return StylistQAResponse(isWardrobeQuestion: false, answerText: nil)
         }
@@ -303,12 +328,14 @@ final class AuthGatedStylistQAService: StylistQAService {
     func answerWardrobeQuestion(
         conversationHistory: [ConversationTurn],
         catalogDataText: String,
-        insightsSummaryText: String
+        insightsSummaryText: String,
+        referencedItemsText: String
     ) async throws -> StylistQAResponse {
         try await current.answerWardrobeQuestion(
             conversationHistory: conversationHistory,
             catalogDataText: catalogDataText,
-            insightsSummaryText: insightsSummaryText
+            insightsSummaryText: insightsSummaryText,
+            referencedItemsText: referencedItemsText
         )
     }
 }

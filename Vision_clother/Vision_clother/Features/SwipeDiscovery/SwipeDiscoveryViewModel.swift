@@ -80,17 +80,30 @@ final class SwipeDiscoveryViewModel {
     private let repository: WardrobeRepository
     private let feedService: StockImageFeedService
     private let embeddingService: ImageEmbeddingService
+    /// Extracts the worn garment's attributes from each swiped photo — the
+    /// *primary* Swipe-to-Learn signal now, feeding
+    /// `Domain/AttributePreferenceProfile.swift` (the same space
+    /// recommendations reason in), while `embeddingService`'s pixel centroids
+    /// remain a secondary signal.
+    private let visionService: VisionMetadataExtractionService
     private let session: URLSession
+
+    /// Max edge (points) the swiped photo is downscaled to before the vision
+    /// LLM call — attribute extraction is coarse, so a smaller image keeps the
+    /// per-swipe token cost down without hurting accuracy.
+    private static let taggingMaxDimension: CGFloat = 768
 
     init(
         repository: WardrobeRepository,
         feedService: StockImageFeedService,
         embeddingService: ImageEmbeddingService,
+        visionService: VisionMetadataExtractionService,
         session: URLSession = .shared
     ) {
         self.repository = repository
         self.feedService = feedService
         self.embeddingService = embeddingService
+        self.visionService = visionService
         self.session = session
     }
 
@@ -164,9 +177,38 @@ final class SwipeDiscoveryViewModel {
             if let drift {
                 presentDriftFeedback(drift / 100.0)
             }
+            // Primary signal: learn attribute affinities from the worn garment.
+            // Best-effort and separate from the visual path above — a tagging
+            // failure must not undo the swipe the user already saw commit.
+            await tagSwipeAttributes(photo, liked: liked, imageData: data)
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: failed photo=\(photo.id) — \(String(describing: error))")
             lastSwipeError = "Couldn't save that swipe — it won't count toward your taste profile."
+        }
+    }
+
+    /// Extracts the worn garment's attributes and folds them into the
+    /// attribute-space taste profile. Deduped by stock-photo id so a re-shown
+    /// card (deck reshuffle) never pays for a second LLM tagging call. Runs in
+    /// the background off the committed gesture, so its latency and any failure
+    /// are invisible to the swipe.
+    private func tagSwipeAttributes(_ photo: StockPhoto, liked: Bool, imageData: Data) async {
+        do {
+            if try repository.hasSwipeAttributes(sourcePhotoID: photo.id) {
+                AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: skip already-tagged photo=\(photo.id)")
+                return
+            }
+            let downscaled = ImageStorage.downscaledPNGForUpload(imageData, maxDimension: Self.taggingMaxDimension)
+            let metadata = try await visionService.extractMetadata(imageData: downscaled, focus: .wornInScene)
+            try repository.recordSwipeAttributes(
+                sourcePhotoID: photo.id,
+                imageURLString: photo.imageURLString,
+                liked: liked,
+                metadata: metadata
+            )
+            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: ok photo=\(photo.id) liked=\(liked) slot=\(metadata.slot.rawValue)")
+        } catch {
+            AppLog.error(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: failed photo=\(photo.id) — \(String(describing: error))")
         }
     }
 

@@ -119,6 +119,11 @@ enum WardrobeCatalogBuilder {
         let ghostCount = inventory.filter(\.isGhostElement).count
         var candidates = inventory.filter { !$0.isGhostElement }
 
+        // Laundry state: dirty items are excluded from the catalog entirely
+        // — the LLM should never recommend something the user hasn't washed.
+        let laundryCount = candidates.filter(\.inLaundry).count
+        candidates = candidates.filter { !$0.inLaundry }
+
         if let constraints {
             let prefiltered = candidates.filter {
                 $0.seasonality.contains(constraints.seasonSuitability)
@@ -178,7 +183,7 @@ enum WardrobeCatalogBuilder {
         let slotCounts = Slot.allCases
             .map { slot in "\(slot.rawValue)=\(candidates.filter { $0.slot == slot }.count)" }
             .joined(separator: " ")
-        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil) slotCounts=[\(slotCounts, privacy: .public)]")
+        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) laundryExcluded=\(laundryCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil) slotCounts=[\(slotCounts, privacy: .public)]")
 
         // Diagnostic for OutfitRecommendationValidator's unknownID rejections
         // (Domain/CLAUDE.md's isRequired guardrail): a required slot with zero

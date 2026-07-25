@@ -142,6 +142,16 @@ struct ItemDetailView: View {
 
     private func metadataSection(for item: WardrobeItem) -> some View {
         VStack(spacing: 0) {
+            if !item.isGhostElement {
+                laundryToggleRow(for: item)
+                Divider()
+            }
+            metadataRow("Times Worn", value: "\(item.wearCount)×")
+            Divider()
+            if let lastWornDate = item.lastWornDate {
+                metadataRow("Last Worn", value: lastWornDate.formatted(date: .abbreviated, time: .omitted))
+                Divider()
+            }
             metadataRow("Rating", value: ratingText(for: item))
             Divider()
             metadataRow("Category", value: item.slot.rawValue.capitalized)
@@ -180,6 +190,24 @@ struct ItemDetailView: View {
         }
         .premiumCard(radius: VCRadius.control, material: .regularMaterial, padding: 0)
         .clipShape(VCRadius.shape(VCRadius.control))
+    }
+
+    private func laundryToggleRow(for item: WardrobeItem) -> some View {
+        Toggle(isOn: Binding(
+            get: { item.inLaundry },
+            set: { newValue in
+                item.inLaundry = newValue
+                let repository = SyncingWardrobeRepository(modelContext: modelContext)
+                try? repository.update(item)
+            }
+        )) {
+            HStack {
+                Text("In Laundry")
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private func metadataRow(_ label: String, value: String) -> some View {

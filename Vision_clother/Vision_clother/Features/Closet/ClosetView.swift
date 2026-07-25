@@ -26,9 +26,14 @@ struct ClosetView: View {
     @Query private var storedItems: [WardrobeItem]
     @State private var isAddItemPresented = false
     @State private var isManualPairingPresented = false
+    @State private var isLaundryBasketPresented = false
     @State private var selectedSlotForAdd: Slot? = nil
     @State private var detailSelection: DetailSelection? = nil
     @State private var feedbackHistory = FeedbackHistory()
+
+    private var laundryItems: [WardrobeItem] {
+        storedItems.filter { !$0.isGhostElement && $0.inLaundry }
+    }
 
     private var displayItems: [WardrobeItem] {
         let items = GhostElementProvider.ensureGhostElements(in: storedItems)
@@ -76,6 +81,15 @@ struct ClosetView: View {
             }
             .navigationTitle("My Closet")
             .toolbar {
+                if !laundryItems.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            isLaundryBasketPresented = true
+                        } label: {
+                            Label("Laundry (\(laundryItems.count))", systemImage: "washer")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         selectedSlotForAdd = nil
@@ -100,6 +114,9 @@ struct ClosetView: View {
             }
             .sheet(isPresented: $isManualPairingPresented, onDismiss: loadFeedbackHistory) {
                 ManualPairingView()
+            }
+            .sheet(isPresented: $isLaundryBasketPresented) {
+                LaundryBasketSheet(laundryItems: laundryItems)
             }
             .sheet(item: $detailSelection) { selection in
                 ItemDetailView(items: selection.items, selectedItemID: selection.id)
@@ -167,7 +184,7 @@ struct ClosetView: View {
                             item: item,
                             ratingScore: ratingScores[item.id] ?? 50
                         )
-                        .id(syncCoordinator.photoGeneration(for: item.imageAssetName))
+                        .id("\(item.id)-\(syncCoordinator.photoGeneration(for: item.imageAssetName))")
                         .onTapGesture {
                             detailSelection = DetailSelection(id: item.id, items: allItems)
                         }
@@ -219,6 +236,7 @@ private struct DetailSelection: Identifiable {
 }
 
 private struct ClosetItemCell: View {
+    @Environment(\.modelContext) private var modelContext
     let item: WardrobeItem
     let ratingScore: Int
 
@@ -235,6 +253,16 @@ private struct ClosetItemCell: View {
                         .background(.thinMaterial, in: Capsule())
                         .padding(4)
                 }
+                .overlay(alignment: .bottomLeading) {
+                    if item.inLaundry {
+                        Image(systemName: "washer.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.white)
+                            .padding(4)
+                            .background(Color.orange, in: Circle())
+                            .padding(4)
+                    }
+                }
 
             if item.isGhostElement {
                 Text("Starter")
@@ -242,6 +270,24 @@ private struct ClosetItemCell: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .contextMenu {
+            if !item.isGhostElement {
+                Button {
+                    toggleLaundry()
+                } label: {
+                    Label(
+                        item.inLaundry ? "Mark as Clean" : "Mark as In Laundry",
+                        systemImage: item.inLaundry ? "sparkles" : "washer"
+                    )
+                }
+            }
+        }
+    }
+
+    private func toggleLaundry() {
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
+        item.inLaundry.toggle()
+        try? repository.update(item)
     }
 
     /// Ingested items (`imageAssetName` set — see `ImageStorage.swift`)
@@ -267,6 +313,89 @@ private struct ClosetItemCell: View {
                         .foregroundStyle(.white)
                 }
             }
+    }
+}
+
+private struct LaundryBasketSheet: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    let laundryItems: [WardrobeItem]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(laundryItems, id: \.id) { item in
+                    HStack(spacing: 12) {
+                        CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 44, height: 44)) { image in
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 44, height: 44)
+                                .clipShape(VCRadius.shape(VCRadius.swatch))
+                        } placeholder: {
+                            VCRadius.shape(VCRadius.swatch)
+                                .fill(Color(hex: item.colorProfile.primaryHex) ?? .gray)
+                                .frame(width: 44, height: 44)
+                        }
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.displayLabel)
+                                .font(.body.weight(.medium))
+                            Text(item.slot.rawValue.capitalized)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Clean") {
+                            markClean(item)
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.caption)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Laundry Basket")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                if !laundryItems.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Mark All Clean") {
+                            markAllClean()
+                        }
+                    }
+                }
+            }
+            .overlay {
+                if laundryItems.isEmpty {
+                    ContentUnavailableView(
+                        "Laundry Basket Empty",
+                        systemImage: "checkmark.circle",
+                        description: Text("All your wardrobe items are clean and ready to wear.")
+                    )
+                }
+            }
+        }
+    }
+
+    private func markClean(_ item: WardrobeItem) {
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
+        item.inLaundry = false
+        try? repository.update(item)
+    }
+
+    private func markAllClean() {
+        let repository = SyncingWardrobeRepository(modelContext: modelContext)
+        for item in laundryItems {
+            item.inLaundry = false
+            try? repository.update(item)
+        }
+        dismiss()
     }
 }
 

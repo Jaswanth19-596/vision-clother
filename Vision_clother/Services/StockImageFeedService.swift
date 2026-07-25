@@ -59,6 +59,13 @@ final class PexelsImageFeedService: StockImageFeedService {
     /// queries keep the deck on-topic for a *clothing* taste signal. One is
     /// picked at random per `fetchDeck` call for session-to-session variety.
     /// Not user-configurable in v1 (see the swipe-deck plan's deferred list).
+    ///
+    /// Deliberately biased toward flatlay/product-style shots and away from
+    /// "street style"/lifestyle queries: those return photos with multiple
+    /// people, crowds, and busy backgrounds, which confounds the swipe
+    /// embedding (`Services/ImageEmbeddingService.swift`) — a like on the
+    /// whole scene doesn't isolate the garment itself. Flatlay/plain-background
+    /// queries keep the frame to just the clothing.
     private let queryPool: [String]
 
     init(session: URLSession = .shared, queryPool: [String] = PexelsImageFeedService.defaultQueryPool) {
@@ -67,14 +74,14 @@ final class PexelsImageFeedService: StockImageFeedService {
     }
 
     static let defaultQueryPool: [String] = [
-        "menswear street style",
         "mens clothing flatlay",
-        "men minimalist style outfit",
-        "streetwear men fashion",
-        "men smart casual look",
-        "mens capsule wardrobe aesthetic",
-        "menswear casual details",
-        "men summer outfit style" // or swap seasonally (e.g., "men fall layer outfit")
+        "menswear flatlay photography",
+        "mens outfit flatlay neutral background",
+        "capsule wardrobe menswear flatlay",
+        "mens jacket flatlay",
+        "mens shirt flatlay closeup",
+        "mens smart casual flatlay",
+        "menswear product shot plain background"
     ]
 
     func fetchDeck(count: Int) async throws -> [StockPhoto] {
@@ -87,7 +94,7 @@ final class PexelsImageFeedService: StockImageFeedService {
             throw StockImageFeedError.missingAPIKey
         }
 
-        let query = queryPool.randomElement() ?? "clothing outfit"
+        let query = queryPool.randomElement() ?? "clothing flatlay"
         AppLog.info(.network, "[\(requestID)] stockFeed: GET pexels/search query=\"\(query)\" count=\(count)")
         var components = URLComponents(url: ProxyConfig.pexelsSearchURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [

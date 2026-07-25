@@ -32,7 +32,8 @@ struct SwipeDiscoveryView: View {
             let vm = SwipeDiscoveryViewModel(
                 repository: SyncingWardrobeRepository(modelContext: modelContext),
                 feedService: ServiceFactory.makeStockImageFeedService(),
-                embeddingService: ServiceFactory.makeImageEmbeddingService()
+                embeddingService: ServiceFactory.makeImageEmbeddingService(),
+                visionService: ServiceFactory.makeVisionMetadataExtractionService()
             )
             viewModel = vm
             await vm.loadDeckIfNeeded()
@@ -244,7 +245,7 @@ struct SwipeDiscoveryView: View {
         for: [
             WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
             SavedCombination.self, ItemRating.self, UserStyleProfile.self,
-            SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self,
+            SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self, SwipeAttributeEvent.self,
         ],
         inMemory: true
     )

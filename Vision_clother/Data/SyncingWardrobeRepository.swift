@@ -250,6 +250,14 @@ final class SyncingWardrobeRepository: WardrobeRepository {
 
     // MARK: - Local-only (never synced — see file header)
 
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws {
+        try underlying.recordSwipeAttributes(sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, liked: liked, metadata: metadata)
+    }
+
+    func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool {
+        try underlying.hasSwipeAttributes(sourcePhotoID: sourcePhotoID)
+    }
+
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
         try underlying.fetchWardrobeItemEmbedding(itemID: itemID)
     }
@@ -319,6 +327,11 @@ final class SyncingWardrobeRepository: WardrobeRepository {
             markDirty(.wornLogEntry, entityID: entry.id, dto: WornLogEntryDTO.from(entry))
         }
         return persistedID
+    }
+
+    func deleteWornLogEntry(id: UUID) throws {
+        try underlying.deleteWornLogEntry(id: id)
+        markDeleted(.wornLogEntry, entityID: id)
     }
 
     // MARK: - Anti-Repetition: permanent pair veto

@@ -20,6 +20,7 @@ final class WardrobeInsightsViewModel {
     private(set) var thresholds: AnalyticsConfigResponse = .conservativeDefault
     private(set) var snapshot: WardrobeInsightsAggregator.WardrobeInsightsSnapshot?
     private(set) var shoppingSnapshot: ShoppingInsightsAggregator.ShoppingInsightsSnapshot?
+    private(set) var gapReport: ClosetGapReport?
     private(set) var isLoadingConfig = false
 
     private let configService: AnalyticsConfigService
@@ -48,7 +49,7 @@ final class WardrobeInsightsViewModel {
         }
     }
 
-    func recompute(inventory: [WardrobeItem], wornLogEntries: [WornLogEntry]) {
+    func recompute(inventory: [WardrobeItem], wornLogEntries: [WornLogEntry], profile: UserStyleProfile? = nil) {
         let wardrobeSnapshot = WardrobeInsightsAggregator.buildSnapshot(
             inventory: inventory,
             wornLogEntries: wornLogEntries,
@@ -59,5 +60,6 @@ final class WardrobeInsightsViewModel {
             inventory: inventory,
             wardrobeSnapshot: wardrobeSnapshot
         )
+        gapReport = ClosetGapAnalyzer.analyze(inventory: inventory, profile: profile)
     }
 }

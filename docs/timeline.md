@@ -2,6 +2,28 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-24 — Fix: "Discover Your Style" swipes now teach attribute preferences, not noisy pixel embeddings
+
+**Status:** Implemented. `xcodebuild -sdk iphonesimulator build` verified (BUILD SUCCEEDED).
+
+**Problem:** The swipe deck fed only `VisualPreferenceProfile` — k-means centroids over `VNGenerateImageFeaturePrint` embeddings of the *whole* stock photo. Pexels' "flatlay" queries return lifestyle/model shots anyway, so the embedding encoded background/person, not the garment; and the generic (non-fashion) encoder is anisotropic, so in `matchDetail` `likedMax` and `dislikedMax` came out near-equal and moved together → `likedMax − 1.2·dislikedMax` was a near-constant small value → "Test Your Style" scored ~45% ("mixed signals") for *every* item, liked or disliked. Meanwhile the app's healthy, interpretable taste engine — `AttributePreferenceProfile` (color vibe/undertone/pattern/formality/fabric/style tags), which actually drives recommendations, Insights and Style DNA — was learning *nothing* from swipes.
+
+**Fix (pivot to attribute space):** Each swiped photo is now tagged by the vision LLM in a new `.wornInScene` focus that extracts the *primary worn garment's* attributes while ignoring the background/person — so a noisy source no longer matters, no pixel segmentation needed. A right swipe becomes a synthetic full-strength rating of those attributes (left = 0.0), persisted as a new local-only `SwipeAttributeEvent` and folded into `AttributePreferenceProfile.build` alongside owned-item ratings in `fetchFeedbackHistory()`. So swipes now flow straight into recommendations. "Test Your Style" was rewritten to tag the uploaded photo the same way and score it via `AttributePreferenceProfile.matchDetail(for:)`, showing an interpretable per-attribute breakdown ("Neutral colors 78%, Solid pattern 65%…") instead of an opaque cosine percentage. The pixel path (`recordSwipe`/`VisualPreferenceProfile`) is kept as a secondary signal (still drives the calibration ring/drift toast, at zero added LLM cost). Cost controls: tagging runs in the background on swipe commit (never blocks the gesture), downscales to 768px, and dedupes by stock-photo id so a re-shown card isn't re-tagged.
+
+**File changes:** `Vision_clother/Config/ModelConfig.swift` (new `visionMetadataWornInScenePrompt`), `Vision_clother/Services/VisionMetadataExtractionService.swift` (`GarmentExtractionFocus` param), `Vision_clother/Models/SwipeDiscovery.swift` (`SwipeAttributeEvent`), `Vision_clother/Models/SchemaMigrations.swift` + `Vision_clother/Vision_clotherApp.swift` (`SchemaV13`, lightweight migration), `Vision_clother/Data/WardrobeRepository.swift` (`recordSwipeAttributes`/`hasSwipeAttributes` + fold into `fetchFeedbackHistory`), `Vision_clother/Data/SyncingWardrobeRepository.swift`, `Vision_clother/Data/WardrobeSyncCoordinator.swift` (wipe list), `Vision_clother/Domain/AttributePreferenceProfile.swift` (`matchDetail(for:)`/`AttributeMatchDetail`/`hasSignal`), `Vision_clother/Vision_clother/Features/SwipeDiscovery/SwipeDiscoveryViewModel.swift` + `SwipeDiscoveryView.swift`, `Vision_clother/Vision_clother/Features/Profile/StyleCheckViewModel.swift` + `StyleCheckView.swift`.
+
+**Deferred:** `SwipeAttributeEvent` is local-only (not synced) for now — cross-device taste continuity is a follow-up. A shared server-side tag cache keyed by stock-photo id (latency + per-image-once cost at scale) and multi-source (Pexels + Unsplash) feed are Phase 2/3.
+
+## 2026-07-24 — Fix: Combinations detail page buttons never reflected persisted worn/rated/banned state
+
+**Status:** Implemented. `xcodebuild -sdk iphonesimulator clean build` verified.
+
+**Problem:** On `CombinationDetailView`'s full-screen page, "Wearing This Today" was backed only by an ephemeral per-page `@State` that reset on every navigation; "Rate this outfit" and "Never recommend these together" never queried the repository at all, even though `fetchOutfitFeedback(for:)`/`fetchPairBans()` already existed for exactly this. No delete path existed for `WornLogEntry` (deliberately append-only by design) to support the requested "undo an accidental tap."
+
+**Fix:** Added `WardrobeRepository.deleteWornLogEntry(id:)` (+ `SyncingWardrobeRepository` outbox-tombstone mirror of `removePairBan`'s pattern) and `CombinationsViewModel.undoWornToday(_:)`. `CombinationDetailView` gained live `@Query`s over `WornLogEntry`/`OutfitFeedback`/`ItemPairBan` and three helpers (`wornTodayEntry(for:)` — matches today's calendar day via `Calendar.isDateInToday`; `hasDetailedRating(for:)` — `OutfitFeedback.normalizedRating != nil`, excluding the simple auto-"liked" save-time event; `isAnyPairBanned(in:)` — any pair among the outfit's own items already vetoed), computed per page and passed into `CombinationDetailPage`, replacing the old `didLogWornThisVisit` state. Buttons now read "Wore Today" (tap again → confirmation dialog to undo), "Rated · Tap to Edit" (green tint), and "Pairing Banned" (green tint) when applicable. List rows in the Combinations tab are unaffected — scoped to the detail page only.
+
+**File changes:** `Vision_clother/Data/WardrobeRepository.swift`, `Vision_clother/Data/SyncingWardrobeRepository.swift`, `Vision_clother/Vision_clother/Vision_clother/Features/Combinations/CombinationsViewModel.swift`, `Vision_clother/Vision_clother/Vision_clother/Features/Combinations/CombinationDetailView.swift`.
+
 ## 2026-07-24 — Perf fix: per-cell (not full-subtree) re-render on background photo arrival
 
 **Status:** Implemented. `xcodebuild -sdk iphonesimulator clean build` verified.

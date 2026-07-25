@@ -1,5 +1,66 @@
 # Vision Clother — Change Timeline
 
+## 2026-07-24 — Fix: Swipe-to-Learn taste now learns attributes, not noisy pixel embeddings
+
+### Problem
+- "Discover Your Style" swipes trained only `VisualPreferenceProfile` (k-means over `VNGenerateImageFeaturePrint` embeddings of the whole stock photo). The photos are noisy lifestyle/model shots and the encoder is generic/anisotropic, so cosine similarities concentrated — `likedMax` and `dislikedMax` tracked together and "Test Your Style" returned ~0.45 for every item, liked or disliked.
+- The app's real, interpretable taste engine (`AttributePreferenceProfile`, which drives recommendations/Insights/Style DNA) learned nothing from swipes.
+
+### Fix
+- Added a `.wornInScene` vision-LLM focus (`ModelConfig.visionMetadataWornInScenePrompt`, `GarmentExtractionFocus` in `VisionMetadataExtractionService`) that extracts the primary *worn* garment's attributes and ignores the background/person — making a noisy source safe with no pixel segmentation.
+- Each swipe now persists a local-only `SwipeAttributeEvent` (garment attributes + like/dislike), folded into `AttributePreferenceProfile.build` in `fetchFeedbackHistory()` as a synthetic rating (right = 1.0, left = 0.0). Swipes flow straight into recommendations.
+- Rewrote "Test Your Style" to tag the uploaded photo the same way and score via new `AttributePreferenceProfile.matchDetail(for:)`, showing an interpretable per-attribute breakdown instead of an opaque cosine %.
+- SwiftData `SchemaV13` (lightweight, additive). The pixel path stays as a secondary signal (calibration ring/drift toast). Tagging is background/downscaled/deduped by photo id to bound the per-swipe LLM cost.
+
+## 2026-07-24 — Feature: Closet Gap Analysis & Wardrobe Completeness Engine
+
+### Problem
+- Wardrobe Insights only reported basic category counts and item utilization without multi-dimensional diagnostic analysis.
+- Users had no clear guidance on which specific categories, seasonal gaps, or formality voids limited their outfit creation capabilities.
+
+### Fix
+- **Gap Analysis Engine (`Domain/ClosetGapAnalyzer.swift`)**: Built a pure, NaN-safe domain analyzer evaluating wardrobe completeness across 4 dimensions:
+  1. Essential Slot Bottlenecks (Top / Bottom / Footwear ratio caps).
+  2. Seasonal Coverage Gaps (Essential slots missing tagged seasonal items).
+  3. Formality & Occasion Alignment (Casual vs Smart-Casual vs Formal coverage gaps).
+  4. Color Palette & Neutral Anchor Coverage (Absence of neutral base pieces).
+- **Wardrobe Health Score**: Computes a 0–100% Wardrobe Completeness & Health score alongside seasonal & formality sub-metrics.
+- **Insights Integration (`WardrobeInsightsViewModel.swift` & `WardrobeInsightsView.swift`)**: Embedded `gapReport` and `ClosetGapView` into the Wardrobe Insights tab.
+- **Interactive UI (`ClosetGapView.swift`)**: Created visual Health Gauge, sub-metric progress bars, and priority-coded gap cards (Critical / Recommended / Optional).
+
+---
+
+## 2026-07-24 — Feature: "In Laundry" State Management & "Worn Today" Workflow
+
+### Problem
+- Wardrobe items had no way to be flagged as dirty or in laundry.
+- Dirty items could still be sent to the recommendation LLM or selected by the validator.
+- Tapping "Wearing This Today" did not track per-item wear counts (`wearCount`) or last worn timestamps (`lastWornDate`), nor prompt the user to mark items as in laundry.
+
+### Fix
+- **Data Model (`WardrobeItem.swift`)**: Added `inLaundry: Bool = false`, `wearCount: Int = 0`, and `lastWornDate: Date? = nil` with default values for seamless SwiftData automatic migration without schema versioning issues.
+- **Cloud Sync DTO (`FirestoreDTOs.swift`)**: Added optional `inLaundry: Bool?`, `wearCount: Int?`, and `lastWornDate: Double?` (epoch seconds) to `WardrobeItemDTO` for Firestore cross-device synchronization.
+- **Catalog Builder (`WardrobeCatalogBuilder.swift`)**: Excluded dirty items (`item.inLaundry == true`) before building recommendation catalog entries sent to LLM, and added `laundryExcluded` to telemetry logs (`[AI-Stylist-ML]`).
+- **Validator (`OutfitRecommendationValidator.swift`)**: Added `RejectionReason.inLaundry(slot: Slot)` hard-rejection case.
+- **Closet UI (`ClosetView.swift`)**: Added visual laundry badge (`washer.fill`) overlay on grid cards, context menu action ("Mark as In Laundry" / "Mark as Clean"), and a "Laundry Basket" toolbar button with count badge opening a batch sheet to mark items clean.
+- **Item Details (`ItemDetailView.swift`)**: Added laundry state toggle, total `wearCount`, and `lastWornDate` display.
+- **Daily Assistant (`DailyAssistantView.swift` & `DailyAssistantViewModel.swift`)**: Enhanced "Worn Today" action to increment `wearCount`, set `lastWornDate`, and surface a confirmation prompt to mark worn items as dirty.
+
+---
+
+## 2026-07-24 — Fix: Combinations detail page buttons never reflected persisted worn/rated/banned state
+
+**Status:** ✅ Shipped — `xcodebuild clean build` green. No test run (project convention).
+
+### Problem
+User reported that on `CombinationDetailView`'s full-screen page (reached from either the Combinations tab's "Generated" or "Worn" sub-tab), all three action buttons always showed as untapped regardless of prior activity: "Wearing This Today" reset to unmarked on every navigation (it was backed only by a per-page `@State private var didLogWornThisVisit`, added in the 2026-07-21 "Wearing This Today" entry above, that never survived leaving the screen), "Rate this outfit" never reflected an existing detailed rating even though `WardrobeRepository.fetchOutfitFeedback(for:)` already existed for exactly this purpose, and "Never recommend these together" never reflected an existing `ItemPairBan` even though `fetchPairBans()` already existed. User also asked for the worn button to read "Wore Today" and offer an undo for an accidental tap, which had no backing at all — `WornLogEntry` was deliberately append-only/no-delete by design (see its doc comment) with no delete method anywhere in `WardrobeRepository`.
+
+### Fix
+1. **`Vision_clother/Data/WardrobeRepository.swift` / `Vision_clother/Data/SyncingWardrobeRepository.swift`:** added `deleteWornLogEntry(id:)` to the `WardrobeRepository` protocol (default no-op fallback in the shared extension, alongside the existing `fetchAllItemRatings`/`fetchAllOutfitFeedback` defaults, so pre-existing test doubles keep compiling), implemented in `SwiftDataWardrobeRepository` (mirrors `removePairBan`'s fetch-by-id/delete/save pattern) and in `SyncingWardrobeRepository` (mirrors `removePairBan`'s `markDeleted(.wornLogEntry, ...)` outbox-tombstone pattern). Scoped intentionally to deleting one specific row — the exact entry a same-visit "Undo" targets — not a general history editor.
+2. **`Vision_clother/Features/Combinations/CombinationsViewModel.swift`:** added `undoWornToday(_:)`, calling the new repository method with the same log/error-handling convention as `logWorn`/`banPair`/`delete`.
+3. **`Vision_clother/Features/Combinations/CombinationDetailView.swift`:** `CombinationDetailView` gained three live `@Query`s (`WornLogEntry` sorted by `wornAt`, `OutfitFeedback` sorted by `recordedAt`, `ItemPairBan` sorted by `createdAt`) and three helpers — `wornTodayEntry(for:)` (matches `savedCombinationID` + `Calendar.current.isDateInToday(wornAt)`, so the "today" boundary rolls over at local midnight automatically with no stored day-key), `hasDetailedRating(for:)` (checks `OutfitFeedback.normalizedRating != nil`, which is `nil` for the simple auto-recorded "liked" event a save/swipe already writes — only a completed multi-question rating counts), and `isAnyPairBanned(in:)` (checks whether any pair among the outfit's resolved items appears in `allPairBans`, since `BanPairView` only ever bans two of the outfit's own items). These are computed per page in the `TabView`'s `ForEach` and passed into `CombinationDetailPage` as plain values, replacing the old `didLogWornThisVisit` `@State`. Button behavior: "Wearing This Today" → "Wore Today" once today's entry exists, tapping it again opens a `.confirmationDialog` ("Undo" / "Keep It") that calls the new `onUndoWornToday` closure; "Rate this outfit" → "Rated · Tap to Edit" (green-tinted `SecondaryButtonStyle`) once a detailed rating exists, still reopens `RateCombinationView` (not pre-filled — a fast-follow, not in this fix's scope) so resubmitting adds another detailed row, consistent with `OutfitFeedback` having no update path; "Never recommend these together" → "Pairing Banned" (green-tinted) once any pair is banned, still tappable to ban another pair from the same outfit.
+4. List rows in `CombinationsView`'s "Generated"/"Worn" sub-tabs are unaffected — scoped to the detail page only, per explicit product decision (list-row badges considered and deferred).
+
 ---
 
 ## 2026-07-21 — Security fix: quota bypass via forgeable `responseCache` Firestore doc

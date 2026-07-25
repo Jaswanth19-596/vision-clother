@@ -24,8 +24,30 @@
 
 import Foundation
 
+/// Which framing prompt the vision LLM uses. The wire schema
+/// (`GarmentMetadata`) is identical for both — only the instructions differ.
+enum GarmentExtractionFocus {
+    /// Ingestion: a single garment whose background was already removed
+    /// (`Services/BackgroundIsolationService.swift`). Default everywhere the
+    /// existing `extractMetadata(imageData:)` convenience is called.
+    case isolatedGarment
+    /// Swipe-to-Learn taste: a busy, un-isolated stock/lifestyle photo of a
+    /// person in a scene — extract the primary WORN garment, ignore the
+    /// surroundings. Lets a swipe teach attribute affinities from a noisy
+    /// source without pixel segmentation (see `Domain/AttributePreferenceProfile.swift`).
+    case wornInScene
+}
+
 protocol VisionMetadataExtractionService {
-    func extractMetadata(imageData: Data) async throws -> GarmentMetadata
+    func extractMetadata(imageData: Data, focus: GarmentExtractionFocus) async throws -> GarmentMetadata
+}
+
+extension VisionMetadataExtractionService {
+    /// Back-compat convenience — ingestion callers (`JobQueueStore`) tag an
+    /// already-isolated garment and never pass a focus.
+    func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
+        try await extractMetadata(imageData: imageData, focus: .isolatedGarment)
+    }
 }
 
 enum VisionMetadataExtractionError: Error, LocalizedError {
@@ -61,32 +83,32 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         self.model = model
     }
 
-    func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
+    func extractMetadata(imageData: Data, focus: GarmentExtractionFocus) async throws -> GarmentMetadata {
         do {
-            return try await performRequest(imageData: imageData, useStructuredOutput: true)
+            return try await performRequest(imageData: imageData, focus: focus, useStructuredOutput: true)
         } catch VisionMetadataExtractionError.emptyChoices, VisionMetadataExtractionError.decoding {
             do {
-                return try await performRequest(imageData: imageData, useStructuredOutput: true)
+                return try await performRequest(imageData: imageData, focus: focus, useStructuredOutput: true)
             } catch {
-                return try await performUnstructuredFallback(imageData: imageData)
+                return try await performUnstructuredFallback(imageData: imageData, focus: focus)
             }
         } catch VisionMetadataExtractionError.httpStatus(400) {
             // Most likely `response_format: json_schema` itself was rejected
             // by the provider — retrying the same structured request would
             // just 400 again, so switch modes instead of retrying.
-            return try await performUnstructuredFallback(imageData: imageData)
+            return try await performUnstructuredFallback(imageData: imageData, focus: focus)
         }
     }
 
-    private func performUnstructuredFallback(imageData: Data) async throws -> GarmentMetadata {
+    private func performUnstructuredFallback(imageData: Data, focus: GarmentExtractionFocus) async throws -> GarmentMetadata {
         do {
-            return try await performRequest(imageData: imageData, useStructuredOutput: false)
+            return try await performRequest(imageData: imageData, focus: focus, useStructuredOutput: false)
         } catch VisionMetadataExtractionError.emptyChoices, VisionMetadataExtractionError.decoding {
-            return try await performRequest(imageData: imageData, useStructuredOutput: false)
+            return try await performRequest(imageData: imageData, focus: focus, useStructuredOutput: false)
         }
     }
 
-    private func performRequest(imageData: Data, useStructuredOutput: Bool) async throws -> GarmentMetadata {
+    private func performRequest(imageData: Data, focus: GarmentExtractionFocus, useStructuredOutput: Bool) async throws -> GarmentMetadata {
         let requestID = AppLog.newRequestID()
         AppLog.info(.vision, "[\(requestID)] visionTagging: POST \(endpoint.path) structured=\(useStructuredOutput) imageBytes=\(imageData.count)")
 
@@ -107,6 +129,7 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
         request.httpBody = try Self.encodeRequestBody(
             model: model,
             imageData: imageData,
+            focus: focus,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -152,14 +175,24 @@ final class OpenRouterVisionMetadataExtractionService: VisionMetadataExtractionS
     private static func encodeRequestBody(
         model: String,
         imageData: Data,
+        focus: GarmentExtractionFocus,
         useStructuredOutput: Bool
     ) throws -> Data {
         let dataURI = "data:image/png;base64,\(imageData.base64EncodedString())"
 
-        var systemPrompt = ModelConfig.Prompts.visionMetadataSystemPrompt
+        var systemPrompt: String
+        let userText: String
+        switch focus {
+        case .isolatedGarment:
+            systemPrompt = ModelConfig.Prompts.visionMetadataSystemPrompt
+            userText = ModelConfig.Prompts.visionMetadataUserText
+        case .wornInScene:
+            systemPrompt = ModelConfig.Prompts.visionMetadataWornInScenePrompt
+            userText = ModelConfig.Prompts.visionMetadataWornInSceneUserText
+        }
 
         let userContent: [[String: Any]] = [
-            ["type": "text", "text": ModelConfig.Prompts.visionMetadataUserText],
+            ["type": "text", "text": userText],
             ["type": "image_url", "image_url": ["url": dataURI]],
         ]
 
@@ -275,7 +308,7 @@ struct MockVisionMetadataExtractionService: VisionMetadataExtractionService {
         texture: "Smooth"
     )
 
-    func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
+    func extractMetadata(imageData: Data, focus: GarmentExtractionFocus) async throws -> GarmentMetadata {
         result
     }
 }
@@ -297,7 +330,7 @@ final class AuthGatedVisionMetadataExtractionService: VisionMetadataExtractionSe
     private lazy var mock = MockVisionMetadataExtractionService()
     private var current: VisionMetadataExtractionService { AuthService.shared.isSignedIn ? real : mock }
 
-    func extractMetadata(imageData: Data) async throws -> GarmentMetadata {
-        try await current.extractMetadata(imageData: imageData)
+    func extractMetadata(imageData: Data, focus: GarmentExtractionFocus) async throws -> GarmentMetadata {
+        try await current.extractMetadata(imageData: imageData, focus: focus)
     }
 }

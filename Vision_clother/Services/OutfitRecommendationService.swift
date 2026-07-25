@@ -28,6 +28,14 @@ protocol OutfitRecommendationService {
     /// OpenRouter is stateless. `isFinalTurn` instructs the model it must
     /// decide now regardless of remaining ambiguity (the clarification
     /// turn cap has been reached).
+    /// `referencedItemsText` is the @-mention feature (2026-07-24): a
+    /// text-only JSON block (same `CatalogEntry` schema, a strict subset of
+    /// `catalog`) describing the specific items the user tapped in the mention
+    /// picker so the model builds outfits around them — never images, only ids
+    /// + descriptions. Empty (`""`) when the turn referenced nothing, in which
+    /// case the request is identical to before. Soft guidance only: every id
+    /// still passes through `Domain/OutfitRecommendationValidator.swift`
+    /// unchanged, so a referenced item is never force-included past validation.
     func recommendOutfits(
         conversationHistory: [ConversationTurn],
         isFinalTurn: Bool,
@@ -36,7 +44,8 @@ protocol OutfitRecommendationService {
         weather: WeatherContext?,
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
-        pairBans: [ItemPairBan]
+        pairBans: [ItemPairBan],
+        referencedItemsText: String
     ) async throws -> OutfitRecommendationResponse
 }
 
@@ -89,14 +98,16 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         weather: WeatherContext?,
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
-        pairBans: [ItemPairBan]
+        pairBans: [ItemPairBan],
+        referencedItemsText: String
     ) async throws -> OutfitRecommendationResponse {
         do {
             return try await PerfLog.time("recommendation.structuredAttempt") {
                 try await performRequest(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
-                    recentWornHistory: recentWornHistory, pairBans: pairBans, model: model, useStructuredOutput: true
+                    recentWornHistory: recentWornHistory, pairBans: pairBans,
+                    referencedItemsText: referencedItemsText, model: model, useStructuredOutput: true
                 )
             }
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
@@ -114,6 +125,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
                     recentWornHistory: recentWornHistory, pairBans: pairBans,
+                    referencedItemsText: referencedItemsText,
                     model: ModelConfig.textToTextFallback, useStructuredOutput: false
                 )
             }
@@ -129,6 +141,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
+        referencedItemsText: String,
         model: String,
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
@@ -159,6 +172,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             history: history,
             recentWornHistory: recentWornHistory,
             pairBans: pairBans,
+            referencedItemsText: referencedItemsText,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -220,6 +234,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
+        referencedItemsText: String,
         useStructuredOutput: Bool
     ) throws -> Data {
         let catalogData = try JSONEncoder().encode(catalog)
@@ -258,7 +273,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                     weather: weather,
                     catalogDataText: catalogText,
                     recentWornHistoryText: recentWornHistoryText,
-                    bannedPairsText: bannedPairsText
+                    bannedPairsText: bannedPairsText,
+                    referencedItemsText: referencedItemsText
                 )
                 return ["role": turn.role.rawValue, "content": Self.cacheableContent(content)]
             }
@@ -528,7 +544,8 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         weather: WeatherContext?,
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
-        pairBans: [ItemPairBan]
+        pairBans: [ItemPairBan],
+        referencedItemsText: String = ""
     ) async throws -> OutfitRecommendationResponse {
         // Prospective Purchase Evaluation (2026-07-15): prefer the flagged
         // entry for its own slot over an arbitrary first match, so the
@@ -594,7 +611,8 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
         weather: WeatherContext?,
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
-        pairBans: [ItemPairBan]
+        pairBans: [ItemPairBan],
+        referencedItemsText: String
     ) async throws -> OutfitRecommendationResponse {
         try await current.recommendOutfits(
             conversationHistory: conversationHistory,
@@ -604,7 +622,8 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
             weather: weather,
             history: history,
             recentWornHistory: recentWornHistory,
-            pairBans: pairBans
+            pairBans: pairBans,
+            referencedItemsText: referencedItemsText
         )
     }
 }

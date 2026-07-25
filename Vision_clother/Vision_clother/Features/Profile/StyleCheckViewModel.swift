@@ -2,13 +2,14 @@
 //  StyleCheckViewModel.swift
 //  Vision_clother
 //
-//  Swipe-to-Learn Visual Taste, verification tool: lets the user hand the
-//  app one arbitrary clothing photo (not a swipe-deck card, not added to the
-//  closet) and see whether it matches what the k-means centroids
-//  (`Domain/VisualPreferenceProfile.swift`) have learned so far — a manual
-//  sanity check that the model is actually learning, not just a swipe
-//  counter. Purely ephemeral: the photo is embedded on-device, scored, and
-//  discarded — nothing is persisted (no WardrobeItem, no SwipeEvent).
+//  Swipe-to-Learn taste, verification tool: lets the user hand the app one
+//  arbitrary clothing photo (not a swipe-deck card, not added to the closet)
+//  and see whether it matches what their swipes + ratings have taught the
+//  *attribute* preference model (`Domain/AttributePreferenceProfile.swift`) —
+//  the same space that actually drives recommendations, so this now reflects
+//  what the app will really do, not an opaque pixel-embedding side-channel.
+//  The photo is tagged by the vision LLM (`.wornInScene` focus, robust to a
+//  raw un-isolated upload), scored, and discarded — nothing is persisted.
 //
 
 import Foundation
@@ -16,9 +17,8 @@ import Observation
 import os
 
 /// One check's outcome. `.notEnoughData` is distinct from a neutral/mixed
-/// score — it fires when `VisualPreferenceState` has no centroids on either
-/// side yet, where a "mixed signals" verdict would be misleading (there's no
-/// signal at all, not a genuinely balanced one).
+/// score — it fires when the attribute profile has learned nothing yet (no
+/// swipes or ratings), where a "mixed signals" verdict would be misleading.
 enum StyleCheckVerdict: Equatable {
     case matchesStyle
     case notYourStyle
@@ -28,15 +28,8 @@ enum StyleCheckVerdict: Equatable {
 
 struct StyleCheckResult: Equatable {
     let verdict: StyleCheckVerdict
-    /// `nil` only for `.notEnoughData`, where there's no centroid to score
-    /// against.
-    let detail: VisualMatchDetail?
-    /// `VisualPreferenceState.calibrationProgress` at check time — surfaced
-    /// alongside the verdict so a result from an under-calibrated profile
-    /// (some centroids exist, but fewer than the 20-swipe `isTrained`
-    /// threshold) reads as "early signal," not a fully-trained conclusion.
-    let calibrationProgress: Double
-    let isTrained: Bool
+    /// `nil` only for `.notEnoughData`, where there's nothing to score against.
+    let detail: AttributeMatchDetail?
 }
 
 enum StyleCheckState: Equatable {
@@ -52,40 +45,42 @@ final class StyleCheckViewModel {
     private(set) var state: StyleCheckState = .idle
 
     /// Bonus magnitude above which a match reads as a clear like/dislike
-    /// rather than noise — a fifth of `VisualPreferenceProfile.maxBonusMagnitude`
-    /// (0.3), so a near-full-strength single-centroid match clears it
-    /// comfortably while a faint, ambiguous similarity doesn't.
+    /// rather than noise — a fifth of `AttributePreferenceProfile.maxBonusMagnitude`
+    /// (0.3), matching the prior visual verifier's threshold so the verdict
+    /// wording stays calibrated the same way.
     private static let verdictThreshold = 0.06
 
-    private let repository: WardrobeRepository
-    private let embeddingService: ImageEmbeddingService
+    /// Downscale before the vision call — attribute extraction is coarse, so a
+    /// smaller image keeps the (single, deliberate) tagging call cheap.
+    private static let taggingMaxDimension: CGFloat = 768
 
-    init(repository: WardrobeRepository, embeddingService: ImageEmbeddingService) {
+    private let repository: WardrobeRepository
+    private let visionService: VisionMetadataExtractionService
+
+    init(repository: WardrobeRepository, visionService: VisionMetadataExtractionService) {
         self.repository = repository
-        self.embeddingService = embeddingService
+        self.visionService = visionService
     }
 
     func checkPhoto(_ imageData: Data) async {
         state = .analyzing
         do {
-            let embedding = try await embeddingService.embedding(for: imageData)
-            let visualState = try repository.fetchVisualPreferenceState()
-            let profile = VisualPreferenceProfile(
-                likedCentroids: visualState?.likedCentroids ?? [],
-                dislikedCentroids: visualState?.dislikedCentroids ?? []
-            )
-            let calibrationProgress = visualState?.calibrationProgress ?? 0
-            let isTrained = visualState?.isTrained ?? false
+            let downscaled = ImageStorage.downscaledPNGForUpload(imageData, maxDimension: Self.taggingMaxDimension)
+            let metadata = try await visionService.extractMetadata(imageData: downscaled, focus: .wornInScene)
+            let history = try await repository.fetchFeedbackHistory()
+            let profile = history.attributeProfile
 
-            guard let detail = profile.matchDetail(forEmbedding: embedding) else {
-                let result = StyleCheckResult(
-                    verdict: .notEnoughData, detail: nil,
-                    calibrationProgress: calibrationProgress, isTrained: isTrained
-                )
+            guard profile.hasSignal else {
+                let result = StyleCheckResult(verdict: .notEnoughData, detail: nil)
                 state = .result(result)
                 logResult(result)
                 return
             }
+
+            // Transient (never inserted) item — `matchDetail` only reads its
+            // attribute fields.
+            let item = WardrobeItem.make(from: metadata, imageAssetName: nil)
+            let detail = profile.matchDetail(for: item)
 
             let verdict: StyleCheckVerdict
             if detail.bonus >= Self.verdictThreshold {
@@ -96,10 +91,7 @@ final class StyleCheckViewModel {
                 verdict = .mixedSignals
             }
 
-            let result = StyleCheckResult(
-                verdict: verdict, detail: detail,
-                calibrationProgress: calibrationProgress, isTrained: isTrained
-            )
+            let result = StyleCheckResult(verdict: verdict, detail: detail)
             state = .result(result)
             logResult(result)
         } catch {
@@ -114,14 +106,13 @@ final class StyleCheckViewModel {
 
     /// Verification logging under the shared `[AI-Stylist-ML]` tag
     /// (`Domain/MLLog.swift`) — this tool exists specifically so the user can
-    /// confirm the model is learning, so every manual check's raw numbers
-    /// are logged alongside the swipe-deck's existing drift/rank logging.
+    /// confirm the model is learning, so every manual check's numbers are
+    /// logged alongside the swipe-deck's existing signal logging.
     private func logResult(_ result: StyleCheckResult) {
-        let likedSimilarity = result.detail?.likedSimilarity ?? 0
-        let dislikedSimilarity = result.detail?.dislikedSimilarity ?? 0
         let bonus = result.detail?.bonus ?? 0
+        let componentCount = result.detail?.components.count ?? 0
         MLLog.logger.notice(
-            "[AI-Stylist-ML] manual style check: verdict=\(String(describing: result.verdict), privacy: .public) liked=\(likedSimilarity, format: .fixed(precision: 3), privacy: .public) disliked=\(dislikedSimilarity, format: .fixed(precision: 3), privacy: .public) bonus=\(bonus, format: .fixed(precision: 3), privacy: .public)"
+            "[AI-Stylist-ML] manual style check: verdict=\(String(describing: result.verdict), privacy: .public) bonus=\(bonus, format: .fixed(precision: 3), privacy: .public) components=\(componentCount, privacy: .public)"
         )
     }
 }

@@ -29,6 +29,11 @@ enum OutfitRecommendationValidator {
         case wrongSlot(slot: Slot)
         case duplicateID
         case ghostElement(slot: Slot)
+        /// The item referenced by this slot is currently flagged as in the
+        /// laundry — a hard rejection, same tier as `ghostElement`, so a
+        /// dirty item can never surface in a recommendation even if the
+        /// catalog builder's filter was bypassed by a stale index race.
+        case inLaundry(slot: Slot)
         /// Anti-Repetition: the outfit contains both items of a permanent
         /// `ItemPairBan` — a hard rejection, same tier as the others above,
         /// so a promise made via the ban UI can't be broken by an LLM slip.
@@ -240,6 +245,7 @@ enum OutfitRecommendationValidator {
     private static func item(for idString: String, expectedSlot: Slot, index: [String: WardrobeItem]) -> Result<WardrobeItem, RejectionReason> {
         guard let item = index[idString] else { return .failure(.unknownID(slot: expectedSlot)) }
         guard !item.isGhostElement else { return .failure(.ghostElement(slot: expectedSlot)) }
+        guard !item.inLaundry else { return .failure(.inLaundry(slot: expectedSlot)) }
         guard item.slot == expectedSlot else { return .failure(.wrongSlot(slot: expectedSlot)) }
         return .success(item)
     }

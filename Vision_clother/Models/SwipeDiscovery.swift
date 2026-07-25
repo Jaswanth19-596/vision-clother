@@ -47,6 +47,67 @@ final class SwipeEvent {
     }
 }
 
+/// One like/dislike swipe on a stock fashion photo, captured in the app's
+/// **structured attribute space** rather than as a pixel embedding. Where
+/// `SwipeEvent` stores a `VNGenerateImageFeaturePrint` vector of the whole
+/// (often noisy, background-heavy) photo, this stores the garment's attributes
+/// as extracted by the vision LLM in `.wornInScene` focus
+/// (`Services/VisionMetadataExtractionService.swift`) — so a swipe teaches the
+/// same `Domain/AttributePreferenceProfile.swift` affinities that item ratings
+/// and outfit feedback already drive, and thus flows straight into
+/// recommendations/Insights instead of an opaque re-rank. Event-sourced and
+/// append-only like `SwipeEvent`; the like/dislike direction lives in `liked`,
+/// the attribute *values* come from the extraction. Local-only for now (not
+/// synced) — the derived affinities are rebuilt on read in
+/// `WardrobeRepository.fetchFeedbackHistory()`.
+@Model
+final class SwipeAttributeEvent {
+    @Attribute(.unique) var id: UUID
+    /// Stock-photo id (`StockPhoto.id`) — the dedupe key so a re-shown photo
+    /// isn't re-tagged (an extra LLM call) on a later deck refill.
+    var sourcePhotoID: String
+    var imageURLString: String
+    var liked: Bool
+    // Garment attributes extracted from the worn-in-scene photo. Mirrors the
+    // subset `AttributePreferenceProfile.build`'s `RatedAttributes` reads.
+    var colorVibe: ColorVibe
+    var pattern: GarmentPattern
+    var formalityBand: Int
+    var fabricWeight: FabricWeight
+    var slot: Slot
+    var styleTags: [String]
+    var silhouette: String?
+    var recordedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        sourcePhotoID: String,
+        imageURLString: String,
+        liked: Bool,
+        colorVibe: ColorVibe,
+        pattern: GarmentPattern,
+        formalityBand: Int,
+        fabricWeight: FabricWeight,
+        slot: Slot,
+        styleTags: [String],
+        silhouette: String?,
+        recordedAt: Date = .now
+    ) {
+        self.id = id
+        self.sourcePhotoID = sourcePhotoID
+        self.imageURLString = imageURLString
+        self.liked = liked
+        self.colorVibe = colorVibe
+        self.pattern = pattern
+        self.formalityBand = formalityBand
+        self.fabricWeight = fabricWeight
+        self.slot = slot
+        self.styleTags = styleTags
+        self.silhouette = silhouette
+        self.recordedAt = recordedAt
+    }
+}
+
 /// One k-means centroid on the liked or disliked side of a
 /// `VisualPreferenceState` — plain `Codable` value type embedded on the
 /// model, same posture as `WardrobeItem.colorProfile`. `weight` is the

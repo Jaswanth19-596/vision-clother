@@ -433,19 +433,96 @@ struct AttributePreferenceProfile {
     /// default to the neutral 0.5 affinity, so an unrated attribute
     /// contributes zero bias rather than penalizing the item.
     func affinityBonus(for item: WardrobeItem) -> Double {
-        let colorAff = colorVibeAffinity[item.colorProfile.category] ?? 0.5
-        let patternAff = patternAffinity[item.pattern] ?? 0.5
+        matchDetail(for: item).bonus
+    }
+
+    /// Whether the profile has learned anything at all yet — used by the
+    /// "Test Your Style" verifier (`Features/Profile/StyleCheckViewModel.swift`)
+    /// to distinguish "no signal to compare against" from a genuine neutral
+    /// score, the attribute-space analogue of `VisualPreferenceProfile`'s
+    /// "no centroids yet" check.
+    var hasSignal: Bool {
+        !colorVibeAffinity.isEmpty || !patternAffinity.isEmpty || !formalityAffinity.isEmpty
+            || !styleTagAffinity.isEmpty || !silhouetteAffinity.isEmpty || !fabricWeightAffinity.isEmpty
+    }
+
+    /// Same bounded bias as `affinityBonus`, but also surfaces the per-attribute
+    /// affinities it was blended from — so a human sanity-checking the model
+    /// (`Features/Profile/StyleCheckViewModel.swift`) sees *why* an item does or
+    /// doesn't match ("you lean cool neutrals; you tend to avoid bold prints"),
+    /// not just a single percentage. `components` lists only the attributes the
+    /// profile actually has data for (an unrated attribute defaults to a neutral
+    /// 0.5 and is omitted, though it still contributes its neutral share to the
+    /// blended `bonus`, keeping this identical to `affinityBonus`).
+    func matchDetail(for item: WardrobeItem) -> AttributeMatchDetail {
+        let category = item.colorProfile.category
+        let pattern = item.pattern
         let formalityBand = Int(item.formalityScore.rounded())
+
+        let colorAff = colorVibeAffinity[category] ?? 0.5
+        let patternAff = patternAffinity[pattern] ?? 0.5
         let formalityAff = formalityAffinity[formalityBand] ?? 0.5
 
-        let matchingTagAffinities = item.styleTags.compactMap { styleTagAffinity[$0] }
+        let matchedTags = item.styleTags.filter { styleTagAffinity[$0] != nil }
+        let matchingTagAffinities = matchedTags.compactMap { styleTagAffinity[$0] }
         let styleTagAff = matchingTagAffinities.isEmpty ? 0.5 : matchingTagAffinities.reduce(0, +) / Double(matchingTagAffinities.count)
 
         let silhouetteAff = item.silhouette.flatMap { silhouetteAffinity[$0] } ?? 0.5
         let fabricWeightAff = fabricWeightAffinity[item.fabricWeight] ?? 0.5
 
         let mean = (colorAff + patternAff + formalityAff + styleTagAff + silhouetteAff + fabricWeightAff) / 6.0
-        let bonus = (mean - 0.5) * 2.0 * Self.maxBonusMagnitude
-        return bonus.clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
+        let bonus = ((mean - 0.5) * 2.0 * Self.maxBonusMagnitude)
+            .clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
+
+        var components: [AttributeMatchDetail.Component] = []
+        if colorVibeAffinity[category] != nil {
+            components.append(.init(label: "\(Self.prettify(category.rawValue)) colors", affinity: colorAff))
+        }
+        if patternAffinity[pattern] != nil {
+            components.append(.init(label: "\(Self.prettify(pattern.rawValue)) pattern", affinity: patternAff))
+        }
+        if formalityAffinity[formalityBand] != nil {
+            components.append(.init(label: "\(Self.formalityDescriptor(formalityBand)) formality", affinity: formalityAff))
+        }
+        if !matchingTagAffinities.isEmpty {
+            components.append(.init(label: "Style: \(matchedTags.joined(separator: ", "))", affinity: styleTagAff))
+        }
+        if let silhouette = item.silhouette, silhouetteAffinity[silhouette] != nil {
+            components.append(.init(label: "\(silhouette) silhouette", affinity: silhouetteAff))
+        }
+        if fabricWeightAffinity[item.fabricWeight] != nil {
+            components.append(.init(label: "\(Self.prettify(item.fabricWeight.rawValue)) fabric", affinity: fabricWeightAff))
+        }
+
+        return AttributeMatchDetail(components: components, bonus: bonus)
     }
+
+    private static func prettify(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    /// Mirrors `ItemDetailView.formalityLabel`'s banding so the verifier's
+    /// wording matches the rest of the app.
+    private static func formalityDescriptor(_ band: Int) -> String {
+        switch band {
+        case ..<2: return "Casual"
+        case 2..<4: return "Smart-Casual"
+        default: return "Formal"
+        }
+    }
+}
+
+/// Per-attribute breakdown behind one `AttributePreferenceProfile.matchDetail`
+/// call — each `Component` is one attribute the profile has data for, its
+/// `affinity` in `[0,1]` (0.5 neutral), and `bonus` is the same clamped value
+/// `affinityBonus` returns.
+struct AttributeMatchDetail: Equatable {
+    struct Component: Equatable {
+        /// Human-readable attribute value, e.g. "Neutral colors".
+        let label: String
+        /// Learned affinity for that value, `[0,1]`, 0.5 = neutral.
+        let affinity: Double
+    }
+    let components: [Component]
+    let bonus: Double
 }

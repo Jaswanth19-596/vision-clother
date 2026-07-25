@@ -121,6 +121,18 @@ final class CombinationsViewModel {
         }
     }
 
+    /// Undoes an accidental "Wearing This Today" tap — deletes the exact
+    /// `WornLogEntry` passed in, never a blanket "clear today's wears"; see
+    /// `WardrobeRepository.deleteWornLogEntry(id:)`'s doc comment.
+    func undoWornToday(_ entry: WornLogEntry) {
+        do {
+            try repository.deleteWornLogEntry(id: entry.id)
+            AppLog.info(.viewModel, "CombinationsViewModel.undoWornToday: ok id=\(entry.id)")
+        } catch {
+            AppLog.error(.viewModel, "CombinationsViewModel.undoWornToday: failed id=\(entry.id) — \(String(describing: error))")
+        }
+    }
+
     func delete(_ combination: SavedCombination) {
         do {
             try repository.deleteCombination(combination)

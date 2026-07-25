@@ -74,6 +74,14 @@ struct WardrobeItemDTO: Codable {
     var silhouette: String?
     var material: String?
     var texture: String?
+    /// Optional so old Firestore docs (pre-laundry feature) decode as `nil`
+    /// → `false` on the model side.
+    var inLaundry: Bool?
+    /// Optional, same reasoning as `inLaundry`.
+    var wearCount: Int?
+    /// Epoch seconds — `Date` → `timeIntervalSince1970` for cross-platform
+    /// Firestore safety, matching the file-header encoding conventions.
+    var lastWornDate: Double?
 
     static func from(_ model: WardrobeItem) -> WardrobeItemDTO {
         WardrobeItemDTO(
@@ -92,7 +100,10 @@ struct WardrobeItemDTO: Codable {
             fit: model.fit,
             silhouette: model.silhouette,
             material: model.material,
-            texture: model.texture
+            texture: model.texture,
+            inLaundry: model.inLaundry ? true : nil,
+            wearCount: model.wearCount > 0 ? model.wearCount : nil,
+            lastWornDate: model.lastWornDate?.timeIntervalSince1970
         )
     }
 
@@ -118,7 +129,10 @@ struct WardrobeItemDTO: Codable {
             fit: fit,
             silhouette: silhouette,
             material: material,
-            texture: texture
+            texture: texture,
+            inLaundry: inLaundry ?? false,
+            wearCount: wearCount ?? 0,
+            lastWornDate: lastWornDate.map { Date(timeIntervalSince1970: $0) }
         )
     }
 }

@@ -40,6 +40,7 @@ enum StylistQABrain {
 
     WHEN is_wardrobe_question IS TRUE:
     - You always have the user's real WARDROBE CATALOG and INSIGHTS SUMMARY available below, attached to this message — actively read and use them for every answer, not only ones narrowly "about the wardrobe." This is what makes you a personal stylist instead of a generic fashion chatbot: even a general question ("how do I dress like an American man", "what should I buy next") should draw on what they actually own, their real colors/undertone/Style DNA, and any real gap the Insights Summary calls out, wherever that's relevant — general fashion knowledge fills in what the data doesn't cover, it never substitutes for checking the data first.
+    - If a REFERENCED ITEMS block is present below, the user explicitly picked those specific garments and your answer must be anchored on them: resolve every "these"/"this"/"them"/"it" in their message to exactly those items, and answer specifically about pairing with / building around them (e.g. "what outerwear goes with these two") — never ignore the reference and give a generic answer.
     - For anything about the user's own wardrobe/Insights specifically, use ONLY the WARDROBE CATALOG and INSIGHTS SUMMARY given below — never invent an item, a count, or a statistic that isn't traceable to that data. For general style, fashion, or shopping advice beyond what that data covers, answer from your own fashion expertise, honestly and specifically — never refuse or deflect a real style/shopping question back to "I can only help with outfits from your wardrobe."
     - If a wardrobe-specific metric the user asked about isn't covered by the data below (e.g. a stat that's still locked or doesn't have enough history yet), say so plainly rather than guessing or making up a number — that caveat only applies to wardrobe-data questions, not to general advice.
     - Keep the answer conversational and concise — a few sentences in the voice of a stylist talking to their client, not a report or a bulleted dump of raw data.
@@ -55,13 +56,32 @@ enum StylistQABrain {
     /// is invoked fresh and independently per question, so the model must
     /// have the user's real wardrobe/Insights data directly alongside
     /// whatever it's actually answering right now.
+    ///
+    /// `referencedItemsText` is the @-mention feature (2026-07-24): a text-only
+    /// JSON block (same `CatalogEntry` schema, built by
+    /// `Domain/WardrobeCatalogBuilder.swift`) describing the specific wardrobe
+    /// items the user tapped in the mention picker — never images, just their
+    /// ids + descriptions. Empty when the user referenced nothing, in which
+    /// case no block is added and the prompt is byte-identical to before.
     static func composeContent(
         scenarioText: String,
         catalogDataText: String,
-        insightsSummaryText: String
+        insightsSummaryText: String,
+        referencedItemsText: String = ""
     ) -> String {
-        """
-        User message: \(scenarioText)
+        var content = "User message: \(scenarioText)"
+
+        if !referencedItemsText.isEmpty {
+            content += """
+
+
+            Referenced Items (JSON array — the user explicitly @-mentioned these specific items; treat "these"/"this"/"them" in the message as referring to them, by id):
+            \(referencedItemsText)
+            """
+        }
+
+        content += """
+
 
         Wardrobe Catalog (JSON array — the user's real items, by id):
         \(catalogDataText)
@@ -69,5 +89,7 @@ enum StylistQABrain {
         Insights Summary (pre-computed from the user's real wardrobe/feedback history):
         \(insightsSummaryText)
         """
+
+        return content
     }
 }

@@ -321,14 +321,32 @@ enum StylistBrain {
         /// Intelligence Engine ADR, Phase 2) — later turns send their raw
         /// reply text directly, since the catalog/weather blob only needs to
         /// be attached once per conversation, not replayed on every turn.
+        ///
+        /// `referencedItemsText` is the @-mention feature (2026-07-24): a
+        /// text-only JSON block (same `CatalogEntry` schema) describing the
+        /// specific items the user picked in the mention picker — a subset of
+        /// the catalog below, never images. Empty when nothing was referenced,
+        /// in which case the content is byte-identical to before. These items
+        /// are always a strict subset of the wardrobe catalog, so any id here
+        /// is a valid pick — soft guidance only, the validator is unchanged.
         static func composeUserContent(
             scenarioText: String,
             weather: WeatherContext?,
             catalogDataText: String,
             recentWornHistoryText: String? = nil,
-            bannedPairsText: String? = nil
+            bannedPairsText: String? = nil,
+            referencedItemsText: String = ""
         ) -> String {
             var content = "Scenario: \(scenarioText)"
+
+            if !referencedItemsText.isEmpty {
+                content += """
+
+
+                Referenced Items (JSON array — the user explicitly @-mentioned these specific items and wants outfits built AROUND them; include every referenced item in each outfit you build unless it is impossible for the stated scenario, and resolve "these"/"this"/"them" in the scenario to them):
+                \(referencedItemsText)
+                """
+            }
 
             if let weather {
                 content += "\n\nCurrent Weather: Temperature \(weather.temperatureFahrenheit)°F, Condition: \(weather.conditions)."

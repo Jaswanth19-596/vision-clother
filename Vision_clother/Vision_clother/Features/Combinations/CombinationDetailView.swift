@@ -30,6 +30,15 @@ struct CombinationDetailView: View {
     /// "Worn"'s most-recently-worn-first, which isn't `savedAt` order) is
     /// preserved.
     @Query(CombinationsView.recentCombinationsDescriptor) private var allCombinations: [SavedCombination]
+    /// Live-updating state sources for the three action buttons below —
+    /// same "own `@Query` instead of a cached snapshot" posture as
+    /// `allCombinations` above, so a delete/undo lands on screen immediately
+    /// instead of needing a re-navigation to re-derive. Fetched in full
+    /// (not scoped per-combination) since SwiftData `@Query` can't take a
+    /// runtime predicate here — filtering happens in the helpers below.
+    @Query(sort: \WornLogEntry.wornAt, order: .reverse) private var allWornLogEntries: [WornLogEntry]
+    @Query(sort: \OutfitFeedback.recordedAt, order: .reverse) private var allOutfitFeedback: [OutfitFeedback]
+    @Query(sort: \ItemPairBan.createdAt, order: .reverse) private var allPairBans: [ItemPairBan]
     /// Photo-refresh reactivity — see `ClosetView.swift`'s matching comment.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
     @Environment(\.dismiss) private var dismiss
@@ -42,18 +51,54 @@ struct CombinationDetailView: View {
         return orderedIDs.compactMap { byID[$0] }
     }
 
+    /// Today's `WornLogEntry` for `combination`, if any — "today" is the
+    /// device's current calendar day, so this (and the button state it
+    /// drives) rolls over at local midnight with no extra bookkeeping.
+    /// `WornLogEntry` allows more than one row per day by design (see its
+    /// doc comment), so this picks the most recent one — `allWornLogEntries`
+    /// is already `wornAt` descending — since that's the one "Undo" should
+    /// target.
+    private func wornTodayEntry(for combination: SavedCombination) -> WornLogEntry? {
+        allWornLogEntries.first {
+            $0.savedCombinationID == combination.id && Calendar.current.isDateInToday($0.wornAt)
+        }
+    }
+
+    /// True once a *detailed* "Rate this outfit" submission exists — the
+    /// simple auto-recorded "liked" event a save/swipe already writes
+    /// (`OutfitFeedback`'s doc comment) has every detailed field `nil`, so
+    /// `normalizedRating` distinguishes "actually rated" from "saved."
+    private func hasDetailedRating(for combination: SavedCombination) -> Bool {
+        allOutfitFeedback.contains { $0.outfitID == combination.id && $0.normalizedRating != nil }
+    }
+
+    /// True if any pair among `resolvedItems` already has a permanent veto
+    /// — `BanPairView` only ever bans two of this outfit's own items, so
+    /// checking `resolvedItems`' pairs (not the whole closet) is exactly
+    /// what "already banned for this outfit" means.
+    private func isAnyPairBanned(in resolvedItems: [WardrobeItem]) -> Bool {
+        let itemIDs = Set(resolvedItems.map(\.id))
+        guard itemIDs.count > 1 else { return false }
+        return allPairBans.contains { itemIDs.contains($0.itemAID) && itemIDs.contains($0.itemBID) }
+    }
+
     var body: some View {
         TabView(selection: $selectedID) {
             ForEach(combinations, id: \.id) { combination in
+                let resolvedItems = viewModel.resolveItems(for: combination)
                 CombinationDetailPage(
                     combination: combination,
-                    resolvedItems: viewModel.resolveItems(for: combination),
+                    resolvedItems: resolvedItems,
                     photoRefreshTick: syncCoordinator.photoRefreshTick,
                     generationState: viewModel.generationState(for: combination),
+                    wornTodayEntry: wornTodayEntry(for: combination),
+                    hasDetailedRating: hasDetailedRating(for: combination),
+                    isPairBanned: isAnyPairBanned(in: resolvedItems),
                     onRate: { rateSheetCombination = combination },
                     onBanPair: { banSheetCombination = combination },
                     onGenerateImage: { await viewModel.generateImage(for: combination) },
-                    onWearToday: { viewModel.logWorn(combination) }
+                    onWearToday: { viewModel.logWorn(combination) },
+                    onUndoWornToday: { viewModel.undoWornToday($0) }
                 )
                 .tag(Optional(combination.id))
             }
@@ -114,6 +159,18 @@ private struct CombinationDetailPage: View {
     /// `CombinationsViewModel.generateImage(for:)`'s in-flight state for
     /// this exact combination.
     let generationState: TryOnState
+    /// Today's `WornLogEntry` for `combination`, if any — `nil` means not
+    /// worn yet today. Derived from a live `@Query` in `CombinationDetailView`,
+    /// so this reflects reality across app relaunches and resets itself at
+    /// local midnight with no manual bookkeeping, unlike the old per-page
+    /// `@State` lock this replaced.
+    let wornTodayEntry: WornLogEntry?
+    /// True once a detailed "Rate this outfit" submission exists for this
+    /// combination — see `CombinationDetailView.hasDetailedRating(for:)`.
+    let hasDetailedRating: Bool
+    /// True if any pair among `resolvedItems` already has a permanent veto
+    /// — see `CombinationDetailView.isAnyPairBanned(in:)`.
+    let isPairBanned: Bool
     let onRate: () -> Void
     let onBanPair: () -> Void
     let onGenerateImage: () async -> Void
@@ -124,12 +181,11 @@ private struct CombinationDetailPage: View {
     /// a combination the user is looking at full-screen after the fact
     /// rather than right after generating it or browsing the list.
     let onWearToday: () -> Void
+    /// Undoes an accidental `onWearToday` tap — deletes `wornTodayEntry`.
+    let onUndoWornToday: (WornLogEntry) -> Void
 
     @State private var detailItem: WardrobeItem?
-    /// Per-page lock, same convention as `TryOnResultView.didMarkWorn` — logging
-    /// twice from one screening isn't useful, even though `logWorn` itself
-    /// tolerates repeat calls (see its doc comment).
-    @State private var didLogWornThisVisit = false
+    @State private var showUndoWornConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -151,33 +207,53 @@ private struct CombinationDetailPage: View {
                 }
 
                 Button {
-                    onWearToday()
-                    didLogWornThisVisit = true
+                    if wornTodayEntry != nil {
+                        showUndoWornConfirmation = true
+                    } else {
+                        onWearToday()
+                    }
                 } label: {
                     Label(
-                        didLogWornThisVisit ? "Marked Worn Today" : "Wearing This Today",
-                        systemImage: didLogWornThisVisit ? "checkmark.circle.fill" : "checkmark.circle"
+                        wornTodayEntry != nil ? "Wore Today" : "Wearing This Today",
+                        systemImage: wornTodayEntry != nil ? "checkmark.circle.fill" : "checkmark.circle"
                     )
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(didLogWornThisVisit)
+                .confirmationDialog(
+                    "Undo today's \"Worn\" log?",
+                    isPresented: $showUndoWornConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Undo", role: .destructive) {
+                        if let wornTodayEntry {
+                            onUndoWornToday(wornTodayEntry)
+                        }
+                    }
+                    Button("Keep It", role: .cancel) {}
+                }
 
                 Button {
                     onRate()
                 } label: {
-                    Label("Rate this outfit", systemImage: "star.bubble")
-                        .frame(maxWidth: .infinity)
+                    Label(
+                        hasDetailedRating ? "Rated · Tap to Edit" : "Rate this outfit",
+                        systemImage: hasDetailedRating ? "star.bubble.fill" : "star.bubble"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(SecondaryButtonStyle())
+                .buttonStyle(SecondaryButtonStyle(tint: hasDetailedRating ? .green : .accentColor))
 
                 Button {
                     onBanPair()
                 } label: {
-                    Label("Never recommend these together", systemImage: "nosign")
-                        .frame(maxWidth: .infinity)
+                    Label(
+                        isPairBanned ? "Pairing Banned" : "Never recommend these together",
+                        systemImage: "nosign"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(SecondaryButtonStyle())
+                .buttonStyle(SecondaryButtonStyle(tint: isPairBanned ? .green : .accentColor))
             }
             .padding()
         }

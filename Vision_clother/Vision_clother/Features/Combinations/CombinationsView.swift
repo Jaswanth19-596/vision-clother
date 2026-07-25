@@ -182,7 +182,7 @@ struct CombinationsView: View {
                         resolvedItems: resolvedItems
                     )
                 }
-                .id(rowPhotoGeneration(row.combination, resolvedItems: resolvedItems))
+                .id("\(row.combination.id)-\(rowPhotoGeneration(row.combination, resolvedItems: resolvedItems))")
                 .buttonStyle(.plain)
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {

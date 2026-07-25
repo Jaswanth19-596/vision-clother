@@ -225,6 +225,38 @@ final class DailyAssistantViewModel {
     /// for a stale purchase-check retry.
     private var lastProspectiveRawImageData: Data?
 
+    /// @-mention feature (2026-07-24): the wardrobe items the user tapped in
+    /// the mention picker (`@` in the prompt field), staged until the next
+    /// `requestOutfitIdeas()`/`continueConversation(with:)` consumes them —
+    /// mirrors `attachedProspectiveImageData`'s stage-then-clear lifecycle.
+    /// Their *ids* (never images) are threaded into the LLM call as a
+    /// text-only "Referenced Items" block so the model can resolve "these"/
+    /// "this" in the message to real owned garments. Shown as removable chips
+    /// above the text field (`DailyAssistantView`); the picker itself renders
+    /// their thumbnails, but only their text descriptions leave the device.
+    var mentionedItems: [WardrobeItem] = []
+
+    /// The non-ghost inventory the mention picker offers, fetched through the
+    /// repository so the View never touches it directly (`Features/CLAUDE.md`).
+    /// `fetchInventory()` is version-cached (`Data/WardrobeRepository.swift`),
+    /// so re-opening the picker is cheap. Returns empty on a fetch failure
+    /// rather than surfacing an error — an empty picker is a benign no-op.
+    func mentionCandidates() -> [WardrobeItem] {
+        (try? repository.fetchInventory())?.filter { !$0.isGhostElement } ?? []
+    }
+
+    /// Adds an item to the staged mention set, de-duplicated by `id` — the
+    /// picker toggles selection, so a re-tap must not stage the same item twice.
+    func addMention(_ item: WardrobeItem) {
+        guard !mentionedItems.contains(where: { $0.id == item.id }) else { return }
+        mentionedItems.append(item)
+    }
+
+    /// Removes a staged mention (chip `xmark` tap, or picker de-select).
+    func removeMention(_ item: WardrobeItem) {
+        mentionedItems.removeAll { $0.id == item.id }
+    }
+
     private let repository: WardrobeRepository
     private let jobQueueStore: JobQueueStore
     /// Primary recommendation path (PRD §2.1a, the 2026-07-10
@@ -311,11 +343,16 @@ final class DailyAssistantViewModel {
         // can't race a fresh keystroke; clearing it from the View instead
         // (before this `async` call even starts) would empty `prompt` out
         // from under this same guard on the next call.
+        // Captured synchronously alongside `prompt` (before any suspension
+        // point), then cleared, exactly like `prompt` itself — so a fresh
+        // picker selection during the async work can't leak into this turn.
+        let mentionedIDs = mentionedItems.map(\.id)
+        mentionedItems = []
         prompt = ""
         conversationHistory = []
         clarificationTurnCount = 0
         rounds = []
-        await sendTurn(userText: trimmed)
+        await sendTurn(userText: trimmed, mentionedItemIDs: mentionedIDs)
     }
 
     /// Continues the SAME conversation — called identically by a chip tap
@@ -329,8 +366,10 @@ final class DailyAssistantViewModel {
     func continueConversation(with text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !conversationHistory.isEmpty, extractionState != .loading else { return }
+        let mentionedIDs = mentionedItems.map(\.id)
+        mentionedItems = []
         prompt = ""
-        await sendTurn(userText: trimmed)
+        await sendTurn(userText: trimmed, mentionedItemIDs: mentionedIDs)
     }
 
     /// Re-sends the turn that just failed, instead of `requestOutfitIdeas()`
@@ -369,9 +408,15 @@ final class DailyAssistantViewModel {
         isProspectivePurchaseMode = false
         attachedProspectiveImageData = nil
         lastProspectiveRawImageData = nil
+        mentionedItems = []
     }
 
-    private func sendTurn(userText: String) async {
+    /// `mentionedItemIDs` is the @-mention feature (2026-07-24): the ids of
+    /// the wardrobe items the user tapped in the mention picker for THIS turn
+    /// (already captured/cleared by the caller). Defaults to empty so the
+    /// retry path — which replays existing transcript text, not a fresh
+    /// selection — and any future caller stay unchanged.
+    private func sendTurn(userText: String, mentionedItemIDs: [UUID] = []) async {
         conversationHistory.append(ConversationTurn(role: .user, text: userText))
         // A normal free-text turn is starting — any earlier purchase-check
         // failure is no longer "the most recent thing that could be retried".
@@ -394,13 +439,17 @@ final class DailyAssistantViewModel {
         let isFinalTurn = clarificationTurnCount >= Self.maxClarificationTurns
         let historySnapshot = conversationHistory
 
+        if !mentionedItemIDs.isEmpty {
+            MLLog.logger.notice("mentions: turn references \(mentionedItemIDs.count) @-mentioned item(s) — text-only, no images sent")
+        }
+
         // Races the whole resolution flow against a hard deadline instead of
         // trusting each network call's own timeout — cancelling `workTask`
         // on timeout cooperatively aborts any in-flight URLSession request
         // too, rather than leaving it running in the background.
         let workTask = Task {
             await PerfLog.time("resolveTurn.total") {
-                await self.resolveTurn(userText: userText, conversationHistory: historySnapshot, isFinalTurn: isFinalTurn)
+                await self.resolveTurn(userText: userText, conversationHistory: historySnapshot, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
         }
         let timeoutTask = Task {
@@ -523,29 +572,47 @@ final class DailyAssistantViewModel {
     /// both as `PrefetchedWardrobeContext` — `resolveOutfits` still does its
     /// own fetch/build when called from the non-question fast path below
     /// (`prefetched` stays nil), so that path is exactly as before.
-    private func resolveTurn(userText: String, conversationHistory: [ConversationTurn], isFinalTurn: Bool) async -> RequestOutcome {
+    private func resolveTurn(userText: String, conversationHistory: [ConversationTurn], isFinalTurn: Bool, mentionedItemIDs: [UUID] = []) async -> RequestOutcome {
         guard QuestionIntentHeuristic.looksLikeWardrobeQuestion(userText) else {
-            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
         }
         guard !Task.isCancelled else { return .timedOut }
         do {
             let (inventory, history) = try await wardrobeSnapshot()
             guard !inventory.filter({ !$0.isGhostElement }).isEmpty else {
-                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
             let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history)
             guard !catalog.isEmpty else {
-                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+                return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
             let context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog)
-            if let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory, context: context) {
+            if let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory, context: context, mentionedItemIDs: mentionedItemIDs) {
                 return .answer(answer)
             }
-            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, prefetched: context)
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, prefetched: context, mentionedItemIDs: mentionedItemIDs)
         } catch {
             MLLog.logger.notice("wardrobeSnapshot for QA gate failed, falling through to recommendation flow — \(String(describing: error))")
-            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn)
+            return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
         }
+    }
+
+    /// @-mention feature (2026-07-24): serializes the specific items the user
+    /// referenced this turn into the same text-only `CatalogEntry` JSON schema
+    /// the LLM already reads — **never images**, only ids + descriptions.
+    /// Resolved against `inventory` (not the possibly-truncated catalog) so a
+    /// referenced item can never be silently dropped, and re-run through
+    /// `WardrobeCatalogBuilder` so the block's shape matches the main catalog
+    /// exactly. Empty string when nothing was referenced (or the ids no longer
+    /// resolve), in which case the prompt is byte-identical to before.
+    private func referencedItemsText(for mentionedItemIDs: [UUID], inventory: [WardrobeItem], history: FeedbackHistory) -> String {
+        guard !mentionedItemIDs.isEmpty else { return "" }
+        let idSet = Set(mentionedItemIDs)
+        let mentioned = inventory.filter { idSet.contains($0.id) && !$0.isGhostElement }
+        guard !mentioned.isEmpty else { return "" }
+        let (entries, _) = WardrobeCatalogBuilder.build(from: mentioned, history: history)
+        guard let data = try? JSONEncoder().encode(entries) else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Already-fetched/built inputs shared between `resolveWardrobeQuestion`
@@ -567,11 +634,12 @@ final class DailyAssistantViewModel {
     /// falls through to the ordinary recommendation flow — never surfaces a
     /// QA-specific error to the user, since a failure here should degrade to
     /// today's existing behavior, not a dead end.
-    private func resolveWardrobeQuestion(conversationHistory: [ConversationTurn], context: PrefetchedWardrobeContext) async -> String? {
+    private func resolveWardrobeQuestion(conversationHistory: [ConversationTurn], context: PrefetchedWardrobeContext, mentionedItemIDs: [UUID] = []) async -> String? {
         guard !Task.isCancelled else { return nil }
         do {
             let catalogData = try JSONEncoder().encode(context.catalog)
             let catalogText = String(decoding: catalogData, as: UTF8.self)
+            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: context.inventory, history: context.history)
 
             let insightsSummary = InsightsSummaryBuilder.buildSummaryText(
                 inventory: context.inventory,
@@ -587,7 +655,8 @@ final class DailyAssistantViewModel {
                 try await stylistQAService.answerWardrobeQuestion(
                     conversationHistory: conversationHistory,
                     catalogDataText: catalogText,
-                    insightsSummaryText: insightsSummary
+                    insightsSummaryText: insightsSummary,
+                    referencedItemsText: referencedText
                 )
             }
             // Same posture as `resolveOutfits`: this call already cleared
@@ -611,7 +680,7 @@ final class DailyAssistantViewModel {
     /// (question-phrased turn, see `resolveTurn`) — reused here instead of
     /// redone. `nil` on the ordinary non-question fast path, which fetches/
     /// builds exactly as before.
-    private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool, prefetched: PrefetchedWardrobeContext? = nil) async -> RequestOutcome {
+    private func resolveOutfits(conversationHistory: [ConversationTurn], isFinalTurn: Bool, prefetched: PrefetchedWardrobeContext? = nil, mentionedItemIDs: [UUID] = []) async -> RequestOutcome {
         do {
             // Weather and the profile don't depend on the wardrobe snapshot/
             // catalog build, so fan them out concurrently with it rather
@@ -636,13 +705,15 @@ final class DailyAssistantViewModel {
             let profile = await profileResult
 
             let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
+            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: inventory, history: history)
 
             loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
                 try await recommendationService.recommendOutfits(
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
-                    recentWornHistory: recentWornHistory, pairBans: pairBans
+                    recentWornHistory: recentWornHistory, pairBans: pairBans,
+                    referencedItemsText: referencedText
                 )
             }
             // A call that reaches this point already cleared the server's
@@ -855,7 +926,8 @@ final class DailyAssistantViewModel {
                     conversationHistory: [ConversationTurn(role: .user, text: Self.prospectivePurchaseScenarioText)],
                     isFinalTurn: true,
                     catalog: catalog, profile: profile, weather: weather, history: history,
-                    recentWornHistory: recentWornHistory, pairBans: pairBans
+                    recentWornHistory: recentWornHistory, pairBans: pairBans,
+                    referencedItemsText: ""
                 )
             }
             usageTracker.recordRecommendationUsed()
@@ -966,6 +1038,13 @@ final class DailyAssistantViewModel {
     /// a logging failure here shouldn't block the user from continuing to
     /// use the recommendation they're looking at.
     func markWornToday(_ outfit: OutfitCombination) {
+        let now = Date()
+        for item in outfit.items {
+            item.wearCount += 1
+            item.lastWornDate = now
+            try? repository.update(item)
+        }
+
         let combination = SavedCombination(
             imageAssetName: SavedCombination.noRenderPlaceholderAssetName,
             itemIDsBySlot: outfit.itemsBySlot.mapValues(\.id),
@@ -980,5 +1059,14 @@ final class DailyAssistantViewModel {
         } catch {
             AppLog.error(.viewModel, "DailyAssistantViewModel.markWornToday: failed — \(String(describing: error))")
         }
+    }
+
+    /// Updates the `inLaundry` flag for all items in an outfit.
+    func markItemsLaundry(_ items: [WardrobeItem], inLaundry: Bool) {
+        for item in items {
+            item.inLaundry = inLaundry
+            try? repository.update(item)
+        }
+        AppLog.info(.viewModel, "DailyAssistantViewModel.markItemsLaundry: set inLaundry=\(inLaundry) for \(items.count) items")
     }
 }

@@ -40,6 +40,9 @@ struct WardrobeInsightsView: View {
             } else if let snapshot = viewModel.snapshot {
                 ScrollView {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
+                        if let gapReport = viewModel.gapReport {
+                            ClosetGapView(report: gapReport)
+                        }
                         utilizationCard(snapshot)
                         if snapshot.hasEnoughWearData {
                             itemListCard(title: "Most Worn", items: snapshot.mostWorn, emptyText: nil)

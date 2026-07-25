@@ -144,6 +144,16 @@ protocol WardrobeRepository {
         dislikedCentroids: [VisualCentroid],
         embeddingDimension: Int
     ) throws
+    /// Persists one swipe's garment attributes (extracted in `.wornInScene`
+    /// focus, `Services/VisionMetadataExtractionService.swift`) so the swipe
+    /// teaches `Domain/AttributePreferenceProfile.swift` affinities — the
+    /// primary Swipe-to-Learn signal, alongside `recordSwipe`'s pixel
+    /// embedding. Upserts by `sourcePhotoID` so a re-shown photo doesn't
+    /// duplicate. Local-only (not synced).
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws
+    /// Whether a swipe-attribute event already exists for this photo id — lets
+    /// the deck skip a redundant (paid) LLM tagging call on a re-shown card.
+    func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool
     /// Cached embedding for one wardrobe item's current photo, `nil` if never
     /// computed (or the item has no photo). `fetchFeedbackHistory()` is the
     /// only caller that needs this in bulk; exposed individually for tests
@@ -193,6 +203,13 @@ protocol WardrobeRepository {
     /// `combination.id` directly.
     @discardableResult
     func saveAndLogWorn(combination: SavedCombination, itemIDs: [UUID]) throws -> UUID
+    /// Deletes one `WornLogEntry` row — the "Undo" affordance on an
+    /// accidental "Wearing This Today" tap (`Features/Combinations/CombinationDetailView.swift`).
+    /// Scoped to the exact entry the undo targets, never a blanket "clear
+    /// today's wears": `WornLogEntry` otherwise stays append-only/no-delete
+    /// by design (see its doc comment) — this exists only to correct a
+    /// same-visit mis-tap, not to edit wear history in general.
+    func deleteWornLogEntry(id: UUID) throws
 
     /// Anti-Repetition — the permanent "never recommend these two together"
     /// veto (see `Models/ItemPairBan.swift`).
@@ -216,14 +233,15 @@ protocol WardrobeRepository {
     func fetchAllOutfitFeedback() throws -> [OutfitFeedback]
 }
 
-/// Default no-op fallback for the two Insights-Q&A bulk-fetch methods above
-/// — keeps every pre-existing `WardrobeRepository` test double compiling
-/// without needing a change for a feature they don't exercise. Only
-/// `SwiftDataWardrobeRepository`/`SyncingWardrobeRepository` (the real
+/// Default no-op fallbacks for the two Insights-Q&A bulk-fetch methods above
+/// plus `deleteWornLogEntry` — keeps every pre-existing `WardrobeRepository`
+/// test double compiling without needing a change for a feature they don't
+/// exercise. Only `SwiftDataWardrobeRepository`/`SyncingWardrobeRepository` (the real
 /// production path) override these.
 extension WardrobeRepository {
     func fetchAllItemRatings() throws -> [ItemRating] { [] }
     func fetchAllOutfitFeedback() throws -> [OutfitFeedback] { [] }
+    func deleteWornLogEntry(id: UUID) throws {}
 }
 
 @MainActor
@@ -455,8 +473,37 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // Suitability+Practicality seed the three Phase 1 dimensions. Rows
         // referencing items no longer in the inventory (deleted since) are
         // skipped — there's no attribute to learn from.
+        // Swipe-to-Learn taste, attribute space: each `SwipeAttributeEvent`
+        // (garment attributes extracted from a `.wornInScene` stock photo) is
+        // a synthetic rating — a right swipe teaches "likes this color/pattern/
+        // formality/…" at full strength (1.0), a left swipe at 0.0 — folded
+        // into the same `AttributePreferenceProfile` owned-item ratings drive,
+        // so swipes flow straight into recommendations/Insights rather than the
+        // separate (weaker) pixel-embedding centroids. `recordedAt` carries the
+        // same exponential time-decay as ratings.
+        let swipeAttributeEvents = try modelContext.fetch(FetchDescriptor<SwipeAttributeEvent>())
+        let swipeRatedAttributes: [RatedAttributes] = swipeAttributeEvents.map { event in
+            let signal = event.liked ? 1.0 : 0.0
+            return RatedAttributes(
+                colorLike: signal,
+                patternLike: signal,
+                formalityFit: signal,
+                colorVibe: event.colorVibe,
+                pattern: event.pattern,
+                formalityBand: event.formalityBand,
+                styleIdentity: signal,
+                styleTags: event.styleTags,
+                recordedAt: event.recordedAt,
+                slot: event.slot,
+                silhouetteTag: event.silhouette,
+                silhouetteFit: event.silhouette != nil ? signal : nil,
+                fabricWeight: event.fabricWeight,
+                fabricComfort: signal
+            )
+        }
+
         let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
-        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty {
+        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty || !swipeRatedAttributes.isEmpty {
             let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
 
             let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
@@ -542,7 +589,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
 
             let attributeProfile = await Task.detached(priority: .userInitiated) {
                 AttributePreferenceProfile.build(
-                    from: ratedAttributes,
+                    from: ratedAttributes + swipeRatedAttributes,
                     outfitDimensionRatings: outfitDimensionRatings,
                     inventorySnapshots: inventorySnapshots,
                     now: now
@@ -940,6 +987,56 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try saveAndMarkMutated()
     }
 
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws {
+        let colorVibe = metadata.colorProfile.category
+        // Same banding `fetchFeedbackHistory` applies to owned items, so a
+        // swipe and a rating land in the same `formalityAffinity` bucket.
+        let formalityBand = Int(metadata.formalityScore.rounded())
+
+        let descriptor = FetchDescriptor<SwipeAttributeEvent>(
+            predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID }
+        )
+        if let existing = try modelContext.fetch(descriptor).first {
+            // Re-swipe of the same photo (deck reshuffle) — update in place so
+            // the most recent direction wins rather than double-counting.
+            existing.imageURLString = imageURLString
+            existing.liked = liked
+            existing.colorVibe = colorVibe
+            existing.pattern = metadata.pattern
+            existing.formalityBand = formalityBand
+            existing.fabricWeight = metadata.fabricWeight
+            existing.slot = metadata.slot
+            existing.styleTags = metadata.styleTags
+            existing.silhouette = metadata.silhouette
+            existing.recordedAt = .now
+        } else {
+            modelContext.insert(SwipeAttributeEvent(
+                sourcePhotoID: sourcePhotoID,
+                imageURLString: imageURLString,
+                liked: liked,
+                colorVibe: colorVibe,
+                pattern: metadata.pattern,
+                formalityBand: formalityBand,
+                fabricWeight: metadata.fabricWeight,
+                slot: metadata.slot,
+                styleTags: metadata.styleTags,
+                silhouette: metadata.silhouette
+            ))
+        }
+        // `fetchFeedbackHistory()` reads `SwipeAttributeEvent` into the
+        // attribute profile, so this must invalidate that cache — not a bare
+        // `modelContext.save()`.
+        try saveAndMarkMutated()
+        MLLog.logger.notice("[AI-Stylist-ML] swipe attributes: photo=\(sourcePhotoID, privacy: .public) liked=\(liked, privacy: .public) slot=\(metadata.slot.rawValue, privacy: .public) color=\(colorVibe.rawValue, privacy: .public) pattern=\(metadata.pattern.rawValue, privacy: .public)")
+    }
+
+    func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool {
+        let descriptor = FetchDescriptor<SwipeAttributeEvent>(
+            predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID }
+        )
+        return try modelContext.fetch(descriptor).first != nil
+    }
+
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
         let descriptor = FetchDescriptor<WardrobeItemEmbedding>(
             predicate: #Predicate { $0.itemID == itemID }
@@ -1081,6 +1178,13 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         let persistedID = try saveCombination(combination)
         try logWorn(savedCombinationID: persistedID, itemIDs: itemIDs)
         return persistedID
+    }
+
+    func deleteWornLogEntry(id: UUID) throws {
+        let descriptor = FetchDescriptor<WornLogEntry>(predicate: #Predicate { $0.id == id })
+        guard let existing = try modelContext.fetch(descriptor).first else { return }
+        modelContext.delete(existing)
+        try modelContext.save()
     }
 
     func fetchPairBans() throws -> [ItemPairBan] {

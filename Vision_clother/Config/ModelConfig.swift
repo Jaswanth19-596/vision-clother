@@ -178,6 +178,54 @@ enum ModelConfig {
         /// User-turn text accompanying the garment photo above.
         static let visionMetadataUserText = "Tag this garment."
 
+        /// `OpenRouterVisionMetadataExtractionService` (Swipe-to-Learn taste,
+        /// `.wornInScene` focus) — tags the *primary garment being worn* in a
+        /// busy, un-isolated stock/lifestyle photo (a person in a setting),
+        /// where the background is noise, not signal. Reuses the exact same
+        /// `GarmentMetadata` schema as the isolated-garment prompt above; only
+        /// the framing differs, so a right/left swipe teaches attribute
+        /// affinities (`Domain/AttributePreferenceProfile.swift`) rather than a
+        /// pixel embedding of the whole scene.
+        static let visionMetadataWornInScenePrompt = """
+        You tag the single most prominent piece of clothing WORN by the main person in a fashion \
+        photo, for a wardrobe app. The photo is NOT background-removed — it may show a person, a \
+        setting, props, and multiple garments. Ignore the background, the person's face/body, the \
+        lighting, and any secondary items: focus ONLY on the one hero garment the photo is styling \
+        (usually the largest, most in-focus, upper-body-or-primary piece). Describe THAT garment's \
+        own attributes as if it were laid flat — never describe the scene, the model, or the mood. \
+        You do not know what else exists and must never reference other garments — only output the \
+        metadata fields defined by the schema, based solely on the hero garment. \
+        For "description", write one concise sentence (140 characters or fewer) describing that \
+        garment (cut, material, notable detail) — this text is later shown to a separate model that \
+        never sees the photo, so make it specific rather than generic. \
+        For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
+        "streetwear", "tailored"). For "color_profile.undertone", classify the hero garment's \
+        primary color undertone as "warm", "cool", or "neutral". \
+        For "slot", classify which of these seven categories the hero garment belongs to — use the \
+        garment's own cut and construction, not the color or pattern, to decide: \
+        "top" = worn on the upper body as a primary layer (t-shirts, shirts, blouses, sweaters, \
+        polos, tank tops); \
+        "bottom" = worn on the lower body (trousers, pants, jeans, shorts, skirts, chinos, \
+        leggings); \
+        "footwear" = worn on the feet (sneakers, boots, sandals, heels, loafers, dress shoes); \
+        "outerwear" = worn OVER a top as an extra layer, typically with its own front closure \
+        (jackets, coats, blazers, cardigans, parkas); \
+        "headwear" = worn on the head (hats, caps, beanies, headbands); \
+        "accessory" = a single signature accessory piece worn on the body that is not a garment \
+        (necklaces and other jewelry, belts, scarves, ties, watches, sunglasses); \
+        "bag" = a carried bag (backpacks, totes, handbags, purses, messenger bags). \
+        Choose exactly one slot for the hero garment; only choose "outerwear" when it is clearly \
+        layered over other clothing rather than worn as the primary upper-body garment. \
+        Identify the following additional attributes for the hero garment: \
+        "garment_subtype": the specific subtype (e.g. "Oxford Shirt", "Chinos", "Sneakers", "Blazer"); \
+        "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
+        "silhouette": the silhouette shape (e.g. "Straight", "Boxy", "A-line", "Fitted", "Flared"); \
+        "material": the apparent primary material (e.g. "Cotton", "Linen", "Denim", "Wool", "Leather"); \
+        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede").
+        """
+        /// User-turn text accompanying the worn-in-scene photo above.
+        static let visionMetadataWornInSceneUserText = "Tag the main garment this person is wearing."
+
         // MARK: Style profile derivation (imageToText)
 
         /// `OpenRouterUserProfileDerivationService` — derives a styling
