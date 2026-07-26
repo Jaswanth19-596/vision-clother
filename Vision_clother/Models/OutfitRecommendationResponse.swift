@@ -47,12 +47,24 @@ struct OutfitRecommendationResponse: Codable, Equatable {
     /// empty-array-not-null convention.
     var suggestedChips: [String] = []
 
+    /// Compressed cross-session memory (Hermes-inspired session-summary
+    /// feature, see docs/decisions/resolved-v1.md): a 1-2 sentence recap of
+    /// this conversation's occasion plus preferred/rejected attributes,
+    /// piggybacked onto the same call that produces real outfit picks so no
+    /// extra LLM request or quota cost is needed. Only ever populated when
+    /// `intentClear` is true and `outfits` is non-empty; nil on
+    /// clarification turns. Persisted client-side as a bounded, rolling
+    /// `SessionSummary` row (`Data/WardrobeRepository.swift`) and re-injected
+    /// into future recommendation prompts by `Domain/StylistBrain.swift`.
+    var sessionSummary: String? = nil
+
     enum CodingKeys: String, CodingKey {
         case outfits
         case resolvedConstraints = "resolved_constraints"
         case intentClear = "intent_clear"
         case followUpText = "follow_up_text"
         case suggestedChips = "suggested_chips"
+        case sessionSummary = "session_summary"
     }
 
     init(
@@ -60,13 +72,15 @@ struct OutfitRecommendationResponse: Codable, Equatable {
         resolvedConstraints: StyleConstraints? = nil,
         intentClear: Bool = true,
         followUpText: String? = nil,
-        suggestedChips: [String] = []
+        suggestedChips: [String] = [],
+        sessionSummary: String? = nil
     ) {
         self.outfits = outfits
         self.resolvedConstraints = resolvedConstraints
         self.intentClear = intentClear
         self.followUpText = followUpText
         self.suggestedChips = suggestedChips
+        self.sessionSummary = sessionSummary
     }
 
     // Custom Codable (rather than relying on the memberwise defaults above,
@@ -80,6 +94,7 @@ struct OutfitRecommendationResponse: Codable, Equatable {
         intentClear = try container.decodeIfPresent(Bool.self, forKey: .intentClear) ?? true
         followUpText = try container.decodeIfPresent(String.self, forKey: .followUpText)
         suggestedChips = try container.decodeIfPresent([String].self, forKey: .suggestedChips) ?? []
+        sessionSummary = try container.decodeIfPresent(String.self, forKey: .sessionSummary)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -89,6 +104,7 @@ struct OutfitRecommendationResponse: Codable, Equatable {
         try container.encode(intentClear, forKey: .intentClear)
         try container.encodeIfPresent(followUpText, forKey: .followUpText)
         try container.encode(suggestedChips, forKey: .suggestedChips)
+        try container.encodeIfPresent(sessionSummary, forKey: .sessionSummary)
     }
 }
 

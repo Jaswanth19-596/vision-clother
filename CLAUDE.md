@@ -39,12 +39,12 @@ Read the relevant doc **before** modifying a layer:
 * **Logging:** When implementing any new feature, service, or repository mutation, you must explicitly implement logging. Follow the unified project telemetry string pattern exactly (e.g., using `[AI-Stylist-ML]`, `[SyncOutbox]`, or similar localized subsystems) to ensure matching observability across the codebase.
 
 ## 6. Update & Consult Timeline
-* **Read Before Coding:** Always read `timeline.md` at the start of a task to understand the chronological context, recent architectural changes, schema evolution, and how prior changes were implemented.
-* **Update After Coding:** Every time you implement a new feature or fix a bug, make sure to update `timeline.md` with the date, status, problem statement, and precise file changes. This allows the user to see the history and helps you maintain context across turns.
+* **Read Before Coding:** For non-trivial tasks (new features, bug fixes touching domain/service logic, architectural changes), read `timeline.md` at the start to understand chronological context, recent architectural changes, and schema evolution. Skip this for small, self-contained edits (typo fixes, copy tweaks, single-line changes) where the diff is self-explanatory — use judgment, and read it anyway if unsure whether prior context matters.
+* **Update After Coding:** After implementing a feature or fixing a bug that changes behavior (not for trivial edits), update `timeline.md` with the date, status, problem statement, and precise file changes.
 
-## 7. Documentation Sync — Mandatory on Every Code Change
+## 7. Documentation Sync — On Behavior-Changing Code Changes
 
-Whenever you modify code in this repository, you **must** check and update all documentation that describes the changed behavior. Documentation drift (docs saying one thing while code does another) is treated as a bug.
+Whenever you modify code in this repository in a way that changes documented behavior, you **must** check and update the documentation that describes it. Documentation drift (docs saying one thing while code does another) is treated as a bug. This does not apply to purely internal refactors, formatting, or changes with no externally-documented behavior — only check docs whose described behavior your specific change actually touches.
 
 ### What to check
 
@@ -55,7 +55,7 @@ Whenever you modify code in this repository, you **must** check and update all d
 | Domain models, scoring, or slot definitions | `docs/domain/vision-clother-concepts.md`, `PRD.md` |
 | Coding patterns, testing, error handling | `docs/approach/conventions.md` |
 | Architectural decisions or trade-offs | `docs/decisions/resolved-v1.md`, `docs/decisions/stylist-intelligence-engine.md` |
-| Any change | `timeline.md` (per Section 6 above) |
+| Any change with user-visible or cross-file behavior impact | `timeline.md` (per Section 6 above) |
 
 ### Rules
 
@@ -64,3 +64,14 @@ Whenever you modify code in this repository, you **must** check and update all d
 3. **If you change middleware** (add/remove/reorder in `app.ts`), update the middleware column in the route table and the "Each route:" pipeline description in `docs/backend/architecture.md`.
 4. **If you change an iOS service's route** (e.g. switching from `/openrouter/chat` to `/openrouter/recommend`), update the service→route mapping table in `docs/backend/architecture.md`.
 5. **Never leave a doc describing behavior the code no longer implements.** If in doubt, re-read the doc after your code change and fix any stale claims.
+
+
+## Context Management
+
+Before starting a new unrelated task:
+- Recommend /clear
+
+When context exceeds 120k tokens:
+- Suggest /compact
+
+Do not carry unrelated debugging history into new features.

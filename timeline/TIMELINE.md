@@ -1,5 +1,22 @@
 # Vision Clother — Change Timeline
 
+## 2026-07-26 — Feature: Compressed Session Summaries (cross-session memory)
+
+### Problem
+Evaluated adopting a Hermes-style agentic-loop architecture (soul.md/user.md/memory.md, tool-calling loop, session compression) for the recommender. Rejected the general tool-calling loop — `/openrouter/recommend` is deliberately unmetered and gated only by a coarse daily rate limit, not a wallet, so a multi-round loop would multiply real LLM cost inside a bucket assuming one call per turn, and risks letting ungrounded tool output bypass `Domain/OutfitRecommendationValidator.swift`. The existing `AttributePreferenceProfile` was also judged a stronger memory substrate than freeform LLM-narrated notes. The one real gap: `DailyAssistantViewModel.rounds`/`conversationHistory` reset to `[]` on every new request and on the "New" button — no continuity across sessions at all.
+
+### Fix
+1. **New `Models/SessionSummary.swift`**: a bounded, synced `@Model` — `id`, `summaryText` (capped ~240 chars), `createdAt`. Registered in a new `SchemaV15` (`Models/SchemaMigrations.swift`, `.lightweight` migration); `Vision_clotherApp.swift`'s `ModelContainer` now builds from `SchemaV15.models`.
+2. **`Models/OutfitRecommendationResponse.swift`** / **`Services/OutfitRecommendationService.swift`**: added an optional top-level `session_summary` field to the existing structured-output schema — piggybacked onto the recommendation call that already runs on a final turn, no new LLM call or quota cost.
+3. **`Domain/StylistBrain.swift`**: `composeSystemPrompt` instructs the model to populate `session_summary` (1-2 sentences: occasion + preferred/rejected attributes) only when returning real outfits (`intent_clear: true`, non-empty `outfits`); `composeUserContent` gained a `recentSessionSummariesText` param injecting the last 2-3 stored summaries (newest first) as a "Recent Session History" block — recommendation call only, never `StylistQAService`.
+4. **Sync wiring** (same pattern as `ItemRating`): `Models/SyncMetadata.swift` (`.sessionSummary` case), `Data/Sync/FirestoreDTOs.swift` (`SessionSummaryDTO`), `Services/WardrobeSyncService.swift` (`sessionSummaries` collection: encode/pull/delta), `Data/WardrobeSyncCoordinator.swift` (bootstrap push, `applySessionSummaryChange`, wipe-on-account-switch), `Data/SyncingWardrobeRepository.swift` (`recordSessionSummary` durable-outbox wrapper).
+5. **`Data/WardrobeRepository.swift`**: `recordSessionSummary(text:)` (plain `modelContext.save()`, not `saveAndMarkMutated()` — not read by either `WardrobeMutationTracker`-protected cache), `fetchRecentSessionSummaries(limit:)`, `fetchAllSessionSummaries()`, and `pruneOldSessionSummaries()` — a hard rolling-buffer cap (keep last 5) rather than a continuously-rewritten single profile, so growth is structurally bounded and a bad write can never corrupt prior history. Default no-op protocol-extension implementations keep every existing `WardrobeRepository` test double compiling unchanged.
+6. **`Features/DailyAssistant/DailyAssistantViewModel.swift`**: both `resolveOutfits` and `resolveProspectivePurchase` now fetch the last 3 summaries to pass into `recommendOutfits`, and best-effort persist `response.sessionSummary` (via `try?`, never blocking/failing the turn) whenever the LLM populated it.
+
+### Verification
+- iOS: `xcodebuild ... -sdk iphonesimulator clean build` (tests skipped per CLAUDE.md §2).
+- Manual: run two Daily Assistant sessions back to back on simulator, confirm the second session's prompt log shows the first session's summary injected.
+
 ## 2026-07-25 — Feature (C1+C2 of monetization plan): First-run onboarding + Outfit-of-the-Day daily hook
 
 ### Problem

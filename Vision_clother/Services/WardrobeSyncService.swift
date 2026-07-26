@@ -78,6 +78,8 @@ struct PulledWardrobeDelta {
     var wornLogEntries: [PulledChange<WornLogEntryDTO>] = []
     /// Anti-Repetition — see `Models/ItemPairBan.swift`.
     var itemPairBans: [PulledChange<ItemPairBanDTO>] = []
+    /// Compressed cross-session memory — see `Models/SessionSummary.swift`.
+    var sessionSummaries: [PulledChange<SessionSummaryDTO>] = []
     var userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>?
     var visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>?
     /// Captured before this pull's queries ran — the candidate new
@@ -245,6 +247,8 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
             data = try Firestore.Encoder().encode(decoder.decode(WornLogEntryDTO.self, from: payload))
         case .itemPairBan:
             data = try Firestore.Encoder().encode(decoder.decode(ItemPairBanDTO.self, from: payload))
+        case .sessionSummary:
+            data = try Firestore.Encoder().encode(decoder.decode(SessionSummaryDTO.self, from: payload))
         case .swipeEvent:
             // Legacy no-op — never queued (see `SyncOutboxWorker.drainNow`,
             // which drains any pre-existing `.swipeEvent` row locally
@@ -268,6 +272,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         case .recommendationAnalyticsSnapshot: return "recommendationAnalyticsSnapshots"
         case .wornLogEntry: return "wornLogEntries"
         case .itemPairBan: return "itemPairBans"
+        case .sessionSummary: return "sessionSummaries"
         // Single-row meta docs are never deleted; `swipeEvent` is legacy-only
         // (see `Models/SyncMetadata.swift`) and never pushed/deleted either.
         case .userStyleProfile, .visualPreferenceState, .swipeEvent: return nil
@@ -291,6 +296,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
         async let recommendationAnalyticsSnapshots: [PulledChange<RecommendationAnalyticsSnapshotDTO>] = Self.fetchCollection(usersRef.collection("recommendationAnalyticsSnapshots"), since: since)
         async let wornLogEntries: [PulledChange<WornLogEntryDTO>] = Self.fetchCollection(usersRef.collection("wornLogEntries"), since: since)
         async let itemPairBans: [PulledChange<ItemPairBanDTO>] = Self.fetchCollection(usersRef.collection("itemPairBans"), since: since)
+        async let sessionSummaries: [PulledChange<SessionSummaryDTO>] = Self.fetchCollection(usersRef.collection("sessionSummaries"), since: since)
         async let userStyleProfile: RemoteMetaUpdate<UserStyleProfileDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("styleProfile"), since: since)
         async let visualPreferenceState: RemoteMetaUpdate<VisualPreferenceStateDTO>? = Self.fetchMetaDocIfChanged(usersRef.collection("meta").document("visualPreferenceState"), since: since)
 
@@ -306,6 +312,7 @@ final class FirestoreWardrobeSyncService: WardrobeSyncService {
                 recommendationAnalyticsSnapshots: try await recommendationAnalyticsSnapshots,
                 wornLogEntries: try await wornLogEntries,
                 itemPairBans: try await itemPairBans,
+                sessionSummaries: try await sessionSummaries,
                 userStyleProfile: try await userStyleProfile,
                 visualPreferenceState: try await visualPreferenceState,
                 queryStartTime: queryStartTime

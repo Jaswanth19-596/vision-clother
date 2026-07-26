@@ -305,6 +305,21 @@ struct ItemRatingDTO: Codable {
     }
 }
 
+struct SessionSummaryDTO: Codable {
+    var id: String
+    var summaryText: String
+    var createdAt: Date
+
+    static func from(_ model: SessionSummary) -> SessionSummaryDTO {
+        SessionSummaryDTO(id: model.id.uuidString, summaryText: model.summaryText, createdAt: model.createdAt)
+    }
+
+    func toModel() -> SessionSummary? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        return SessionSummary(id: uuid, summaryText: summaryText, createdAt: createdAt)
+    }
+}
+
 struct SavedCombinationDTO: Codable {
     var id: String
     var imageAssetName: String

@@ -226,6 +226,18 @@ protocol WardrobeRepository {
     /// needs no further protocol/migration change.
     func removePairBan(id: UUID) throws
 
+    /// Compressed cross-session memory (Hermes-inspired session-summary
+    /// feature, see docs/decisions/resolved-v1.md) — persists one
+    /// `SessionSummary` row and prunes down to the last few (see
+    /// `pruneOldSessionSummaries`'s doc comment on `SwiftDataWardrobeRepository`).
+    func recordSessionSummary(text: String) throws
+    /// Newest first, capped at `limit` — feeds `Domain/StylistBrain.swift`'s
+    /// recommendation-prompt injection.
+    func fetchRecentSessionSummaries(limit: Int) throws -> [SessionSummary]
+    /// Every stored row, unfiltered — bootstrap sync push
+    /// (`Data/WardrobeSyncCoordinator.swift`'s `pushEverythingLocal`) only.
+    func fetchAllSessionSummaries() throws -> [SessionSummary]
+
     /// Wardrobe/Insights Q&A (2026-07-20): all-time `ItemRating`/`OutfitFeedback`
     /// rows, feeding `Domain/InsightsSummaryBuilder.swift` the same inputs
     /// `Features/Insights/StyleView.swift`'s `@Query`s already give the
@@ -247,6 +259,9 @@ extension WardrobeRepository {
     func fetchAllItemRatings() throws -> [ItemRating] { [] }
     func fetchAllOutfitFeedback() throws -> [OutfitFeedback] { [] }
     func deleteWornLogEntry(id: UUID) throws {}
+    func recordSessionSummary(text: String) throws {}
+    func fetchRecentSessionSummaries(limit: Int) throws -> [SessionSummary] { [] }
+    func fetchAllSessionSummaries() throws -> [SessionSummary] { [] }
 }
 
 @MainActor
@@ -1161,5 +1176,46 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         guard let existing = try modelContext.fetch(descriptor).first else { return }
         modelContext.delete(existing)
         try modelContext.save()
+    }
+
+    // MARK: - Compressed cross-session memory (Models/SessionSummary.swift)
+
+    func recordSessionSummary(text: String) throws {
+        let summary = SessionSummary(summaryText: text)
+        modelContext.insert(summary)
+        // Bare `modelContext.save()`, not `saveAndMarkMutated()` — same
+        // reasoning as `recordPairBan`/`logWorn`: `SessionSummary` isn't read
+        // by `fetchInventory()` or `fetchFeedbackHistory()`, the two caches
+        // `WardrobeMutationTracker` invalidation protects.
+        try modelContext.save()
+        try pruneOldSessionSummaries()
+        AppLog.info(.recommendation, "[SessionSummary] persisted id=\(summary.id) length=\(summary.summaryText.count)")
+    }
+
+    func fetchRecentSessionSummaries(limit: Int) throws -> [SessionSummary] {
+        var descriptor = FetchDescriptor<SessionSummary>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor)
+    }
+
+    func fetchAllSessionSummaries() throws -> [SessionSummary] {
+        try modelContext.fetch(FetchDescriptor<SessionSummary>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))
+    }
+
+    /// Rolling-buffer retention (see the plan's "Risk: context drift over
+    /// many sessions" note) — deliberately a hard count cap, not a
+    /// continuously-rewritten single profile: growth is structurally
+    /// bounded regardless of how many sessions a user has, and a bad write
+    /// can never corrupt prior history since each row is independent.
+    private static let maxStoredSessionSummaries = 5
+
+    private func pruneOldSessionSummaries() throws {
+        let all = try fetchAllSessionSummaries()
+        guard all.count > Self.maxStoredSessionSummaries else { return }
+        for stale in all.dropFirst(Self.maxStoredSessionSummaries) {
+            modelContext.delete(stale)
+        }
+        try modelContext.save()
+        AppLog.info(.recommendation, "[SessionSummary] pruned to \(Self.maxStoredSessionSummaries)")
     }
 }

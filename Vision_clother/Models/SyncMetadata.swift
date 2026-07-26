@@ -63,6 +63,8 @@ enum SyncEntityType: String, Codable {
     case wornLogEntry
     /// Anti-Repetition — see `Models/ItemPairBan.swift`.
     case itemPairBan
+    /// Compressed cross-session memory — see `Models/SessionSummary.swift`.
+    case sessionSummary
 }
 
 @Model

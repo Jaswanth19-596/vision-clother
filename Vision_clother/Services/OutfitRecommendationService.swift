@@ -36,6 +36,10 @@ protocol OutfitRecommendationService {
     /// case the request is identical to before. Soft guidance only: every id
     /// still passes through `Domain/OutfitRecommendationValidator.swift`
     /// unchanged, so a referenced item is never force-included past validation.
+    /// `recentSessionSummaries` is compressed cross-session memory
+    /// (`Models/SessionSummary.swift`) — the last 2-3 prior conversations'
+    /// LLM-written recaps, newest first, already fetched by the caller.
+    /// Empty when there's no prior history yet.
     func recommendOutfits(
         conversationHistory: [ConversationTurn],
         isFinalTurn: Bool,
@@ -45,7 +49,8 @@ protocol OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
-        referencedItemsText: String
+        referencedItemsText: String,
+        recentSessionSummaries: [String]
     ) async throws -> OutfitRecommendationResponse
 }
 
@@ -102,7 +107,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
-        referencedItemsText: String
+        referencedItemsText: String,
+        recentSessionSummaries: [String]
     ) async throws -> OutfitRecommendationResponse {
         do {
             return try await PerfLog.time("recommendation.structuredAttempt") {
@@ -110,7 +116,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
                     recentWornHistory: recentWornHistory, pairBans: pairBans,
-                    referencedItemsText: referencedItemsText, model: model, useStructuredOutput: true
+                    referencedItemsText: referencedItemsText, recentSessionSummaries: recentSessionSummaries,
+                    model: model, useStructuredOutput: true
                 )
             }
         } catch OutfitRecommendationError.emptyChoices, OutfitRecommendationError.decoding, OutfitRecommendationError.httpStatus(400) {
@@ -128,7 +135,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
                     recentWornHistory: recentWornHistory, pairBans: pairBans,
-                    referencedItemsText: referencedItemsText,
+                    referencedItemsText: referencedItemsText, recentSessionSummaries: recentSessionSummaries,
                     model: ModelConfig.textToTextFallback, useStructuredOutput: false
                 )
             }
@@ -145,6 +152,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
         referencedItemsText: String,
+        recentSessionSummaries: [String],
         model: String,
         useStructuredOutput: Bool
     ) async throws -> OutfitRecommendationResponse {
@@ -176,6 +184,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
             recentWornHistory: recentWornHistory,
             pairBans: pairBans,
             referencedItemsText: referencedItemsText,
+            recentSessionSummaries: recentSessionSummaries,
             useStructuredOutput: useStructuredOutput
         )
 
@@ -239,12 +248,14 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
         referencedItemsText: String,
+        recentSessionSummaries: [String],
         useStructuredOutput: Bool
     ) throws -> Data {
         let catalogData = try JSONEncoder().encode(catalog)
         let catalogText = String(decoding: catalogData, as: UTF8.self)
         let recentWornHistoryText = RecentOutfitHistoryBuilder.promptText(for: recentWornHistory)
         let bannedPairsText = RecentOutfitHistoryBuilder.banPromptText(pairBans, catalog: catalog)
+        let recentSessionSummariesText = recentSessionSummaries.map { "- \($0)" }.joined(separator: "\n")
 
         var systemPrompt = StylistBrain.DynamicPromptComposer.composeSystemPrompt(
             profile: profile,
@@ -278,7 +289,8 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                     catalogDataText: catalogText,
                     recentWornHistoryText: recentWornHistoryText,
                     bannedPairsText: bannedPairsText,
-                    referencedItemsText: referencedItemsText
+                    referencedItemsText: referencedItemsText,
+                    recentSessionSummariesText: recentSessionSummariesText
                 )
                 return ["role": turn.role.rawValue, "content": Self.cacheableContent(content)]
             }
@@ -443,8 +455,12 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
                 "maxItems": 4,
                 "description": "2-4 short, Title Case quick-reply suggestions (e.g. \"Job Interview\") for follow_up_text. Empty array when there's nothing to suggest.",
             ],
+            "session_summary": [
+                "type": ["string", "null"],
+                "description": "1-2 sentence recap of this conversation's occasion plus preferred/rejected attributes (e.g. \"Outdoor summer wedding. Preferred: linen, navy/beige. Rejected: black suits.\"), based on the full conversation so far. Populate only when intent_clear is true and outfits is non-empty this turn — null on clarification/redirect turns.",
+            ],
         ],
-        "required": ["outfits", "resolved_constraints", "intent_clear", "follow_up_text", "suggested_chips"],
+        "required": ["outfits", "resolved_constraints", "intent_clear", "follow_up_text", "suggested_chips", "session_summary"],
         "additionalProperties": false,
     ]
 
@@ -556,7 +572,8 @@ struct MockOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
-        referencedItemsText: String = ""
+        referencedItemsText: String = "",
+        recentSessionSummaries: [String] = []
     ) async throws -> OutfitRecommendationResponse {
         // Prospective Purchase Evaluation (2026-07-15): prefer the flagged
         // entry for its own slot over an arbitrary first match, so the
@@ -623,7 +640,8 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
         history: FeedbackHistory,
         recentWornHistory: RecentOutfitHistoryBuilder.Result,
         pairBans: [ItemPairBan],
-        referencedItemsText: String
+        referencedItemsText: String,
+        recentSessionSummaries: [String]
     ) async throws -> OutfitRecommendationResponse {
         try await current.recommendOutfits(
             conversationHistory: conversationHistory,
@@ -634,7 +652,8 @@ final class AuthGatedOutfitRecommendationService: OutfitRecommendationService {
             history: history,
             recentWornHistory: recentWornHistory,
             pairBans: pairBans,
-            referencedItemsText: referencedItemsText
+            referencedItemsText: referencedItemsText,
+            recentSessionSummaries: recentSessionSummaries
         )
     }
 }

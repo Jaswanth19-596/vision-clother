@@ -44,7 +44,8 @@ Rules:
 
 - `Models/WardrobeItem.swift`, `Models/FeedbackEvent.swift`, `Models/SavedCombination.swift`, `Models/UserStyleProfile.swift` — `@Model` classes.
 - `Data/WardrobeRepository.swift` — the `WardrobeRepository` protocol (marked `@MainActor` to match `SwiftDataWardrobeRepository`'s isolation) and its SwiftData-backed implementation. Every view model takes a `WardrobeRepository`, never a concrete `ModelContext`, so the storage technology could change later without touching `Domain/` or `Features/`.
-- `Vision_clotherApp.swift` registers the model container for `WardrobeItem`, `OutfitFeedback`, `ItemFeedback`, `PairFeedback`, `SavedCombination`, `ItemRating`, `UserStyleProfile`.
+- `Vision_clotherApp.swift` registers the model container for `WardrobeItem`, `OutfitFeedback`, `ItemFeedback`, `PairFeedback`, `SavedCombination`, `ItemRating`, `UserStyleProfile`, `SessionSummary`.
+- `Models/SessionSummary.swift` is compressed cross-session memory (session-summary feature, `docs/decisions/resolved-v1.md`) — a short LLM-written recap of one Daily Assistant conversation, piggybacked onto the recommendation call's existing structured response rather than a separate call. Bounded rolling retention (`Data/WardrobeRepository.swift`'s `pruneOldSessionSummaries`, last 5 kept), last 2-3 injected into `Domain/StylistBrain.swift`'s recommendation prompt only.
 - `UserStyleProfile` is deliberately a single-row SwiftData model (queried, upserted via `WardrobeRepository.saveUserProfile`) rather than a disk file like `UserPortraitStorage` — it's structured data the Profile tab renders, with no image blob to store.
 
 ### Cloud Sync (docs/decisions/resolved-v1.md's "Cloud Sync" section)
@@ -54,7 +55,7 @@ Local SwiftData is a per-account cache/mirror, not the sole source of truth, onc
 - `Data/SyncingWardrobeRepository.swift` decorates `WardrobeRepository`, queuing a durable outbox write (`Models/SyncMetadata.swift`, drained by `Data/SyncOutboxWorker.swift`) alongside every local mutation. Every real call site constructs this, not `SwiftDataWardrobeRepository` directly.
 - `Data/WardrobeSyncCoordinator.swift` reacts to `AuthService.shared.$uid` changes — bootstrap (push-local-up for a brand-new account, or wipe-and-pull for a returning one) and the foreground delta-reconcile safety net.
 - `Data/Sync/FirestoreDTOs.swift` / `Services/WardrobeSyncService.swift` are the Firestore/Storage transport — direct client SDK calls gated by `backend/firestore.rules`/`backend/storage.rules`, no backend involvement.
-- 9 of the 11 `@Model` types sync; `WardrobeItemEmbedding` and `RecommendationImpressionEvent` stay local-only (see the Cloud Sync decision doc for why).
+- 10 of the 12 `@Model` types sync, including `SessionSummary`; `WardrobeItemEmbedding` and `RecommendationImpressionEvent` stay local-only (see the Cloud Sync decision doc for why).
 
 ## Networking (CLAUDE.md guardrails #1 and #2)
 

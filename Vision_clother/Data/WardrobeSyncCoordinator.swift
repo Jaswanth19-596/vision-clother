@@ -332,7 +332,7 @@ final class WardrobeSyncCoordinator {
             SwipeAttributeEvent.self,
             VisualPreferenceState.self, WardrobeItemEmbedding.self, RecommendationImpressionEvent.self,
             AnalyticsSnapshot.self, RecommendationAnalyticsSnapshot.self, WornLogEntry.self,
-            ItemPairBan.self, SyncMetadata.self,
+            ItemPairBan.self, SessionSummary.self, SyncMetadata.self,
         ]
         for type in syncedAndLocalOnlyTypes {
             try? modelContext.delete(model: type)
@@ -431,6 +431,9 @@ final class WardrobeSyncCoordinator {
         }
         for ban in (try? repository.fetchPairBans()) ?? [] {
             markDirtyForBootstrap(.itemPairBan, entityID: ban.id, dto: ItemPairBanDTO.from(ban))
+        }
+        for summary in (try? repository.fetchAllSessionSummaries()) ?? [] {
+            markDirtyForBootstrap(.sessionSummary, entityID: summary.id, dto: SessionSummaryDTO.from(summary))
         }
         try? modelContext.save()
 
@@ -563,6 +566,7 @@ final class WardrobeSyncCoordinator {
         await applyBatched(delta.recommendationAnalyticsSnapshots) { applyRecommendationAnalyticsSnapshotChange($0) }
         await applyBatched(delta.wornLogEntries) { applyWornLogEntryChange($0) }
         await applyBatched(delta.itemPairBans) { applyItemPairBanChange($0) }
+        await applyBatched(delta.sessionSummaries) { applySessionSummaryChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -796,6 +800,22 @@ final class WardrobeSyncCoordinator {
         if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
         if let dto, let model = dto.toModel() { modelContext.insert(model) }
         upsertCleanSyncMetadata(entityType: .itemPairBan, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
+    /// Compressed cross-session memory — see `Models/SessionSummary.swift`.
+    /// No local-dirty concept applies (rows are never edited after creation,
+    /// only pruned — `Data/WardrobeRepository.swift`'s
+    /// `pruneOldSessionSummaries`), but the standard guard is kept for
+    /// consistency with every other apply method here.
+    private func applySessionSummaryChange(_ change: PulledChange<SessionSummaryDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.sessionSummary, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<SessionSummary>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto, let model = dto.toModel() { modelContext.insert(model) }
+        upsertCleanSyncMetadata(entityType: .sessionSummary, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
     }
 
     /// Splits a `PulledChange` into its common parts — `dto` is `nil` for
@@ -1033,3 +1053,4 @@ extension AnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id 
 extension RecommendationAnalyticsSnapshotDTO: IdentifiableDTOField { var idValue: String { id } }
 extension WornLogEntryDTO: IdentifiableDTOField { var idValue: String { id } }
 extension ItemPairBanDTO: IdentifiableDTOField { var idValue: String { id } }
+extension SessionSummaryDTO: IdentifiableDTOField { var idValue: String { id } }

@@ -27,13 +27,11 @@ final class WardrobeInsightsViewModel {
     private(set) var tasteSnapshot: TasteInsightsSnapshot?
     private(set) var isLoadingConfig = false
 
-    private let repository: WardrobeRepository
     private let configService: AnalyticsConfigService
     private var configTask: Task<Void, Never>?
     private var recomputeTask: Task<Void, Never>?
 
-    init(repository: WardrobeRepository, configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
-        self.repository = repository
+    init(configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
         self.configService = configService
     }
 

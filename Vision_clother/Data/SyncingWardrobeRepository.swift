@@ -362,6 +362,32 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         markDeleted(.itemPairBan, entityID: id)
     }
 
+    // MARK: - Compressed cross-session memory (Models/SessionSummary.swift)
+
+    func recordSessionSummary(text: String) throws {
+        try underlying.recordSessionSummary(text: text)
+        // Always inserts a fresh row (no dedupe, unlike `recordPairBan`), so
+        // the newest-first head is unambiguously the one just written —
+        // same "recover the minted id" technique `recordPairBan` uses above.
+        // A prune inside `underlying.recordSessionSummary` may have deleted
+        // an older row in the same call; that row's `SyncMetadata` is left
+        // for `SyncOutboxWorker` to eventually retry-and-no-op against a
+        // missing doc, not explicitly tombstoned here — acceptable since
+        // pruned rows are low-value history, not user-authored data.
+        if let summary = try underlying.fetchRecentSessionSummaries(limit: 1).first {
+            markDirty(.sessionSummary, entityID: summary.id, dto: SessionSummaryDTO.from(summary))
+            AppLog.info(.sync, "[SessionSummary] queued for sync id=\(summary.id)")
+        }
+    }
+
+    func fetchRecentSessionSummaries(limit: Int) throws -> [SessionSummary] {
+        try underlying.fetchRecentSessionSummaries(limit: limit)
+    }
+
+    func fetchAllSessionSummaries() throws -> [SessionSummary] {
+        try underlying.fetchAllSessionSummaries()
+    }
+
     // MARK: - Outbox bookkeeping
 
     private func markDirty(_ type: SyncEntityType, entityID: UUID, dto: some Encodable) {

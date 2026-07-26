@@ -723,6 +723,10 @@ final class DailyAssistantViewModel {
 
             let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
             let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: inventory, history: history)
+            // Compressed cross-session memory (Hermes-inspired session-summary
+            // feature, see docs/decisions/resolved-v1.md) — last 2-3 prior
+            // conversations' recaps, newest first.
+            let recentSessionSummaries = (try? repository.fetchRecentSessionSummaries(limit: 3))?.map(\.summaryText) ?? []
 
             loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
@@ -730,8 +734,15 @@ final class DailyAssistantViewModel {
                     conversationHistory: conversationHistory, isFinalTurn: isFinalTurn,
                     catalog: catalog, profile: profile, weather: weather, history: history,
                     recentWornHistory: recentWornHistory, pairBans: pairBans,
-                    referencedItemsText: referencedText
+                    referencedItemsText: referencedText, recentSessionSummaries: recentSessionSummaries
                 )
+            }
+            // Best-effort persist — never blocks or fails this turn if the
+            // write fails; only populated by the LLM on a real final turn
+            // with actual outfits (see StylistBrain's OUTPUT FORMAT
+            // instruction and the schema's `session_summary` description).
+            if let sessionSummary = response.sessionSummary, !sessionSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try? repository.recordSessionSummary(text: sessionSummary)
             }
             // A call that reaches this point already cleared the server's
             // creditGate("RECOMMENDATION") — see backend/functions/src/
@@ -936,6 +947,7 @@ final class DailyAssistantViewModel {
             }
 
             let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
+            let recentSessionSummaries = (try? repository.fetchRecentSessionSummaries(limit: 3))?.map(\.summaryText) ?? []
 
             loadingStage = .consultingStylist
             let response = try await PerfLog.time("recommendation.call") {
@@ -944,10 +956,13 @@ final class DailyAssistantViewModel {
                     isFinalTurn: true,
                     catalog: catalog, profile: profile, weather: weather, history: history,
                     recentWornHistory: recentWornHistory, pairBans: pairBans,
-                    referencedItemsText: ""
+                    referencedItemsText: "", recentSessionSummaries: recentSessionSummaries
                 )
             }
             usageTracker.recordRecommendationUsed()
+            if let sessionSummary = response.sessionSummary, !sessionSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try? repository.recordSessionSummary(text: sessionSummary)
+            }
 
             // Same re-fetch-don't-reuse fix as `resolveOutfits` (see its
             // comment) — the LLM call above is a long `await` that a

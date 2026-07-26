@@ -352,6 +352,7 @@ enum StylistBrain {
             - rationale.summary: one short sentence, 100 characters or fewer, stating why this outfit is correct. Do not write multiple sentences or a paragraph.
             - rationale.confidence: an integer from 0 to 100 — your calibrated confidence that this is a strong match. Lower it when a tier required a compromise, the scenario was ambiguous, or you substituted for a missing ideal item; don't default to a high number out of habit.
             - intent_clear, follow_up_text, suggested_chips: see CLARIFICATION PROTOCOL above.
+            - session_summary: only when intent_clear is true and outfits is non-empty this turn, write a 1-2 sentence recap of this conversation's occasion plus preferred/rejected attributes, based on the whole conversation so far (e.g. "Outdoor summer wedding. Preferred: linen, navy/beige. Rejected: black suits."). Null on every clarification/redirect turn.
             """
 
             return prompt
@@ -376,7 +377,8 @@ enum StylistBrain {
             catalogDataText: String,
             recentWornHistoryText: String? = nil,
             bannedPairsText: String? = nil,
-            referencedItemsText: String = ""
+            referencedItemsText: String = "",
+            recentSessionSummariesText: String? = nil
         ) -> String {
             var content = "Scenario: \(scenarioText)"
 
@@ -401,6 +403,16 @@ enum StylistBrain {
             }
             if let bannedPairsText, !bannedPairsText.isEmpty {
                 content += "\n\nBanned Pairs:\n\(bannedPairsText)"
+            }
+
+            // Compressed cross-session memory (Hermes-inspired session-summary
+            // feature, see docs/decisions/resolved-v1.md): the last 2-3
+            // `SessionSummary` rows, newest first, so recent scenarios/taste
+            // signals are weighted over stale ones. Purely additional
+            // context — never a substitute for resolving the current
+            // scenario per the Clarification Protocol above.
+            if let recentSessionSummariesText, !recentSessionSummariesText.isEmpty {
+                content += "\n\nRecent Session History (most recent first — context only, not a directive):\n\(recentSessionSummariesText)"
             }
 
             content += "\n\nWardrobe Catalog (JSON Array - pick ONLY from these ids):\n\(catalogDataText)"
