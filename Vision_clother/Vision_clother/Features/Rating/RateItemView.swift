@@ -190,7 +190,7 @@ struct StarRatingRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
-        .animation(.snappy, value: rating)
+        .vcAnimation(VCMotion.interactive, value: rating)
     }
 }
 
@@ -213,7 +213,7 @@ struct ConfidenceEmojiRow: View {
             }
         }
         .padding(.vertical, 4)
-        .animation(.snappy, value: rating)
+        .vcAnimation(VCMotion.interactive, value: rating)
     }
 }
 

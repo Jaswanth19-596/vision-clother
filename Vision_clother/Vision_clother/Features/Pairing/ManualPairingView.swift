@@ -287,7 +287,7 @@ private struct PairingItemCell: View {
                     .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
             }
             .scaleEffect(isSelected ? 1.04 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+            .vcAnimation(VCMotion.interactive, value: isSelected)
     }
 
     @ViewBuilder

@@ -25,6 +25,7 @@ struct ItemDetailView: View {
     /// Ticks once per completed delete — drives the delete haptic (a
     /// critical-action site) without firing on unrelated state changes.
     @State private var didDeleteTick = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NavigationStack {
@@ -297,7 +298,7 @@ struct ItemDetailView: View {
                     nextSelectionID = nil
                 }
 
-                withAnimation {
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
                     items.remove(at: index)
                     didDeleteTick += 1
                     if let nextSelectionID {

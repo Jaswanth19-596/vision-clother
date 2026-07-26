@@ -30,13 +30,13 @@ struct CalibrationRingView: View {
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
-                .animation(.spring(response: 0.6, dampingFraction: 0.8), value: progress)
+                .vcAnimation(VCMotion.entrance, value: progress)
 
             if isTrained {
                 Image(systemName: "checkmark")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.green)
-                    .transition(.scale.combined(with: .opacity))
+                    .transition(VCTransition.pop)
             } else {
                 Text("\(Int((progress * 100).rounded()))%")
                     .font(.caption2.weight(.semibold))
@@ -45,7 +45,7 @@ struct CalibrationRingView: View {
             }
         }
         .frame(width: diameter, height: diameter)
-        .animation(.spring(response: 0.5, dampingFraction: 0.7), value: isTrained)
+        .vcAnimation(VCMotion.entrance, value: isTrained)
     }
 }
 
@@ -91,10 +91,10 @@ struct DriftFeedbackPill: View {
                     .padding(.horizontal, VCSpacing.md)
                     .padding(.vertical, VCSpacing.xs)
                     .background(.black.opacity(0.75), in: Capsule())
-                    .transition(.scale.combined(with: .opacity))
+                    .transition(VCTransition.pop)
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isVisible)
+        .vcAnimation(VCMotion.standard, value: isVisible)
     }
 
     private var formattedAmount: String {

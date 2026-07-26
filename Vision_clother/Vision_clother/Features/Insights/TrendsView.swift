@@ -23,6 +23,7 @@ struct TrendsView: View {
 
     @State private var viewModel = TrendsViewModel()
     @State private var timeRange: AnalyticsTimeRange = .sixMonths
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -47,6 +48,7 @@ struct TrendsView: View {
                         }
                     }
                     .padding(VCSpacing.lg)
+                    .vcAnimation(VCMotion.contentFade, value: timeRange)
                 }
             }
         }
@@ -57,7 +59,11 @@ struct TrendsView: View {
             viewModel.refreshTaste(repository: SyncingWardrobeRepository(modelContext: modelContext))
             recompute()
         }
-        .onChange(of: timeRange) { recompute() }
+        .onChange(of: timeRange) {
+            // See OverviewView — keeps the trend lines interpolating rather
+            // than redrawing instantly on a new window.
+            withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { recompute() }
+        }
         .onChange(of: inventory.count) { recompute() }
         .onChange(of: itemRatings.count) { recompute() }
         .onChange(of: outfitFeedbacks.count) { recompute() }

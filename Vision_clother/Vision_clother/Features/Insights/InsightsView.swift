@@ -19,6 +19,11 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Position in the segmented control — drives which side the incoming
+    /// sub-tab slides in from (`VCTransition.lateral`), so the content moves
+    /// the same direction the user's tap did.
+    var index: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+
     var label: String {
         switch self {
         case .overview: return "Overview"
@@ -52,11 +57,39 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
 
 struct InsightsView: View {
     @State private var section: InsightsSection = .overview
+    /// Which way the last section change moved, so the incoming sub-tab
+    /// enters from the side the user tapped toward. Set synchronously in
+    /// `sectionBinding` — an `.onChange` would resolve a render too late,
+    /// after the transition has already been committed with the stale value.
+    @State private var isForward = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Drives the section change through an explicit `withAnimation` rather
+    /// than a value-keyed `.animation` on `content`'s `Group`. The previous
+    /// arrangement (`.transition(.opacity)` + `.animation(contentFade, value:
+    /// section)` both on the `Group`) produced no visible motion on device;
+    /// `withAnimation` at the mutation site removes any question about whether
+    /// the transition has an animation in scope when the branch swaps. The
+    /// transition itself also now carries lateral movement instead of opacity
+    /// alone, which between two sub-views sharing a background read as an
+    /// instant cut at any duration.
+    private var sectionBinding: Binding<InsightsSection> {
+        Binding(
+            get: { section },
+            set: { newValue in
+                guard newValue != section else { return }
+                isForward = newValue.index > section.index
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                    section = newValue
+                }
+            }
+        )
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Section", selection: $section) {
+                Picker("Section", selection: sectionBinding) {
                     ForEach(InsightsSection.allCases) { section in
                         Text(section.label).tag(section)
                     }
@@ -68,10 +101,15 @@ struct InsightsView: View {
                 Text(section.description)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
                     .padding(.horizontal, VCSpacing.lg)
                     .padding(.top, 4)
 
                 content
+                    // The lateral slide moves a full-width sub-view; without
+                    // this the outgoing/incoming halves bleed past the screen
+                    // edge and briefly widen the layout.
+                    .clipped()
             }
             .navigationTitle("Insights")
             .navigationBarTitleDisplayMode(.inline)
@@ -85,18 +123,21 @@ struct InsightsView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch section {
-        case .overview:
-            OverviewView()
-        case .style:
-            StyleView()
-        case .trends:
-            TrendsView()
-        case .wardrobe:
-            WardrobeInsightsView()
-        case .discover:
-            TasteInsightsView()
+        Group {
+            switch section {
+            case .overview:
+                OverviewView()
+            case .style:
+                StyleView()
+            case .trends:
+                TrendsView()
+            case .wardrobe:
+                WardrobeInsightsView()
+            case .discover:
+                TasteInsightsView()
+            }
         }
+        .transition(VCTransition.lateral(forward: isForward))
     }
 }
 

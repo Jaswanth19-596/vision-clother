@@ -41,6 +41,7 @@ struct OnboardingFlowView: View {
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var isAddItemPresented = false
     @State private var isCalibratePresented = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Step: Int, CaseIterable {
         case welcome, portrait, closet, ready
@@ -110,16 +111,24 @@ struct OnboardingFlowView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch step {
-        case .welcome: welcomeStep
-        case .portrait: portraitStep
-        case .closet: closetStep
-        case .ready: readyStep
+        Group {
+            switch step {
+            case .welcome: welcomeStep
+            case .portrait: portraitStep
+            case .closet: closetStep
+            case .ready: readyStep
+            }
         }
+        .id(step)
+        .transition(.asymmetric(
+            insertion: .move(edge: .trailing).combined(with: .opacity),
+            removal: .move(edge: .leading).combined(with: .opacity)
+        ))
     }
 
     private var welcomeStep: some View {
         stepScaffold(
+            stepIdentity: .welcome,
             icon: "sparkles",
             title: "Welcome to Vision Clother",
             subtitle: "Your AI stylist for the clothes you already own. Two quick steps and you're ready — a photo of you, and a few pieces from your closet."
@@ -130,19 +139,26 @@ struct OnboardingFlowView: View {
 
     private var portraitStep: some View {
         stepScaffold(
+            stepIdentity: .portrait,
             icon: "person.crop.square.badge.camera",
             title: "Add a photo of yourself",
             subtitle: "Used only to render outfits on you when you tap “try it on.” You can retake or swap it anytime in Profile."
         ) {
             VStack(spacing: 12) {
-                if profileViewModel?.hasPortrait == true {
-                    Label("Photo added", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else if profileViewModel?.isValidatingPhoto == true {
-                    Label("Checking your photo…", systemImage: "hourglass")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                Group {
+                    if profileViewModel?.hasPortrait == true {
+                        Label("Photo added", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .transition(.scale.combined(with: .opacity))
+                    } else if profileViewModel?.isValidatingPhoto == true {
+                        Label("Checking your photo…", systemImage: "hourglass")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .transition(.scale.combined(with: .opacity))
+                    }
                 }
+                .vcAnimation(VCMotion.standard, value: profileViewModel?.hasPortrait)
+                .vcAnimation(VCMotion.standard, value: profileViewModel?.isValidatingPhoto)
 
                 HStack {
                     Button { isCameraPresented = true } label: {
@@ -173,6 +189,7 @@ struct OnboardingFlowView: View {
 
     private var closetStep: some View {
         stepScaffold(
+            stepIdentity: .closet,
             icon: "tshirt",
             title: "Add your clothes",
             subtitle: "Snap or pick a few pieces — we’ll tag each one automatically in the background. The more you add, the better your outfits get."
@@ -181,17 +198,20 @@ struct OnboardingFlowView: View {
                 if realItemCount > 0 {
                     Label("\(realItemCount) item\(realItemCount == 1 ? "" : "s") added", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
+                        .transition(.scale.combined(with: .opacity))
                 }
                 Button { isAddItemPresented = true } label: {
                     Label("Add Clothes", systemImage: "plus")
                 }
                 .buttonStyle(PrimaryButtonStyle())
             }
+            .vcAnimation(VCMotion.standard, value: realItemCount)
         }
     }
 
     private var readyStep: some View {
         stepScaffold(
+            stepIdentity: .ready,
             icon: "checkmark.seal",
             title: "You’re all set",
             subtitle: "Head to the Daily Assistant and ask for an outfit. Want sharper picks from the start? Take 30 seconds to calibrate your taste — optional."
@@ -205,7 +225,13 @@ struct OnboardingFlowView: View {
 
     // MARK: - Scaffold + footer
 
+    /// `stepIdentity` isn't read directly — it exists so each call site is
+    /// self-documenting about which `Step` it scaffolds. The actual
+    /// insertion animation comes from `content`'s `.id(step)`, which gives
+    /// this whole `VStack` (and thus every `vcStaggeredEntrance` child below)
+    /// a fresh identity on every step change, re-triggering the stagger.
     private func stepScaffold<Extra: View>(
+        stepIdentity: Step,
         icon: String,
         title: String,
         subtitle: String,
@@ -216,16 +242,20 @@ struct OnboardingFlowView: View {
             Image(systemName: icon)
                 .font(.system(size: 52))
                 .foregroundStyle(.tint)
+                .vcStaggeredEntrance(index: 0)
             Text(title)
                 .font(.title.bold())
                 .multilineTextAlignment(.center)
+                .vcStaggeredEntrance(index: 1)
             Text(subtitle)
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .vcStaggeredEntrance(index: 2)
             extra()
                 .padding(.top, 4)
+                .vcStaggeredEntrance(index: 3)
         }
         .frame(maxWidth: .infinity)
     }
@@ -246,8 +276,10 @@ struct OnboardingFlowView: View {
                 Circle()
                     .fill(s == step ? Color.accentColor : Color.secondary.opacity(0.3))
                     .frame(width: 7, height: 7)
+                    .scaleEffect(s == step ? 1.3 : 1.0)
             }
         }
+        .vcAnimation(VCMotion.standard, value: step)
     }
 
     private var primaryButtonTitle: String {
@@ -269,7 +301,7 @@ struct OnboardingFlowView: View {
 
     private func advance() {
         if let next = Step(rawValue: step.rawValue + 1) {
-            withAnimation { step = next }
+            withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { step = next }
         } else {
             onComplete()
         }

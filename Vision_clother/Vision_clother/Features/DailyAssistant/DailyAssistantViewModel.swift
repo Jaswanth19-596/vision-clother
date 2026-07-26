@@ -112,7 +112,7 @@ final class DailyAssistantViewModel {
 
     /// Which concrete step of `resolveOutfits`/`resolveProspectivePurchase`
     /// is currently in flight — drives the themed inline loading indicator
-    /// (`DailyAssistantView`'s `LoadingStageView`) that replaced the old
+    /// (`DesignSystem/VCLoadingStageView.swift`) that replaced the old
     /// generic "Thinking through your closet…" spinner. Set synchronously at
     /// each stage boundary from those two methods, which already run on this
     /// `@MainActor` class, so no extra hop is needed to make the UI observe
@@ -184,7 +184,7 @@ final class DailyAssistantViewModel {
 
     var prompt: String = ""
     var extractionState: ExtractionState = .idle
-    /// Read by `DailyAssistantView`'s `LoadingStageView` while a `.pending`
+    /// Read by `DailyAssistantView`'s `VCLoadingStageView` call site while a `.pending`
     /// round is showing — see `LoadingStage`.
     var loadingStage: LoadingStage = .fetchingWardrobe
     /// Full chat-timeline history for the conversation currently in

@@ -185,11 +185,19 @@ struct ClosetView: View {
                             ratingScore: ratingScores[item.id] ?? 50
                         )
                         .id("\(item.id)-\(syncCoordinator.photoGeneration(for: item.imageAssetName))")
+                        .transition(VCTransition.card)
+                        // Scroll-driven, so cells rise into place as the grid
+                        // moves rather than appearing fully formed at the
+                        // screen edge — this is what the grid actually reads
+                        // as "animated" in normal use, since `items.count`
+                        // below only changes on an add or a delete.
+                        .vcScrollEntrance()
                         .onTapGesture {
                             detailSelection = DetailSelection(id: item.id, items: allItems)
                         }
                     }
                 }
+                .vcAnimation(VCMotion.standard, value: items.count)
             }
         }
     }
@@ -237,6 +245,7 @@ private struct DetailSelection: Identifiable {
 
 private struct ClosetItemCell: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: WardrobeItem
     let ratingScore: Int
 
@@ -261,8 +270,10 @@ private struct ClosetItemCell: View {
                             .padding(4)
                             .background(Color.orange, in: Circle())
                             .padding(4)
+                            .transition(VCTransition.pop)
                     }
                 }
+                .vcAnimation(VCMotion.standard, value: item.inLaundry)
 
             if item.isGhostElement {
                 Text("Starter")
@@ -286,7 +297,9 @@ private struct ClosetItemCell: View {
 
     private func toggleLaundry() {
         let repository = SyncingWardrobeRepository(modelContext: modelContext)
-        item.inLaundry.toggle()
+        withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+            item.inLaundry.toggle()
+        }
         try? repository.update(item)
     }
 

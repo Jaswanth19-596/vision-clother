@@ -49,6 +49,7 @@ struct MentionPickerView: View {
                     }
                 }
             }
+            .vcAnimation(VCMotion.contentFade, value: candidates.isEmpty)
             .navigationTitle("Reference Items")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -95,6 +96,8 @@ struct MentionPickerView: View {
                 Image(systemName: isSelected(item) ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected(item) ? Color.accentColor : .secondary)
                     .imageScale(.large)
+                    .contentTransition(.symbolEffect(.replace))
+                    .vcAnimation(VCMotion.interactive, value: isSelected(item))
             }
             .contentShape(Rectangle())
         }

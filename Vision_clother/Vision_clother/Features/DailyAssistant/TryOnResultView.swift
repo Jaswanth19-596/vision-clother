@@ -32,6 +32,7 @@ struct TryOnResultView: View {
     /// the parent sheet isn't guaranteed, so this view model's own state is
     /// the source of truth for "have we saved *this* image".
     @State private var didSave = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Anti-Repetition, Action C — same permanent-lock convention as
     /// `didSave`.
     @State private var didMarkWorn = false
@@ -53,11 +54,11 @@ struct TryOnResultView: View {
                 EmptyView()
 
             case .submitting(let stage):
-                ProgressView(stage.label)
+                VCLoadingStageView(systemImage: "photo.badge.plus", label: stage.label)
                 cancelButton
 
             case .polling(let stage, let elapsedSeconds):
-                ProgressView("\(stage.label) \(Int(elapsedSeconds))s")
+                VCLoadingStageView(systemImage: "photo.badge.plus", label: "\(stage.label) \(Int(elapsedSeconds))s")
                 cancelButton
 
             case .succeeded(let imageURL):
@@ -77,74 +78,87 @@ struct TryOnResultView: View {
                 .clipShape(VCRadius.shape(VCRadius.card))
                 .vcShadow()
 
-                if didSave {
-                    HStack {
-                        Label("Saved", systemImage: "checkmark")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Done", action: onDone)
-                            .buttonStyle(PrimaryButtonStyle())
-                    }
-                    Button {
-                        isMarkingWorn = true
-                        Task {
-                            await onWearToday()
-                            didMarkWorn = true
-                            isMarkingWorn = false
-                        }
-                    } label: {
-                        if isMarkingWorn {
-                            ProgressView()
-                        } else if didMarkWorn {
-                            Label("Marked Worn Today", systemImage: "checkmark.circle.fill")
-                        } else {
-                            Label("Wear This Today", systemImage: "checkmark.circle")
-                        }
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(isMarkingWorn || didMarkWorn)
-                } else {
-                    Text("Did you like this outfit?").font(.headline)
-                    HStack {
-                        Button {
-                            isSaving = true
-                            Task {
-                                await onSave(false)
-                                didSave = true
-                                isSaving = false
-                                didSaveTick += 1
+                Group {
+                    if didSave {
+                        VStack(spacing: 20) {
+                            HStack {
+                                Label("Saved", systemImage: "checkmark")
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Done", action: onDone)
+                                    .buttonStyle(PrimaryButtonStyle())
                             }
-                        } label: {
-                            if isSaving {
-                                ProgressView()
-                            } else {
-                                Label("Dislike", systemImage: "hand.thumbsdown")
+                            Button {
+                                isMarkingWorn = true
+                                Task {
+                                    await onWearToday()
+                                    didMarkWorn = true
+                                    isMarkingWorn = false
+                                }
+                            } label: {
+                                Group {
+                                    if isMarkingWorn {
+                                        ProgressView()
+                                    } else if didMarkWorn {
+                                        Label("Marked Worn Today", systemImage: "checkmark.circle.fill")
+                                    } else {
+                                        Label("Wear This Today", systemImage: "checkmark.circle")
+                                    }
+                                }
+                                .vcAnimation(VCMotion.contentFade, value: isMarkingWorn)
+                                .vcAnimation(VCMotion.contentFade, value: didMarkWorn)
                             }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(isMarkingWorn || didMarkWorn)
                         }
-                        .buttonStyle(SecondaryButtonStyle())
-                        .disabled(isSaving)
+                        .transition(.opacity)
+                    } else {
+                        VStack(spacing: 20) {
+                            Text("Did you like this outfit?").font(.headline)
+                            HStack {
+                                Button {
+                                    isSaving = true
+                                    Task {
+                                        await onSave(false)
+                                        withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { didSave = true }
+                                        isSaving = false
+                                        didSaveTick += 1
+                                    }
+                                } label: {
+                                    if isSaving {
+                                        ProgressView()
+                                    } else {
+                                        Label("Dislike", systemImage: "hand.thumbsdown")
+                                    }
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .disabled(isSaving)
 
-                        Button {
-                            isSaving = true
-                            Task {
-                                await onSave(true)
-                                didSave = true
-                                isSaving = false
-                                didSaveTick += 1
+                                Button {
+                                    isSaving = true
+                                    Task {
+                                        await onSave(true)
+                                        withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { didSave = true }
+                                        isSaving = false
+                                        didSaveTick += 1
+                                    }
+                                } label: {
+                                    if isSaving {
+                                        ProgressView()
+                                    } else {
+                                        Label("Like", systemImage: "hand.thumbsup")
+                                    }
+                                }
+                                .buttonStyle(PrimaryButtonStyle())
+                                .disabled(isSaving)
                             }
-                        } label: {
-                            if isSaving {
-                                ProgressView()
-                            } else {
-                                Label("Like", systemImage: "hand.thumbsup")
-                            }
+                            Button("Done", action: onDone)
+                                .disabled(isSaving)
                         }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(isSaving)
+                        .transition(.opacity)
                     }
-                    Button("Done", action: onDone)
-                        .disabled(isSaving)
                 }
+                .vcAnimation(VCMotion.standard, value: didSave)
 
             case .failed(let error):
                 Label(error.errorDescription ?? "Something went wrong", systemImage: "exclamationmark.triangle")

@@ -69,6 +69,11 @@ struct JobQueuePanelView: View {
                     }
                 }
             }
+            // Jobs are appended, re-statused and removed while this panel is
+            // open — animating the container is what makes rows slide in and
+            // out of the `List` instead of the whole sheet re-laying out
+            // instantly under the user.
+            .vcAnimation(VCMotion.standard, value: jobQueueStore.jobs.count)
             .navigationTitle("Activity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -132,6 +137,10 @@ private struct JobRow: View {
 
                 trailingIcon
             }
+            // A row's status changes under the user while the panel is open
+            // (queued -> processing -> succeeded/failed); without this the
+            // spinner is replaced by the result glyph in a single hard cut.
+            .vcAnimation(VCMotion.contentFade, value: statusKey)
         }
         .buttonStyle(.plain)
         .disabled(job.status.isInFlight)
@@ -155,6 +164,17 @@ private struct JobRow: View {
         }
     }
 
+    /// `Job.Status` carries associated messages and isn't `Equatable`, so this
+    /// flattens it to a value `vcAnimation` can diff.
+    private var statusKey: String {
+        switch job.status {
+        case .queued: return "queued"
+        case .processing(let message): return "processing-\(message)"
+        case .succeeded: return "succeeded"
+        case .failed(let message): return "failed-\(message)"
+        }
+    }
+
     private var statusLabel: some View {
         Group {
             switch job.status {
@@ -167,6 +187,7 @@ private struct JobRow: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(2)
+        .contentTransition(.opacity)
     }
 
     @ViewBuilder
@@ -174,12 +195,15 @@ private struct JobRow: View {
         switch job.status {
         case .queued, .processing:
             ProgressView()
+                .transition(.opacity)
         case .succeeded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+                .transition(VCTransition.pop)
         case .failed:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.red)
+                .transition(VCTransition.pop)
         }
     }
 

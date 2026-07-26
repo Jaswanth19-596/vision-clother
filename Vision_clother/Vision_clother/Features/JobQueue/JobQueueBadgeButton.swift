@@ -28,8 +28,14 @@ struct JobQueueBadgeButton: View {
                         .padding(4)
                         .background(Circle().fill(.red))
                         .offset(x: 10, y: -10)
+                        // The count itself changes far more often than the
+                        // badge appears/disappears, so it gets its own numeric
+                        // roll rather than re-running the pop transition.
+                        .contentTransition(.numericText())
+                        .transition(VCTransition.pop)
                 }
             }
+            .vcAnimation(VCMotion.standard, value: jobQueueStore.activeJobCount)
         }
         .accessibilityLabel("Activity, \(jobQueueStore.activeJobCount) in progress")
     }

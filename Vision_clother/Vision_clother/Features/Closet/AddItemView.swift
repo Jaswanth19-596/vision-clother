@@ -142,7 +142,8 @@ struct AddItemView: View {
     private func progress(_ label: String) -> some View {
         VStack {
             Spacer()
-            ProgressView(label)
+            VCLoadingStageView(systemImage: "wand.and.stars", label: label)
+                .padding(.horizontal)
             Spacer()
         }
     }

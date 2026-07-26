@@ -47,6 +47,26 @@ struct CombinationsView: View {
     @State private var viewModel: CombinationsViewModel?
     @State private var segment: CombinationsSegment = .generated
     @State private var detailRequest: DetailRequest?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Drives the segment change through an explicit `withAnimation`. The
+    /// previous `.animation(VCMotion.contentFade, value: segment)` on the
+    /// `Group` below had nothing to animate: that `Group`'s only branch
+    /// condition is `viewModel != nil`, so changing `segment` swapped no view
+    /// at all — it just re-rendered the same `List` with different rows.
+    /// Hence the `.id(segment)` below, which is what turns the segment change
+    /// into a real insertion/removal a transition can attach to.
+    private var segmentBinding: Binding<CombinationsSegment> {
+        Binding(
+            get: { segment },
+            set: { newValue in
+                guard newValue != segment else { return }
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                    segment = newValue
+                }
+            }
+        )
+    }
 
     static let recentCombinationsLimit = 300
     static let recentWornLogLimit = 300
@@ -94,7 +114,7 @@ struct CombinationsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Segment", selection: $segment) {
+                Picker("Segment", selection: segmentBinding) {
                     ForEach(CombinationsSegment.allCases, id: \.self) { segment in
                         Text(segment.rawValue).tag(segment)
                     }
@@ -110,6 +130,14 @@ struct CombinationsView: View {
                         ProgressView()
                     }
                 }
+                // `.id(segment)` is what makes the swap an insertion/removal
+                // at all — without it the same `List` view just re-renders
+                // with different rows and no transition can apply. "Worn" is
+                // to the right of "Generated" in the picker, so it enters from
+                // the trailing edge.
+                .id(segment)
+                .transition(VCTransition.lateral(forward: segment == .worn))
+                .clipped()
             }
             .navigationTitle("Combinations")
             .toolbar {
@@ -186,7 +214,9 @@ struct CombinationsView: View {
                 .buttonStyle(.plain)
                 .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
-                        viewModel.delete(row.combination)
+                        withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                            viewModel.delete(row.combination)
+                        }
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
@@ -200,7 +230,9 @@ struct CombinationsView: View {
                     // both segments — logging a repeat wear from the "Worn"
                     // segment is a legitimate re-wear, not a no-op.
                     Button {
-                        viewModel.logWorn(row.combination)
+                        withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                            viewModel.logWorn(row.combination)
+                        }
                     } label: {
                         Label("Wore This", systemImage: "checkmark.circle")
                     }

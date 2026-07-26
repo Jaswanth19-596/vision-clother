@@ -16,6 +16,7 @@ struct SwipeDiscoveryView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var viewModel: SwipeDiscoveryViewModel?
     @State private var dragOffset: CGSize = .zero
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -178,7 +179,7 @@ struct SwipeDiscoveryView: View {
                 case .dislike:
                     commitSwipe(liked: false, viewModel: viewModel)
                 case .undecided:
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    withAnimation(vcMotion(VCMotion.gesture, reduceMotion: reduceMotion)) {
                         dragOffset = .zero
                     }
                 }
@@ -190,10 +191,10 @@ struct SwipeDiscoveryView: View {
     /// the animation short and read as a jump-cut.
     private func commitSwipe(liked: Bool, viewModel: SwipeDiscoveryViewModel) {
         guard viewModel.topPhoto != nil else { return }
-        withAnimation(.easeOut(duration: 0.25)) {
+        withAnimation(vcMotion(VCMotion.commit, reduceMotion: reduceMotion)) {
             dragOffset = CGSize(width: liked ? 600 : -600, height: dragOffset.height)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + VCMotion.commitDuration) {
             viewModel.swipe(liked: liked)
             dragOffset = .zero
         }

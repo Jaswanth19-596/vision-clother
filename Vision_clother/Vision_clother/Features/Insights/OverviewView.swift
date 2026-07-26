@@ -25,6 +25,7 @@ struct OverviewView: View {
 
     @State private var viewModel = OverviewViewModel()
     @State private var timeRange: AnalyticsTimeRange = .threeMonths
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -53,6 +54,7 @@ struct OverviewView: View {
                         }
                     }
                     .padding(VCSpacing.lg)
+                    .vcAnimation(VCMotion.contentFade, value: timeRange)
                 }
             }
         }
@@ -62,7 +64,12 @@ struct OverviewView: View {
             viewModel.refreshTaste(repository: SyncingWardrobeRepository(modelContext: modelContext))
             recompute()
         }
-        .onChange(of: timeRange) { recompute() }
+        .onChange(of: timeRange) {
+            // Inside an animation transaction so Swift Charts interpolates the
+            // bars to their new values instead of snapping — the recompute
+            // replaces every series at once.
+            withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { recompute() }
+        }
         .onChange(of: inventory.count) { recompute() }
         .onChange(of: itemRatings.count) { recompute() }
         .onChange(of: outfitFeedbacks.count) { recompute() }

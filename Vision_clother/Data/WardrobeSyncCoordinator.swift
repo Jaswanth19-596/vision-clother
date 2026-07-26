@@ -886,6 +886,13 @@ final class WardrobeSyncCoordinator {
     /// item or an upload whose Cloud Storage trigger hasn't finished yet has
     /// no thumbnail object; `downloadThumbnail` throws in both cases and
     /// this falls back to the full asset so the item is never photo-less.
+    /// That fallback must also be treated as "satisfied" once it succeeds —
+    /// this runs on every foreground (`reconcileIfSignedIn`), and a filename
+    /// with no server-side thumbnail (permanently, for a pre-feature item)
+    /// would otherwise never leave `missingFilenames` and would re-download
+    /// the same full-resolution asset from Cloud Storage on every single
+    /// foreground forever. Matching `ensureFullResolution`'s own guard below,
+    /// a file already present locally at full resolution is skipped too.
     private func downloadMissingPhotos(uid: String, syncService: WardrobeSyncService) async {
         var missingFilenames: Set<String> = []
         // Keyed so a just-downloaded `WardrobeItem` photo can have its
@@ -894,12 +901,15 @@ final class WardrobeSyncCoordinator {
         var itemsByAssetName: [String: WardrobeItem] = [:]
 
         for item in (try? repository.fetchInventory()) ?? [] {
-            guard let assetName = item.imageAssetName, !ImageStorage.hasThumbnail(for: assetName) else { continue }
+            guard let assetName = item.imageAssetName,
+                  !ImageStorage.hasThumbnail(for: assetName),
+                  !ImageStorage.hasFullResolution(for: assetName) else { continue }
             missingFilenames.insert(assetName)
             itemsByAssetName[assetName] = item
         }
         for combination in (try? repository.fetchSavedCombinations()) ?? [] {
-            guard !ImageStorage.hasThumbnail(for: combination.imageAssetName) else { continue }
+            guard !ImageStorage.hasThumbnail(for: combination.imageAssetName),
+                  !ImageStorage.hasFullResolution(for: combination.imageAssetName) else { continue }
             missingFilenames.insert(combination.imageAssetName)
         }
 

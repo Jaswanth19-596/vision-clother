@@ -62,8 +62,8 @@ struct ZoomableImageContainer<Content: View>: View {
             .gesture(magnification(in: containerSize))
             .highPriorityGesture(pan(in: containerSize), including: isZoomed ? .all : .subviews)
             .onTapGesture(count: 2) { toggleZoom(in: containerSize) }
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: steadyScale)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: steadyOffset)
+            .vcAnimation(VCMotion.gesture, value: steadyScale)
+            .vcAnimation(VCMotion.gesture, value: steadyOffset)
     }
 
     private func magnification(in size: CGSize) -> some Gesture {

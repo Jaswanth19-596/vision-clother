@@ -16,8 +16,6 @@
 
 import SwiftUI
 
-private let vcButtonSpring = Animation.spring(response: 0.22, dampingFraction: 0.72)
-
 struct PrimaryButtonStyle: ButtonStyle {
     var isDestructive: Bool = false
 
@@ -29,9 +27,9 @@ struct PrimaryButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity)
             .background(isDestructive ? Color.red : Color.accentColor, in: VCRadius.shape(VCRadius.control))
             .foregroundStyle(.white)
-            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-            .opacity(configuration.isPressed ? 0.88 : 1.0)
-            .animation(vcButtonSpring, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.93 : 1.0)
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .vcAnimation(VCMotion.interactive, value: configuration.isPressed)
     }
 }
 
@@ -49,8 +47,8 @@ struct SecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, VCSpacing.sm)
             .background(.thinMaterial, in: VCRadius.shape(VCRadius.control))
             .foregroundStyle(tint)
-            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-            .opacity(configuration.isPressed ? 0.82 : 1.0)
-            .animation(vcButtonSpring, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.93 : 1.0)
+            .opacity(configuration.isPressed ? 0.78 : 1.0)
+            .vcAnimation(VCMotion.interactive, value: configuration.isPressed)
     }
 }

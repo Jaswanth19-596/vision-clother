@@ -22,6 +22,7 @@ struct StyleView: View {
 
     @State private var viewModel: StyleViewModel?
     @State private var comboTimeRange: AnalyticsTimeRange = .threeMonths
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -65,7 +66,10 @@ struct StyleView: View {
             viewModel?.loadConfigIfNeeded()
             recompute()
         }
-        .onChange(of: comboTimeRange) { recompute() }
+        .onChange(of: comboTimeRange) {
+            // See OverviewView — keeps the combo bars interpolating.
+            withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { recompute() }
+        }
         .onChange(of: inventory.count) { recompute() }
         .onChange(of: itemRatings.count) { recompute() }
         .onChange(of: outfitFeedbacks.count) { recompute() }
@@ -251,6 +255,7 @@ struct StyleView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .premiumCard()
+        .vcAnimation(VCMotion.contentFade, value: comboTimeRange)
     }
 
     @ViewBuilder

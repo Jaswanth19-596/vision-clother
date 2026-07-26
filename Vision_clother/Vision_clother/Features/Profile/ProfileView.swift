@@ -45,10 +45,16 @@ struct ProfileView: View {
             Group {
                 if let viewModel {
                     content(viewModel: viewModel)
+                        .transition(.opacity)
                 } else {
                     ProgressView()
+                        .transition(.opacity)
                 }
             }
+            // The view model is built in `.task`, so this spinner->list swap
+            // happens on every visit to the tab — a hard cut there is the
+            // first thing the user sees on this screen.
+            .vcAnimation(VCMotion.contentFade, value: viewModel == nil)
             .navigationTitle("Profile")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -243,6 +249,7 @@ struct ProfileView: View {
                 Label("Analyzing your style…", systemImage: "sparkles")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .transition(.opacity)
             case .failed(let message):
                 VStack(spacing: 4) {
                     Text(message)
@@ -251,11 +258,18 @@ struct ProfileView: View {
                     Button("Retry") { viewModel.retryDerivation() }
                         .font(.caption)
                 }
+                .transition(.opacity)
             case .idle:
                 EmptyView()
             }
         }
         .multilineTextAlignment(.center)
+        // Style derivation runs for several seconds after a portrait is saved,
+        // so these three states swap under the user while they're looking at
+        // the screen.
+        .vcAnimation(VCMotion.standard, value: viewModel.derivationState)
+        .vcAnimation(VCMotion.standard, value: viewModel.isValidatingPhoto)
+        .vcAnimation(VCMotion.standard, value: viewModel.photoUploadError)
     }
 
     private func factPill(label: String, value: String) -> some View {

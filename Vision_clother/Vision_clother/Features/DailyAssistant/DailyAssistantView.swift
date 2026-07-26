@@ -79,6 +79,8 @@ struct DailyAssistantView: View {
     /// "Mark worn items as in laundry?" confirmation dialog.
     @State private var wornOutfitForLaundryConfirmation: OutfitCombination? = nil
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         NavigationStack {
             Group {
@@ -189,27 +191,41 @@ struct DailyAssistantView: View {
                             description: Text("Describe the occasion below and tap Get Outfit Ideas.")
                         )
                         .frame(minHeight: 300)
+                        .transition(.opacity)
                     }
 
                     ForEach(Array(viewModel.rounds.enumerated()), id: \.element.id) { index, round in
                         roundView(round: round, isLatest: index == viewModel.rounds.count - 1, viewModel: viewModel)
                             .id(round.id)
+                            .transition(VCTransition.message)
                     }
 
                     statusView(viewModel: viewModel)
                         .id("status")
                 }
                 .padding()
+                // Drives the round insert/remove transition above. Keyed on
+                // `rounds.count` rather than wrapping the ViewModel's
+                // `rounds.append`/`removeAll` in `withAnimation`, so the
+                // ViewModel stays free of UI concerns — and because round
+                // identity is stable across the in-place `.pending ->
+                // .outfits` mutation, this fires only on real appends and
+                // removals, never on a round resolving in place.
+                .vcAnimation(VCMotion.standard, value: viewModel.rounds.count)
             }
             .scrollDismissesKeyboard(.interactively)
             .scrollBounceBehavior(.basedOnSize)
             .contentMargins(.bottom, 8, for: .scrollContent)
             .onTapGesture { isPromptFocused = false }
             .onChange(of: viewModel.rounds.count) { _, _ in
-                withAnimation { proxy.scrollTo("status", anchor: .bottom) }
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                    proxy.scrollTo("status", anchor: .bottom)
+                }
             }
             .onChange(of: viewModel.extractionState) { _, _ in
-                withAnimation { proxy.scrollTo("status", anchor: .bottom) }
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                    proxy.scrollTo("status", anchor: .bottom)
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -227,9 +243,15 @@ struct DailyAssistantView: View {
         isLatest: Bool,
         viewModel: DailyAssistantViewModel
     ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // `round.outcome` isn't `Equatable` (it carries `[OutfitCombination]`),
+        // so this cheap Bool proxy drives the pending->resolved crossfade
+        // below rather than forcing conformance onto the whole enum.
+        let isPending: Bool = if case .pending = round.outcome { true } else { false }
+
+        return VStack(alignment: .leading, spacing: 12) {
             userBubble(round.userText)
 
+            Group {
             switch round.outcome {
             case .pending:
                 // Only ever the latest round — mutated in place or removed
@@ -238,8 +260,9 @@ struct DailyAssistantView: View {
                 // `performProspectivePurchaseCheck`), so no extra
                 // `isLatest`/loading guard is needed here.
                 assistantRow {
-                    LoadingStageView(stage: viewModel.loadingStage)
+                    VCLoadingStageView(systemImage: viewModel.loadingStage.systemImage, label: viewModel.loadingStage.label)
                 }
+                .transition(.opacity)
 
             case .clarification(let followUpText, let chips):
                 if isLatest, isAwaitingClarification(viewModel) {
@@ -297,6 +320,7 @@ struct DailyAssistantView: View {
                         }
                     )
                 }
+                .transition(.opacity)
 
             case .purchaseCheck(let item, let outfits, let note):
                 assistantRow {
@@ -334,6 +358,7 @@ struct DailyAssistantView: View {
                         onDiscard: { viewModel.discardProspectiveItem(item) }
                     )
                 }
+                .transition(.opacity)
 
             case .answer(let text):
                 assistantRow {
@@ -342,8 +367,14 @@ struct DailyAssistantView: View {
                         .premiumCard()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .transition(.opacity)
+            }
             }
         }
+        // On the enclosing `VStack` rather than the `Group` above, so the
+        // animation is anchored to a view that unambiguously persists across
+        // the pending->resolved branch swap.
+        .vcAnimation(VCMotion.standard, value: isPending)
     }
 
     private func userBubble(_ text: String) -> some View {
@@ -373,7 +404,7 @@ struct DailyAssistantView: View {
 
     /// The current in-flight status, trailing the timeline — a
     /// failed-with-Retry row. Loading now renders inline as the latest
-    /// round's own `.pending` outcome (`LoadingStageView`), and
+    /// round's own `.pending` outcome (`VCLoadingStageView`), and
     /// idle/awaiting-clarification need nothing extra here since the latest
     /// round already shows it.
     @ViewBuilder
@@ -417,6 +448,7 @@ struct DailyAssistantView: View {
 
                 if viewModel.isProspectivePurchaseMode {
                     prospectivePurchaseInput(viewModel: viewModel)
+                        .transition(.opacity)
                 } else {
                     mentionChips(viewModel: viewModel)
 
@@ -466,16 +498,24 @@ struct DailyAssistantView: View {
                         sendTick += 1
                     }
                     .buttonStyle(PrimaryButtonStyle())
+                    .contentTransition(.opacity)
                     .disabled(
                         viewModel.extractionState == .loading
                         || viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty
                         || usageTracker.recommendationsRemaining <= 0
                     )
+                    .transition(.opacity)
                 }
             }
             .padding(.horizontal)
             .padding(.top, 10)
             .padding(.bottom, 6)
+            // The composer's height changes as chips are added/removed and as
+            // the purchase-check mode swaps the whole input out — animating the
+            // container keeps the bar from jumping under the user's thumb.
+            .vcAnimation(VCMotion.standard, value: viewModel.isProspectivePurchaseMode)
+            .vcAnimation(VCMotion.standard, value: viewModel.mentionedItems.count)
+            .vcAnimation(VCMotion.contentFade, value: viewModel.attachedProspectiveImageData)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
         .sheet(isPresented: $showMentionPicker) {
@@ -503,8 +543,10 @@ struct DailyAssistantView: View {
                     }
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(viewModel.extractionState == .loading)
+                    .transition(VCTransition.pop)
                 }
             }
+            .transition(.opacity)
         }
     }
 
@@ -630,37 +672,9 @@ struct DailyAssistantView: View {
     }
 }
 
-/// Themed, multi-stage inline replacement for the old generic
-/// `ProgressView` + static caption — reflects which concrete step of
-/// `DailyAssistantViewModel.resolveOutfits`/`resolveProspectivePurchase`
-/// (fetch wardrobe → build catalog → consult stylist → validate picks) is
-/// currently running, via `DailyAssistantViewModel.LoadingStage`. Rendered
-/// as the assistant side of the latest round's `.pending` outcome, right
-/// under the user's own message, so the "thinking" state reads as a live
-/// reply to what they just sent rather than a floating spinner.
-private struct LoadingStageView: View {
-    let stage: DailyAssistantViewModel.LoadingStage
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: stage.systemImage)
-                .font(.subheadline)
-                .foregroundStyle(VCAccentColor.brand)
-                .symbolEffect(.pulse, options: .repeating)
-                .contentTransition(.symbolEffect(.replace))
-
-            Text(stage.label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .contentTransition(.opacity)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .premiumCard()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut(duration: 0.25), value: stage)
-    }
-}
+// Loading indicator promoted to `DesignSystem/VCLoadingStageView.swift` so
+// other multi-second waits (try-on rendering, item tagging) can reuse it —
+// see that file's doc comment.
 
 /// One outfits round's presentation: collapsed to a one-line summary when
 /// it's an earlier round the user hasn't re-expanded, otherwise the full
@@ -695,11 +709,13 @@ private struct OutfitsRoundView: View {
     /// `queuedOutfitIDs` above.
     @State private var wornOutfitIDs: Set<OutfitCombination.ID> = []
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !isLatest {
                 Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
                         onToggleExpanded()
                     }
                 }) {
@@ -725,6 +741,7 @@ private struct OutfitsRoundView: View {
                                 OutfitCardView(outfit: outfit)
                                     .containerRelativeFrame(.horizontal)
                                     .id(outfit.id)
+                                    .vcCarouselCardTransition()
                             }
                         }
                         .scrollTargetLayout()
@@ -749,8 +766,7 @@ private struct OutfitsRoundView: View {
                                         width: outfit.id == selectedOutfitID ? 8 : 6,
                                         height: outfit.id == selectedOutfitID ? 8 : 6
                                     )
-                                    .animation(.spring(response: 0.25, dampingFraction: 0.7),
-                                               value: selectedOutfitID)
+                                    .vcAnimation(VCMotion.interactive, value: selectedOutfitID)
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -765,14 +781,14 @@ private struct OutfitsRoundView: View {
                         elevated: true
                     ) {
                         onStartTryOn(selected)
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            queuedOutfitIDs.insert(selected.id)
+                        withAnimation(vcMotion(VCMotion.interactive, reduceMotion: reduceMotion)) {
+                            _ = queuedOutfitIDs.insert(selected.id)
                         }
                     }
                     WearTodayButton(isWorn: wornOutfitIDs.contains(selected.id)) {
                         onWearToday(selected)
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            wornOutfitIDs.insert(selected.id)
+                        withAnimation(vcMotion(VCMotion.interactive, reduceMotion: reduceMotion)) {
+                            _ = wornOutfitIDs.insert(selected.id)
                         }
                     }
                 }
@@ -811,11 +827,13 @@ private struct PurchaseCheckRoundView: View {
     @State private var isAdded = false
     @State private var isDiscarded = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !isLatest {
                 Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
                         onToggleExpanded()
                     }
                 }) {
@@ -872,6 +890,7 @@ private struct PurchaseCheckRoundView: View {
                         OutfitCardView(outfit: outfit, prospectiveItemID: item.id)
                             .containerRelativeFrame(.horizontal)
                             .id(outfit.id)
+                            .vcCarouselCardTransition()
                     }
                 }
                 .scrollTargetLayout()
@@ -890,7 +909,7 @@ private struct PurchaseCheckRoundView: View {
                         Circle()
                             .fill(outfit.id == selectedOutfitID ? Color.accentColor : Color.secondary.opacity(0.35))
                             .frame(width: outfit.id == selectedOutfitID ? 8 : 6, height: outfit.id == selectedOutfitID ? 8 : 6)
-                            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selectedOutfitID)
+                            .vcAnimation(VCMotion.interactive, value: selectedOutfitID)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -904,14 +923,14 @@ private struct PurchaseCheckRoundView: View {
                     elevated: false
                 ) {
                     onStartTryOn(selected)
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        queuedOutfitIDs.insert(selected.id)
+                    withAnimation(vcMotion(VCMotion.interactive, reduceMotion: reduceMotion)) {
+                        _ = queuedOutfitIDs.insert(selected.id)
                     }
                 }
                 WearTodayButton(isWorn: wornOutfitIDs.contains(selected.id)) {
                     onWearToday(selected)
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        wornOutfitIDs.insert(selected.id)
+                    withAnimation(vcMotion(VCMotion.interactive, reduceMotion: reduceMotion)) {
+                        _ = wornOutfitIDs.insert(selected.id)
                     }
                 }
             }
@@ -921,7 +940,7 @@ private struct PurchaseCheckRoundView: View {
     private var actionRow: some View {
         HStack(spacing: 12) {
             Button {
-                withAnimation { isAdded = onAddToCloset() }
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { isAdded = onAddToCloset() }
             } label: {
                 if isAdded {
                     Label("Added to Closet", systemImage: "checkmark")
@@ -934,7 +953,7 @@ private struct PurchaseCheckRoundView: View {
 
             Button("Not Buying This") {
                 onDiscard()
-                withAnimation { isDiscarded = true }
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) { isDiscarded = true }
             }
             .buttonStyle(SecondaryButtonStyle())
             .disabled(isAdded)
@@ -979,7 +998,7 @@ private struct TryOnActionButton: View {
             .buttonStyle(PrimaryButtonStyle())
             .modifier(ConditionalElevatedShadow(isElevated: elevated))
             .disabled(isQueued || isBlocked)
-            .animation(.easeInOut(duration: 0.2), value: isQueued)
+            .vcAnimation(VCMotion.interactive, value: isQueued)
 
             if !isQueued && !isBlocked {
                 Text("\(combinationsRemaining) combination\(combinationsRemaining == 1 ? "" : "s") left")
@@ -1011,7 +1030,7 @@ private struct WearTodayButton: View {
         }
         .buttonStyle(SecondaryButtonStyle())
         .disabled(isWorn)
-        .animation(.easeInOut(duration: 0.2), value: isWorn)
+        .vcAnimation(VCMotion.interactive, value: isWorn)
     }
 }
 

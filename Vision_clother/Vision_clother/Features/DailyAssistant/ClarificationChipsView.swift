@@ -72,6 +72,7 @@ struct ClarificationChipsView: View {
     let onSelectChip: (String) -> Void
 
     @State private var selectedChip: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -84,7 +85,7 @@ struct ClarificationChipsView: View {
                     ForEach(chips, id: \.self) { chip in
                         Button {
                             guard selectedChip == nil else { return }
-                            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                            withAnimation(vcMotion(VCMotion.interactive, reduceMotion: reduceMotion)) {
                                 selectedChip = chip
                             }
                             onSelectChip(chip)
@@ -98,9 +99,14 @@ struct ClarificationChipsView: View {
                         .buttonStyle(SecondaryButtonStyle())
                         .opacity(selectedChip == nil || selectedChip == chip ? 1.0 : 0.4)
                         .disabled(selectedChip != nil)
-                        .animation(.easeOut(duration: 0.2), value: selectedChip)
+                        .vcAnimation(VCMotion.interactive, value: selectedChip)
+                        // Chips arrive with the assistant's clarifying question
+                        // rather than being present from the start, so they get
+                        // an insertion of their own.
+                        .transition(VCTransition.pop)
                     }
                 }
+                .vcAnimation(VCMotion.standard, value: chips)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
