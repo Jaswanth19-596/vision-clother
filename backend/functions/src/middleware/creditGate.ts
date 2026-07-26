@@ -21,6 +21,15 @@ export type GateStatus = "UNAUTHENTICATED" | "INSUFFICIENT_CREDITS" | "CAP_REACH
  * user's remaining count-based headroom into a starting credit balance.
  * Deliberately not exported/reused anywhere else; this is migration math,
  * not live config (see `pricing.config.ts` for that).
+ *
+ * LEGACY — REMOVAL DEFERRED. This constant, the `else if (usageData)`
+ * migration branch below, and the `meta/entitlement.tier` read it depends on
+ * (`entitlementRefFor` in `governance.ts`) together heal pre-rewrite accounts
+ * (no `tier_id` yet) on their next gated call. They must NOT be removed until
+ * every active pre-rewrite account has been migrated — either lazily (each
+ * heals itself on first use) or via a one-time admin backfill. Deleting them
+ * early would send an unmigrated premium/purchased account down the
+ * "brand-new user" branch and silently downgrade it to FREE.
  */
 const LEGACY_TIER_LIMITS: Record<string, { recommendation: number; tryOn: number }> = {
   GUEST: { recommendation: 20, tryOn: 0 },
@@ -60,8 +69,8 @@ export function totalCredits(subscriptionCreditsRemaining: number, purchasedCred
 }
 
 /**
- * Sequential gatekeeper for the credit & tier engine — replaces
- * `governance.ts`'s `governanceGate`/`refundQuota`. Always transactional
+ * Sequential gatekeeper for the credit & tier engine — replaces the
+ * now-deleted `middleware/quota.ts`'s `quotaGate`/`refundQuota`. Always transactional
  * (`runTransaction`, no warm-instance fast-path cache): unlike the old
  * fixed-safety-margin count check, operation costs and tier definitions are
  * now config-driven and can change at ops pace, so a cached approximation
@@ -96,7 +105,7 @@ export function totalCredits(subscriptionCreditsRemaining: number, purchasedCred
  *     `totalCredits(subscription, purchased)`; only `INSUFFICIENT_CREDITS`
  *     when the combined balance can't cover the cost.
  * Only on the ALLOWED outcome does the transaction actually write anything
- * (debit + increment) — same minimalism as the old `governanceGate`, which
+ * (debit + increment) — same minimalism as the old `quotaGate`, which
  * only persisted on its "ok"/"ok_purchased" outcomes; a rejected request
  * just recomputes the same numbers next time, nothing is lost.
  *

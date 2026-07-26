@@ -27,6 +27,8 @@ struct ProfileView: View {
     /// holding its own `@ObservedObject AuthService.shared` — see
     /// `ProfileViewModel`'s `uid` doc comment.
     @Environment(WardrobeSyncCoordinator.self) private var syncCoordinator
+    /// DEBUG "Replay Onboarding" affordance — see `content(viewModel:)`.
+    @Environment(AppNavigator.self) private var navigator
     @Query private var styleProfiles: [UserStyleProfile]
 
     @State private var viewModel: ProfileViewModel?
@@ -112,8 +114,26 @@ struct ProfileView: View {
             swipeDiscoverySection
             styleCheckSection
             insightsLinkSection
+            #if DEBUG
+            debugSection
+            #endif
         }
     }
+
+    #if DEBUG
+    /// Developer-only: re-present the first-run onboarding flow even for an
+    /// already-set-up account, so it can be previewed without deleting the app.
+    /// Compiled out of Release/TestFlight builds.
+    private var debugSection: some View {
+        Section("Developer") {
+            Button {
+                navigator.replayOnboarding()
+            } label: {
+                Label("Replay Onboarding", systemImage: "arrow.counterclockwise.circle")
+            }
+        }
+    }
+    #endif
 
     // MARK: - Identity header
 
@@ -294,7 +314,9 @@ struct ProfileView: View {
 /// Thin `UIImagePickerController` wrapper for the user's own photo — moved
 /// here from `Features/Pairing/ManualPairingView.swift`, which now only
 /// reads the portrait this screen manages.
-private struct PortraitCameraCaptureView: UIViewControllerRepresentable {
+/// Internal (not `private`) so the first-run `OnboardingFlowView` can reuse
+/// the exact same portrait-camera capture the Profile tab uses.
+struct PortraitCameraCaptureView: UIViewControllerRepresentable {
     let onCapture: (Data?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -340,6 +362,7 @@ private struct PortraitCameraCaptureView: UIViewControllerRepresentable {
     )
     ProfileView()
         .modelContainer(container)
+        .environment(AppNavigator())
         .environment(WardrobeSyncCoordinator(modelContext: container.mainContext, syncService: MockWardrobeSyncService()))
         .environment(UsageTracker(
             repository: SyncingWardrobeRepository(modelContext: container.mainContext),

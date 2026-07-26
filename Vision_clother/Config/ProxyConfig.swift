@@ -38,15 +38,16 @@ enum ProxyConfig {
 
     /// `proxyApi` — `/openrouter/chat`.
     static var openRouterChatURL: URL { proxyBaseURL.appendingPathComponent("openrouter/chat") }
-    /// `proxyApi` — quota'd alias of `openRouterChatURL` for outfit
-    /// recommendations only (`backend/functions/src/middleware/quota.ts`'s
-    /// `"recommendation"` feature) — same pass-through handler, different
+    /// `proxyApi` — credit-gated alias of `openRouterChatURL` for outfit
+    /// recommendations only (`backend/functions/src/middleware/creditGate.ts`'s
+    /// `RECOMMENDATION` operation) — same pass-through handler, different
     /// path so the backend can gate it without parsing the request body.
     static var openRouterRecommendURL: URL { proxyBaseURL.appendingPathComponent("openrouter/recommend") }
-    /// `heavyApi` — quota'd alias of `openRouterChatURL` for try-on
-    /// rendering only (`quota.ts`'s `"tryOn"` feature, 0 for guests) — see
-    /// `openRouterRecommendURL`'s doc comment. Moved off `proxyApi` because
-    /// image generation regularly exceeds `proxyApi`'s 15s timeout.
+    /// `heavyApi` — credit-gated alias of `openRouterChatURL` for try-on
+    /// rendering only (`creditGate.ts`'s `IMAGE_GEN` operation, hard-capped at
+    /// 0 for guests) — see `openRouterRecommendURL`'s doc comment. Moved off
+    /// `proxyApi` because image generation regularly exceeds `proxyApi`'s 15s
+    /// timeout.
     static var openRouterTryOnURL: URL { heavyBaseURL.appendingPathComponent("openrouter/tryon") }
     /// `heavyApi` — see `openRouterTryOnURL`.
     static var openRouterImagesURL: URL { heavyBaseURL.appendingPathComponent("openrouter/images") }

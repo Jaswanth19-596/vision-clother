@@ -32,7 +32,6 @@ struct SwipeDiscoveryView: View {
             let vm = SwipeDiscoveryViewModel(
                 repository: SyncingWardrobeRepository(modelContext: modelContext),
                 feedService: ServiceFactory.makeStockImageFeedService(),
-                embeddingService: ServiceFactory.makeImageEmbeddingService(),
                 visionService: ServiceFactory.makeVisionMetadataExtractionService()
             )
             viewModel = vm
@@ -60,10 +59,6 @@ struct SwipeDiscoveryView: View {
 
             cardStack(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .top) {
-                    DriftFeedbackPill(amount: viewModel.lastDriftAmount, isVisible: viewModel.showDriftFeedback)
-                        .padding(.top, VCSpacing.sm)
-                }
 
             controls(viewModel: viewModel)
         }

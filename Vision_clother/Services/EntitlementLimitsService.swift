@@ -5,10 +5,11 @@
 //  Calls the one deliberate business-logic exception in the Firebase proxy
 //  added for this purpose (`backend/functions/src/routes/entitlementLimits.ts`,
 //  alongside accountDelete/iapVerify) — resolving the caller's tier into
-//  concrete recommendation/try-on/item-cap numbers server-side, computed
-//  from the same `backend/functions/src/entitlementLimits.ts` module
-//  `middleware/quota.ts` enforces against. `Data/UsageTracker.swift` is the
-//  sole caller — see its doc comment for the fetch cadence.
+//  concrete recommendation/try-on/item-cap numbers plus the live credit
+//  balance server-side, computed from the same
+//  `backend/functions/src/pricing.config.ts` config `middleware/creditGate.ts`
+//  enforces against. `Data/UsageTracker.swift` is the sole caller — see its
+//  doc comment for the fetch cadence.
 //
 
 import Foundation

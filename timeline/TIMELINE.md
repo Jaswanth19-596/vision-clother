@@ -1,5 +1,130 @@
 # Vision Clother — Change Timeline
 
+## 2026-07-25 — Feature (C1+C2 of monetization plan): First-run onboarding + Outfit-of-the-Day daily hook
+
+### Problem
+- **No onboarding.** The app launched straight into `RootTabView` (`Vision_clotherApp`: `WindowGroup { RootTabView() }`). A new user faced an empty closet with no guidance, and the two setup steps that matter most — capturing a base portrait (a hard dependency for try-on) and taste calibration — were both buried under the Profile tab and easily missed.
+- **No reason to return daily.** Despite the flagship tab being named "Daily Assistant," the app was 100% pull-based: no scheduled notification, no widget, no "outfit of the day." Nothing brought the user back.
+
+### Fix — C1 onboarding
+1. **New `Features/Onboarding/OnboardingFlowView.swift`**: a 4-step guided flow (welcome → portrait → add clothes → ready + optional taste calibration). Deliberately *reuses* the real flows rather than reimplementing: portrait step drives `ProfileViewModel` (same validate→save→derive pipeline), closet step presents the real `AddItemView(defaultSlot: nil)` sheet, calibration presents `SwipeDiscoveryView`. Live non-ghost item count via `@Query`. Only the portrait step is a hard gate (with a "use a default silhouette" escape hatch); everything else is skippable.
+2. **New `Features/Root/AppRootView.swift`**: wraps `RootTabView` and gates onboarding via `.fullScreenCover`, keyed on **real state** — shows only when `!hasCompletedOnboarding && (no portrait OR empty closet)`, evaluated once per launch. A returning/set-up user (incl. one restored via Cloud Sync) never sees it. `Vision_clotherApp`'s `WindowGroup` now hosts `AppRootView()` (env objects injected here so the onboarding cover inherits them).
+3. **`Features/Profile/ProfileView.swift`**: `PortraitCameraCaptureView` made internal (was `private`) so onboarding reuses the exact same camera capture.
+
+### Fix — C2 Outfit of the Day
+4. **New `AppWiring/DailyOutfitReminder.swift`**: idempotent daily 8am `UNCalendarNotificationTrigger` ("Your outfit for today ☀️"), fixed identifier + `DAILY_OUTFIT` category. Requests notification permission if undetermined; scheduled from `AppRootView` only when the user has a non-ghost closet.
+5. **New `Features/Root/AppNavigator.swift`**: app-level `selectedTab` + one-shot `pendingDailyOutfit` flag; `requestDailyOutfit()` switches to Daily Assistant and raises the flag. Injected app-wide; `RootTabView` now uses `TabView(selection:)` with per-tab `.tag`.
+6. **`AppWiring/NotificationDelegate.swift`**: distinguishes the daily reminder (by identifier/category) from job-completion taps → new `onDailyOutfitTapped` closure, wired in `Vision_clotherApp` to `navigator.requestDailyOutfit()`.
+7. **`Features/DailyAssistant/`**: `DailyAssistantViewModel.askForTodaysOutfit()` runs a "What should I wear today?" turn (fresh or continued; weather already injected). `DailyAssistantView` consumes `navigator.pendingDailyOutfit` (in its `.task` for cold-launch-from-notification and via `.onChange` for the warm path), clearing the flag before running so it can't double-submit.
+
+### Preview affordance
+- Onboarding is real-state gated, so an already-set-up account (portrait + closet) never sees it. Added a **DEBUG-only "Replay Onboarding"** button in `ProfileView`'s "Developer" section (`#if DEBUG`, compiled out of Release) → `AppNavigator.replayOnboarding()`. Presentation was moved off `AppRootView` local `@State` onto `AppNavigator.isOnboardingPresented` so the button can force-present it without wiping data.
+
+### Verification
+- iOS: `xcodebuild ... -sdk iphonesimulator build` → **BUILD SUCCEEDED** on fresh DerivedData (tests skipped per CLAUDE.md §2). Device install is the user's step (device signing). Remaining: A2/A3 (PRO subscription + paywall), deferred pending the user's App Store Connect setup (can't sandbox-verify without a paid Apple account).
+
+## 2026-07-25 — Feature (B1 of monetization plan): Manual Pairing try-on supports all 7 slots
+
+### Problem
+- The Manual Pairing try-on screen (`Features/Pairing/`) was hardcoded to a single **top + bottom**, even though the wardrobe models 7 slots, `TryOnRenderService.renderTryOn(items:)` already composes an arbitrary number of garments in one call, and the recommendation-carousel try-on already passes full multi-slot outfits. It was the last flow still artificially limited to two slots — and try-on is now the paid hero feature (A1).
+
+### Fix
+1. **`Features/Pairing/ManualPairingViewModel.swift`**: replaced `availableTops`/`availableBottoms` + `selectedTop`/`selectedBottom` with `availableItemsBySlot: [Slot: [WardrobeItem]]` and a `selected: [Slot: WardrobeItem]` map. New `orderedAvailableSlots` (canonical `Slot.allCases` order, only owned slots) and `orderedSelectedItems`. `selectItem(_:)` toggles a slot's pick (second tap clears it). `canGeneratePreview` now needs a portrait + **≥1 selected garment** + try-on credits (not a fixed top+bottom — a single-piece try-on like "how does this jacket look on me?" is valid over the already-dressed portrait). `runPipeline` renders `orderedSelectedItems`; `saveOutfit` builds `itemIDsBySlot`/`labelsBySlot` from the map and records pair feedback for **every unordered pair** in the outfit (not just top+bottom) so the Pair-Compatibility engine learns from the full combination.
+2. **`Features/Pairing/ManualPairingView.swift`**: one horizontal picker per `orderedAvailableSlots` slot (via `slotTitle`), replacing the two hardcoded "Shirt"/"Pants" pickers; added an empty-closet prompt and a "pick at least one piece" hint.
+
+### Verification
+- iOS: `xcodebuild ... -sdk iphonesimulator build` → **BUILD SUCCEEDED** (tests skipped per CLAUDE.md §2). Next: A2/A3 (PRO subscription + paywall), then C1/C2 (onboarding + daily hook).
+
+## 2026-07-25 — Feature (A1 of monetization plan): Unmeter recommendations; credits become a try-on currency
+
+### Problem
+- Every outfit recommendation and every wardrobe/Insights Q&A cost 1 credit, and a guest got ~20 total with no reset — so a new user exhausted their allowance just *exploring*, before the taste model had learned anything, and the app metered the exact core loop ("Daily Assistant") whose usage generates the feedback data the whole recommendation flywheel depends on. Strategic decision (monetization-first plan): unmeter the cheap core action, monetize the expensive one (try-on renders) + a PRO subscription.
+
+### Fix — backend
+1. **`pricing.config.ts`**: `DEFAULT_OPERATION_COSTS.RECOMMENDATION` 1 → **0**. A 0-cost op always clears `creditGate.ts`'s balance check (`totalCredits >= 0`) and debits nothing (still runs init/migration + usage-count increment + hard-cap check); abuse stays bounded by `governance.ts`'s `rateLimitOnly` per-UID daily cap. Tunable live via `config/pricing` (no redeploy). Legacy migration formula floors at the tier allocation, so no legacy account is credited less.
+2. **`routes/entitlementLimits.ts`**: guarded the derived `recommendationLimit`/`tryOnLimit` against divide-by-zero — a 0 cost now emits `-1` ("unlimited") instead of `Infinity` (which `JSON.stringify` turns into `null` → an iOS decode failure).
+
+### Fix — client
+3. **`Data/UsageTracker.swift`**: `recommendationCost` no longer floored at 1 (allows 0); new `isRecommendationUnmetered` (cost == 0); `recommendationsRemaining` returns `.max` when unmetered; `recordRecommendationUsed()` is a no-op when unmetered. `combinationCost` (try-on) still floored at 1.
+4. **`Models/EntitlementLimitsResponse.swift`**: `conservativeDefault` RECOMMENDATION cost 1 → **0** (consistent offline/pre-fetch guest experience); decoder guards the `alloc / recCost` fallback against a 0 cost (Swift traps on integer divide-by-zero) → emits `-1`.
+5. **`Features/DailyAssistant/DailyAssistantView.swift`**: `recommendationQuotaCaption` collapses to `EmptyView` when unmetered (no credit countdown for a free action); the out-of-credits branch is retained for the re-metered case. Recommend-button proactive-disable resolves off naturally (`.max <= 0` is false).
+6. **`Features/Profile/CreditsStoreView.swift`**: dropped the "Recommendations" credit-pack section (misleading now recs are free) and reframed the try-on footer — credits are only spent on try-on renders. The `recs50`/`recs200` products remain server-side/fungible, just unsold; the full membership+render paywall is plan step A3.
+
+### Docs
+7. Updated `docs/backend/architecture.md` (route table note), `docs/decisions/resolved-v1.md` (new "Recommendations Unmetered" section).
+
+### Verification
+- iOS: `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator build` → **BUILD SUCCEEDED** (tests skipped per CLAUDE.md §2). Backend verified by reading (per convention; user deploys). Next: B1 (Manual Pairing all 7 slots), then A2/A3 (PRO subscription + paywall).
+
+## 2026-07-25 — Fix: finish the credit-system migration (client) + purge legacy quota code
+
+### Problem
+- `madhajaswanth@gmail.com` (uid `iY1EpZVPFXf38Ofw2Nmd8abGl7F2`, a premium/pre-rewrite account) got "You've used all your recommendations this month." Cloud Logging showed production still gated `/openrouter/recommend` with the old flat `rateLimitOnly` counter (`limit:500`, shared with `/chat`+`/pexels`), blind to the account's entitlement (rejections at 15:49 & 16:08 UTC, hash `6e78c58…`). A `proxyApi` redeploy at 16:11 UTC (hash `0aeb354…`, revision `proxyapi-00002-gom`) put the credit-gated source live.
+- Deeper: the migration to the credit engine was only finished on the backend. The iOS client still ran on the pre-rewrite counter model (`recommendationCount`/`tryOnCount`) — fields the new-shape `meta/usage` doc no longer writes — so its quota UI would drift from the real credit wallet, its 429 decoders expected the old `{error,limit,period}` shape, and `isPremium` checked `"premium"` when the server now returns `"PRO"`. The deleted `middleware/quota.ts` was also still named in ~15 live comments/docs, and `pricing.config.ts` carried two unused exports.
+
+### Fix — backend (dead code only; migration kept)
+1. **`pricing.config.ts`**: removed unused `itemCapForSlot` + `getOperationCost` exports; **`test/pricing.config.test.ts`** dropped the `getOperationCost` assertions.
+2. **`middleware/creditGate.ts`**: fixed stale comments (`governanceGate`/`refundQuota` → the now-deleted `quota.ts`'s `quotaGate`/`refundQuota`) and added a **REMOVAL DEFERRED** note on `LEGACY_TIER_LIMITS` + the `else if (usageData)` migration branch — it (with `governance.ts`'s `entitlementRefFor`/`meta/entitlement.tier` read) heals pre-rewrite accounts on their next gated call and must survive until every such account is migrated (decision: keep, per user).
+
+### Fix — client (full credit-model migration)
+3. **`Data/Sync/FirestoreDTOs.swift`**: reshaped `UsageDTO` to the credit wallet (`tier_id`/`subscription_credits_remaining`/`purchased_credits_remaining`/`usage_counts`/`billing_cycle_start`) with snake_case `CodingKeys` + defensive decode (unmigrated doc → `tierId == nil` → fall back to server limits).
+4. **`Data/UsageTracker.swift`**: derives all quota state from the shared wallet — `creditsRemaining`, `recommendations/combinationsRemaining = credits ÷ operationCost` (try-ons clamped by the `IMAGE_GEN` hard cap so guests stay at 0), `isPremium == "PRO"`, optimistic `record*Used` debits subscription-then-purchased (mirrors `creditGate.ts`), `billing_cycle_start` anniversary replaces the `periodKey` reset. Dropped the redundant per-feature `total*`/`purchased*Remaining` accessors.
+5. **`Models/EntitlementLimitsResponse.swift`**: `conservativeDefault.tier` `"guest"` → `"GUEST"` + populated credit fields.
+6. **`Services/OutfitRecommendationService.swift`** & **`AppWiring/OpenRouterTryOnRenderService.swift`**: 429 decoders rewritten to `creditGate`'s `insufficient_credits`/`cap_reached` shapes; try-on maps guest `cap_reached` → "sign in", `insufficient_credits` → "buy credits" (old 403 `sign_in_required` gone).
+7. Point-of-use gating/copy → shared-wallet framing: `DailyAssistantView`(+VM), `ManualPairingView`(+VM), `Profile/AccountSectionView` (credits + used-this-cycle), `Profile/CreditsStoreView` (single purchased-credit balance).
+
+### Fix — docs/comment sync
+8. Repointed deleted `quota.ts` refs → `creditGate.ts`/`governance.ts` across `ProxyConfig.swift`, `CreditPack.swift`, `AuthService.swift`, `EntitlementLimitsService.swift`, `UsageTracker.swift`, `FirestoreDTOs.swift`, `EntitlementLimitsResponse.swift`; corrected `docs/decisions/resolved-v1.md` and `docs/backend/architecture.md`.
+
+### Verification / open item
+- iOS: `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` → **BUILD SUCCEEDED** (tests skipped per CLAUDE.md §2).
+- Backend verified by reading (not built/deployed by Claude per convention; user deploys). **Confirmed live:** a `/openrouter/recommend` call from uid `iY1EpZVPFXf38Ofw2Nmd8abGl7F2` at 16:53:54 UTC logged `creditGate.ok` (`operation: RECOMMENDATION, cost: 1`) — proving `creditGate` (not the old `rateLimitOnly`) runs and the legacy account healed into a real credit tier. No force-redeploy needed.
+
+## 2026-07-25 — Fix: GET /entitlement/limits HTTP 429 rate-limit block & credit engine model alignment
+
+### Problem
+- `GET /accountApi/entitlement/limits` returned `HTTP 429 rate_limit_exceeded`, causing `UsageTracker.refreshUsage` to fail with "Couldn't load usage limits (429)".
+- Root cause 1: `rateLimitOnly` middleware (the coarse 500 requests/day per-UID cap for proxy routes) was mounted on `/entitlement/limits` and `/analytics/config` in `buildAccountApp()`. When a user reached the 500 AI request cap, the status read endpoint `/entitlement/limits` was blocked with 429.
+- Root cause 2: `routes/entitlementLimits.ts` returned credit engine fields (`creditsRemaining`, `creditAllocation`, `operationCosts`, `operationCaps`, `billingCycleStart`, `autoReset`, `itemCap`) but omitted legacy fields `recommendationLimit` and `tryOnLimit`, which would fail `JSONDecoder` on iOS clients expecting legacy fields.
+
+### Fix
+1. **`backend/functions/src/app.ts`**: Removed `rateLimitOnly` middleware from `/entitlement/limits` and `/analytics/config` in `buildAccountApp()`. Read-only config endpoints perform lightweight Firestore reads and are uncapped by daily request limits.
+2. **`backend/functions/src/routes/entitlementLimits.ts`**: Added derived `recommendationLimit` and `tryOnLimit` back to the JSON payload for backwards compatibility.
+3. **`Vision_clother/Models/EntitlementLimitsResponse.swift`**: Updated `EntitlementLimitsResponse` to support credit engine fields (`creditsRemaining`, `creditAllocation`, `operationCosts`, `operationCaps`, `billingCycleStart`, `autoReset`) with a resilient custom `Decoder` initializer.
+4. **Docs**: Updated `docs/backend/architecture.md`.
+5. **Verification**: Ran `npm test` in `backend/functions` (all 71 vitest tests passed) and `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator build` (**BUILD SUCCEEDED**).
+
+## 2026-07-24 — Feature: Insights surfaces the learned Taste (Discover → "Taste" tab + taste callouts)
+
+### Problem
+- After the Unified Preference Engine landed, the app *learned* 10 taste dimensions but **no Insights sub-tab actually showed the user their likes/dislikes.** Overview/Trends/Wardrobe were pure closet statistics (composition, utilization, redundancy); Style surfaced taste only as a Style-DNA radar (one top key per dimension); the fifth tab ("Discover") was an empty "Coming Soon" placeholder. The user's ask: Insights should reflect *what they like and don't like* across colors, fits, materials, etc. — learned, not counted.
+
+### Fix
+- **New `Domain/TasteInsightsAggregator.swift`** (pure) — the read-side of the unified profile. Re-expresses the 10 flat affinity maps as ranked, human-labeled rows per dimension (Colors, Undertone, Patterns, Fit, Silhouette, Materials, Texture, Style, Fabric Weight, Formality), plus `loved`/`avoided` splits (> 0.6 / < 0.4, matching `StylistBrain`'s injection) and a one-line style "fingerprint". Drops neutral-only dimensions; gates on `AttributePreferenceProfile.hasSignal`. Local prettifier (profile's is private).
+- **"Discover" tab → "Taste"** (`Features/Insights/InsightsView.swift`, icon `heart.text.square`). New `TasteInsightsView` + `TasteInsightsViewModel` render a fingerprint header + one `.premiumCard` per dimension with the existing `RankedBarShareChart` (50% = neutral, higher = drawn to it) and love/avoid rows. Brand-new users see a "still learning" calibration prompt instead of a flat all-50% chart.
+- **Taste callouts on the other tabs** — shared `TasteCalloutCard` (fingerprint + top loved chips + "see the Taste tab") added to Overview, Trends, and Wardrobe. Overview/Trends VMs gained `refreshTaste(repository:)` (repo injected by the view, same pattern as `WardrobeInsightsView`); Wardrobe builds it from the `history.attributeProfile` it already fetches. Card self-hides until the profile has signal. Style tab left unchanged (its DNA radar already surfaces taste).
+- No engine/schema/backend changes — reads the profile swipes+ratings already populate. `xcodebuild -sdk iphonesimulator clean build` → **BUILD SUCCEEDED**.
+
+### Round 2 — legibility for non-fashion users (same day)
+- User feedback: color/undertone/silhouette jargon was unreadable, bars overflowed the screen (Style/Silhouette), and Style had too many rows.
+- `TasteInsightsAggregator`: **dropped the Silhouette dimension** (unreliable free-text AI output, overlaps Fit); plain-language color labels ("Bright & Bold" not "vibrant") + example color-swatch hexes; "Undertone" → **"Color Warmth"** with warm/cool swatches + a one-line caption; **case-insensitive merge** of free-text keys so "Cotton"/"cotton" render once; added `Row.swatchHexes` + `Dimension.caption`.
+- `TasteInsightsView`: replaced the reused `RankedBarShareChart` (whose unclipped trailing annotation + wide Y labels caused the overflow) with a **custom overflow-safe `TasteBarRow`** — fixed-width label column, proportional bar with a 50%-neutral tick, inline %, and a leading swatch cluster for color rows. All values shown (no capping). `xcodebuild` → **BUILD SUCCEEDED** (after clearing a corrupted DerivedData; not a code failure).
+
+## 2026-07-24 — Feature: Unified Preference Engine (one taste model, richer aspects, taste-aware shopping)
+
+### Problem
+- Two taste engines coexisted: the interpretable `AttributePreferenceProfile` (drives recommendations/Insights/Style DNA, already folds in swipes) and a separate pixel-embedding `VisualPreferenceProfile` (a hidden re-rank in `OutfitRecommendationEngine` + catalog tie-break, never surfaced in Insights). The user wanted **one** engine.
+- The vision LLM already extracts `fit`/`material`/`texture`/`undertone` per garment, but those were dropped — never learned as taste. `SwipeAttributeEvent` didn't even persist them.
+- Shopping / closet-gap suggestions used **zero** preference data (pure structural counts), so "buy the best items to improve your style" wasn't grounded in the user's taste.
+
+### Fix
+- **Retired the pixel engine.** Removed `visualProfile`/`itemEmbeddings` from `FeedbackHistory`, the `meanVisualBonus` term in `OutfitRecommendationEngine.outfitScore`, and the embedding pass in `WardrobeRepository.fetchFeedbackHistory()`. `WardrobeCatalogBuilder.rank` now orders by `AttributePreferenceProfile.affinityBonus(for:)`. Swipes bump a lightweight calibration counter (`WardrobeRepository.noteSwipeForCalibration`) for the ring; `applyImplicitSwipe` and the swipe-VM embedding path are gone. `SwipeEvent`/`VisualPreferenceState`/`WardrobeItemEmbedding`/`VisualPreferenceProfile` remain as inert types (kept to avoid a destructive SwiftData migration).
+- **Learned four new aspects.** `AttributePreferenceProfile` gained `undertoneAffinity`/`materialAffinity`/`textureAffinity`/`fitAffinity` (extended `RatedAttributes`/`OutfitDimensionRatedAttributes`/`ItemAttributeSnapshot`, both `build` loops, baselines, a 10-way `matchDetail` mean, and `hasSignal`). Swipes feed them full-strength; owned-item ratings reuse existing answers (undertone←colorLike, material/texture←comfort, fit←fit-centeredness). `SwipeAttributeEvent` now persists the four fields (`SchemaV14`, lightweight additive). Seasonality stays extraction-only (weather/context, not taste).
+- **Recommendations** — `StylistBrain` symmetric injection extended with Undertones/Materials/Textures/Fits.
+- **Insights** — `StyleDNAScorer` added Material Signature + Texture Preference (14 dimensions); Test Your Style auto-surfaces the new `matchDetail` components.
+- **Shopping** — `ClosetGapAnalyzer` and `ShoppingInsightsAggregator` now take the `attributeProfile`: structural gaps' `targetColorVibe`/descriptions steer toward the user's go-to vibe/material, plus a new "Preferred Style Underrepresented" gap. `WardrobeInsightsViewModel` fetches the version-cached history to pass it through.
+- `xcodebuild -sdk iphonesimulator clean build` → **BUILD SUCCEEDED**.
+
 ## 2026-07-24 — Fix: Swipe-to-Learn taste now learns attributes, not noisy pixel embeddings
 
 ### Problem

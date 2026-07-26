@@ -66,9 +66,22 @@ entitlementLimitsRouter.get("/", async (req: AuthedRequest, res) => {
   for (const slot of CORE_SLOTS) itemCap[slot] = tierConfig.itemCap.core;
   for (const slot of ACCESSORY_SLOTS) itemCap[slot] = tierConfig.itemCap.accessory;
 
+  const recCost = pricingConfig.operationCosts["RECOMMENDATION"] ?? 1;
+  const tryOnCost = pricingConfig.operationCosts["IMAGE_GEN"] ?? 10;
+  // A 0-cost operation is unmetered — emit -1 ("unlimited") rather than
+  // dividing by zero (which yields Infinity → JSON `null` → an iOS decode
+  // failure). The iOS client keys off `operationCosts["RECOMMENDATION"] === 0`
+  // for its unlimited display; this legacy field is retained for
+  // backwards-compat logging only. See `pricing.config.ts` for the unmetering
+  // rationale.
+  const recommendationLimit = recCost > 0 ? Math.floor(tierConfig.creditAllocation / recCost) : -1;
+  const tryOnLimit = tryOnCost > 0 ? Math.floor(tierConfig.creditAllocation / tryOnCost) : -1;
+
   logEvent("debug", "entitlementLimits.ok", { requestId: req.requestId, uid, tier: tierId });
   res.status(200).json({
     tier: tierId,
+    recommendationLimit,
+    tryOnLimit,
     creditsRemaining: creditsRemaining ?? tierConfig.creditAllocation,
     creditAllocation: tierConfig.creditAllocation,
     operationCosts: pricingConfig.operationCosts,

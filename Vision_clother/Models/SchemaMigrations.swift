@@ -611,6 +611,89 @@ enum SchemaV13: VersionedSchema {
             SwipeAttributeEvent.self,
         ]
     }
+
+    /// Frozen pre-`undertone`/`material`/`texture`/`fit` snapshot — same reason
+    /// `SchemaV4.VisualPreferenceState` exists: this schema version already
+    /// shipped (2026-07-24's attribute-space swipe deck), so its checksum must
+    /// keep reflecting the shape actually on disk. Must never be edited to track
+    /// the live `SwipeAttributeEvent` type. Nested (not top-level) — Swift
+    /// resolves the unqualified `SwipeAttributeEvent.self` reference in `models`
+    /// above to *this* nested type, not the live top-level one.
+    @Model
+    final class SwipeAttributeEvent {
+        @Attribute(.unique) var id: UUID
+        var sourcePhotoID: String
+        var imageURLString: String
+        var liked: Bool
+        var colorVibe: ColorVibe
+        var pattern: GarmentPattern
+        var formalityBand: Int
+        var fabricWeight: FabricWeight
+        var slot: Slot
+        var styleTags: [String]
+        var silhouette: String?
+        var recordedAt: Date
+
+        init(
+            id: UUID = UUID(),
+            sourcePhotoID: String,
+            imageURLString: String,
+            liked: Bool,
+            colorVibe: ColorVibe,
+            pattern: GarmentPattern,
+            formalityBand: Int,
+            fabricWeight: FabricWeight,
+            slot: Slot,
+            styleTags: [String],
+            silhouette: String?,
+            recordedAt: Date = .now
+        ) {
+            self.id = id
+            self.sourcePhotoID = sourcePhotoID
+            self.imageURLString = imageURLString
+            self.liked = liked
+            self.colorVibe = colorVibe
+            self.pattern = pattern
+            self.formalityBand = formalityBand
+            self.fabricWeight = fabricWeight
+            self.slot = slot
+            self.styleTags = styleTags
+            self.silhouette = silhouette
+            self.recordedAt = recordedAt
+        }
+    }
+}
+
+/// V13 -> V14 adds four optional columns to `SwipeAttributeEvent`
+/// (`undertone`/`material`/`texture`/`fit` — the Unified Preference Engine's
+/// richer swipe taste, 2026-07-24) with no changes to any other V13 type. Every
+/// new column is optional, so like V6 -> V7 this needs no `.custom` stage;
+/// `.lightweight` lets SwiftData infer the migration and every pre-existing row
+/// reads those attributes as `nil` (they predate the columns entirely).
+enum SchemaV14: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(14, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+            WornLogEntry.self,
+            ItemPairBan.self,
+            SwipeAttributeEvent.self,
+        ]
+    }
 }
 
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
@@ -624,9 +707,9 @@ private enum SavedCombinationMigrationCache {
 }
 
 enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self, SchemaV12.self, SchemaV13.self] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self, SchemaV12.self, SchemaV13.self, SchemaV14.self] }
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11, migrateV11toV12, migrateV12toV13] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11, migrateV11toV12, migrateV12toV13, migrateV13toV14] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -716,5 +799,10 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV12toV13 = MigrationStage.lightweight(
         fromVersion: SchemaV12.self,
         toVersion: SchemaV13.self
+    )
+
+    static let migrateV13toV14 = MigrationStage.lightweight(
+        fromVersion: SchemaV13.self,
+        toVersion: SchemaV14.self
     )
 }

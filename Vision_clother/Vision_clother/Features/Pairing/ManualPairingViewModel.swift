@@ -2,10 +2,20 @@
 //  ManualPairingViewModel.swift
 //  Vision_clother
 //
-//  Manual Outfit Pairing with AI Virtual Try-On: the user picks a top and a
-//  bottom from their own closet (real ingested items only — Ghost Elements
-//  can't be sent to OpenRouter for a real render) and generates a try-on preview
-//  of themselves wearing both, via Services/OpenRouterTryOnRenderService.swift.
+//  Manual Outfit Pairing with AI Virtual Try-On: the user picks garments from
+//  their own closet (real ingested items only — Ghost Elements can't be sent
+//  to OpenRouter for a real render) across any of the seven slots and
+//  generates a try-on preview of themselves wearing them, via
+//  Services/OpenRouterTryOnRenderService.swift.
+//
+//  Slot coverage (2026-07-25): previously hardcoded to a single top + bottom.
+//  The underlying `TryOnRenderService.renderTryOn(items:)` already composes an
+//  arbitrary number of garment images in one call (the recommendation-carousel
+//  try-on path passes full multi-slot outfits), so this screen now offers one
+//  picker per slot the user actually owns items in. At least one garment must
+//  be selected to render — the base portrait already shows the user fully
+//  dressed, so compositing even a single new piece (e.g. "how does this jacket
+//  look on me?") is a valid try-on.
 //
 //  The preview is fully ephemeral: nothing about the generated image is
 //  persisted. "Save this outfit?" only records a positive signal through
@@ -35,10 +45,13 @@ final class ManualPairingViewModel {
     /// observes this to dismiss the screen, matching AddItemViewModel.didSave.
     private(set) var didSaveOutfit = false
 
-    let availableTops: [WardrobeItem]
-    let availableBottoms: [WardrobeItem]
-    var selectedTop: WardrobeItem?
-    var selectedBottom: WardrobeItem?
+    /// Real (non-ghost) inventory grouped by slot — only slots the user owns
+    /// at least one item in appear as pickers (see `orderedAvailableSlots`).
+    let availableItemsBySlot: [Slot: [WardrobeItem]]
+    /// The user's current pick per slot (absent = nothing chosen for that
+    /// slot). Optional slots stay empty until the user taps one; a second tap
+    /// on the same item clears it (see `selectItem`).
+    var selected: [Slot: WardrobeItem] = [:]
 
     private let repository: WardrobeRepository
     private let validationService: PersonPhotoValidationService
@@ -70,38 +83,57 @@ final class ManualPairingViewModel {
         self.hasPortrait = UserPortraitStorage.exists
 
         let inventory = (try? repository.fetchInventory()) ?? []
-        self.availableTops = inventory.filter { $0.slot == .top && !$0.isGhostElement }
-        self.availableBottoms = inventory.filter { $0.slot == .bottom && !$0.isGhostElement }
+        self.availableItemsBySlot = Dictionary(
+            grouping: inventory.filter { !$0.isGhostElement },
+            by: { $0.slot }
+        )
+    }
+
+    /// Slots that have at least one selectable item, in the canonical
+    /// `Slot.allCases` order (top → bottom → footwear → outerwear → headwear →
+    /// accessory → bag) so the pickers always render in a stable, familiar
+    /// order regardless of `Dictionary` iteration order.
+    var orderedAvailableSlots: [Slot] {
+        Slot.allCases.filter { !(availableItemsBySlot[$0]?.isEmpty ?? true) }
+    }
+
+    /// The picked garments in canonical slot order — what gets sent to the
+    /// render service and used to build the saved combination.
+    var orderedSelectedItems: [WardrobeItem] {
+        Slot.allCases.compactMap { selected[$0] }
     }
 
     /// Quota visibility feature: proactively blocks the same 0-guest-cap /
     /// exhausted-free-tier-cap condition the server would otherwise reject
     /// with `TryOnError.signInRequired`/`.quotaExceeded` — see
-    /// `Data/UsageTracker.swift`.
+    /// `Data/UsageTracker.swift`. Needs a portrait, at least one selected
+    /// garment, and remaining try-on credits.
     var canGeneratePreview: Bool {
-        hasPortrait && selectedTop != nil && selectedBottom != nil && usageTracker.combinationsRemaining > 0
+        hasPortrait && !selected.isEmpty && usageTracker.combinationsRemaining > 0
     }
 
-    /// Selecting a different item mid-generation cancels whatever's in
-    /// flight so a stale result can never overwrite a newer selection.
-    func selectTop(_ item: WardrobeItem) {
+    /// Toggling a garment: selecting a different item mid-generation cancels
+    /// whatever's in flight so a stale result can never overwrite a newer
+    /// selection. Tapping the already-selected item in a slot clears that slot
+    /// (so an optional accent can be removed after being added).
+    func selectItem(_ item: WardrobeItem) {
         cancelGeneration()
-        selectedTop = item
-    }
-
-    func selectBottom(_ item: WardrobeItem) {
-        cancelGeneration()
-        selectedBottom = item
+        if selected[item.slot]?.id == item.id {
+            selected[item.slot] = nil
+        } else {
+            selected[item.slot] = item
+        }
     }
 
     /// Kicks off validate -> prepare -> generate. Safe to call again after
     /// `.failed` — that's the Retry affordance's path.
     func generatePreview() {
-        guard let top = selectedTop, let bottom = selectedBottom else { return }
+        let items = orderedSelectedItems
+        guard !items.isEmpty else { return }
         guard usageTracker.combinationsRemaining > 0 else {
             state = .failed(usageTracker.isAnonymousQuota
                              ? "Sign in to try this on."
-                             : "You've used all your combinations this month.")
+                             : "You're out of credits for try-ons. Buy more in Profile.")
             return
         }
         generationTask?.cancel()
@@ -109,10 +141,10 @@ final class ManualPairingViewModel {
         currentGenerationID = generationID
         didSaveOutfit = false
         state = .validatingPhoto
-        AppLog.info(.viewModel, "ManualPairingViewModel.generatePreview: generationID=\(generationID) top=\(top.id) bottom=\(bottom.id)")
+        AppLog.info(.viewModel, "ManualPairingViewModel.generatePreview: generationID=\(generationID) items=\(items.map(\.id))")
 
         generationTask = Task { [weak self] in
-            await self?.runPipeline(top: top, bottom: bottom, generationID: generationID)
+            await self?.runPipeline(items: items, generationID: generationID)
         }
     }
 
@@ -123,7 +155,7 @@ final class ManualPairingViewModel {
         state = .idle
     }
 
-    private func runPipeline(top: WardrobeItem, bottom: WardrobeItem, generationID: UUID) async {
+    private func runPipeline(items: [WardrobeItem], generationID: UUID) async {
         guard generationID == currentGenerationID else { return }
         guard let portraitData = UserPortraitStorage.load() else {
             state = .failed("Add a photo of yourself first.")
@@ -153,7 +185,7 @@ final class ManualPairingViewModel {
         state = .preparingImages
 
         guard !Task.isCancelled, generationID == currentGenerationID else { return }
-        await tryOnService.renderTryOn(baseImageData: portraitData, items: [top, bottom]) { [weak self] tryOnState in
+        await tryOnService.renderTryOn(baseImageData: portraitData, items: items) { [weak self] tryOnState in
             Task { @MainActor in
                 self?.apply(tryOnState, generationID: generationID)
             }
@@ -179,21 +211,29 @@ final class ManualPairingViewModel {
 
     // MARK: - Save / discard
 
-    /// Records the PRD §3.6 feedback signal — `liked` now reflects the
-    /// user's actual Like/Dislike choice rather than being hardcoded to
-    /// `true` — then durably persists the generated image itself via
-    /// `ImageStorage` + `SavedCombination` (Data/CLAUDE.md's
+    /// Records the PRD §3.6 feedback signal — `liked` reflects the user's
+    /// actual Like/Dislike choice — then durably persists the generated image
+    /// itself via `ImageStorage` + `SavedCombination` (Data/CLAUDE.md's
     /// file-persistence boundary) and mirrors it to the Photos library. Both
-    /// Like and Dislike always save, so a disliked pairing still gets a
-    /// durable id for its feedback row to reference and still shows up in
-    /// Combinations history. A Photos-write failure is non-fatal: the
-    /// app-local save already succeeded by that point.
+    /// Like and Dislike always save, so a disliked pairing still gets a durable
+    /// id for its feedback row to reference and still shows up in Combinations
+    /// history. Pair feedback is recorded for every unordered pair of selected
+    /// garments (not just top+bottom) so the Pair-Compatibility Scoring engine
+    /// learns from the full multi-slot outfit. A Photos-write failure is
+    /// non-fatal: the app-local save already succeeded by that point.
     func saveOutfit(liked: Bool) async {
-        guard let top = selectedTop, let bottom = selectedBottom else { return }
+        let items = orderedSelectedItems
+        guard !items.isEmpty else { return }
         guard case .success(let imageURL) = state else { return }
-        AppLog.info(.viewModel, "ManualPairingViewModel.saveOutfit: top=\(top.id) bottom=\(bottom.id) liked=\(liked)")
+        AppLog.info(.viewModel, "ManualPairingViewModel.saveOutfit: items=\(items.map(\.id)) liked=\(liked)")
 
-        try? repository.recordPairFeedback(itemAID: top.id, itemBID: bottom.id, likedTogether: liked)
+        // Every unordered pair in the outfit — the pair engine is symmetric,
+        // so record each pair once.
+        for i in items.indices {
+            for j in items.indices where j > i {
+                try? repository.recordPairFeedback(itemAID: items[i].id, itemBID: items[j].id, likedTogether: liked)
+            }
+        }
 
         if let imageData = try? Data(contentsOf: imageURL) {
             if let assetName = try? ImageStorage.save(imageData) {
@@ -212,16 +252,15 @@ final class ManualPairingViewModel {
                 let combination = SavedCombination(
                     id: combinationID,
                     imageAssetName: assetName,
-                    itemIDsBySlot: [.top: top.id, .bottom: bottom.id],
-                    labelsBySlot: [.top: top.displayLabel, .bottom: bottom.displayLabel],
+                    itemIDsBySlot: selected.mapValues(\.id),
+                    labelsBySlot: selected.mapValues(\.displayLabel),
                     origin: "pairing",
                     basePortraitFingerprint: basePortraitFingerprint
                 )
                 // `saveCombination` may return an existing row's id instead
-                // of `combinationID` if this exact top+bottom pairing is
-                // already saved (never a duplicate row for the same
-                // outfit) — feedback must reference whichever id is
-                // actually persisted.
+                // of `combinationID` if this exact pairing is already saved
+                // (never a duplicate row for the same outfit) — feedback must
+                // reference whichever id is actually persisted.
                 let persistedID = (try? repository.saveCombination(combination)) ?? combinationID
                 try? repository.recordOutfitFeedback(outfitID: persistedID, likedOverall: liked)
             }

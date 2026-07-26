@@ -48,11 +48,20 @@ export interface PricingConfig {
  * UPLOAD is defined here (and enforceable by `creditGate.ts`) but has no
  * mounted route yet — wardrobe photo uploads still go straight to Cloud
  * Storage, unchanged. Cost of 0 until a real upload gate is wired up.
+ *
+ * RECOMMENDATION is deliberately 0 (unmetered): outfit recommendations and
+ * wardrobe/Insights Q&A are the app's free core loop — charging for them
+ * suppressed the very engagement that trains the taste model, so credits are
+ * now a pure *try-on render* (IMAGE_GEN) currency. A 0-cost operation always
+ * clears `creditGate.ts`'s balance check (`totalCredits >= 0`) and debits
+ * nothing; abuse is bounded instead by the coarse per-UID `rateLimitOnly`
+ * daily cap in `governance.ts`, not by the credit wallet. `config/pricing`
+ * can retune this at ops pace without a redeploy if that ever changes.
  */
 export const DEFAULT_OPERATION_COSTS: Record<OperationType, number> = {
   UPLOAD: 0,
   IMAGE_GEN: 5,
-  RECOMMENDATION: 1,
+  RECOMMENDATION: 0,
 };
 
 /**
@@ -89,13 +98,9 @@ export const DEFAULT_TIER_CONFIGS: Record<string, TierConfig> = {
   },
 };
 
-/** `core` = top/bottom/footwear (`Slot.isRequired`); `accessory` = everything else. Mirrors `Models/WardrobeItem.swift`'s `Slot` raw values. */
+/** `core` = top/bottom/footwear (`Slot.isRequired`); `accessory` = everything else. Mirrors `Models/WardrobeItem.swift`'s `Slot` raw values. `routes/entitlementLimits.ts` iterates these directly to build its per-slot `itemCap` map. */
 export const CORE_SLOTS = ["top", "bottom", "footwear"] as const;
 export const ACCESSORY_SLOTS = ["outerwear", "headwear", "accessory", "bag"] as const;
-
-export function itemCapForSlot(slot: string, itemCap: { core: number; accessory: number }): number {
-  return (CORE_SLOTS as readonly string[]).includes(slot) ? itemCap.core : itemCap.accessory;
-}
 
 /**
  * This config changes at ops pace, not per-request — same TTL rationale as
@@ -176,10 +181,6 @@ export async function getPricingConfig(requestId: string | undefined): Promise<P
   const config = await fetchPricingConfig(requestId);
   cache = { cachedAt: Date.now(), config };
   return config;
-}
-
-export function getOperationCost(operation: OperationType, config: PricingConfig): number {
-  return config.operationCosts[operation];
 }
 
 export function getTierConfig(tierId: string, config: PricingConfig): TierConfig | undefined {

@@ -355,6 +355,23 @@ final class DailyAssistantViewModel {
         await sendTurn(userText: trimmed, mentionedItemIDs: mentionedIDs)
     }
 
+    /// Auto-run entry for the Outfit-of-the-Day notification tap (C2) — asks
+    /// for today's outfit as a turn. Weather is already injected by the
+    /// recommendation path, so the plain prompt is enough. Starts a fresh
+    /// conversation if none is in progress, otherwise continues the current
+    /// one; a no-op while a request is already loading so a double-tap can't
+    /// stack two calls.
+    func askForTodaysOutfit() async {
+        guard extractionState != .loading else { return }
+        let todayPrompt = "What should I wear today?"
+        if rounds.isEmpty {
+            prompt = todayPrompt
+            await requestOutfitIdeas()
+        } else {
+            await continueConversation(with: todayPrompt)
+        }
+    }
+
     /// Continues the SAME conversation — called identically by a chip tap
     /// (the chip's own label as `text`), a free-text reply to a pending
     /// clarification, and a post-result refinement ("no bag or graphic
@@ -660,7 +677,7 @@ final class DailyAssistantViewModel {
                 )
             }
             // Same posture as `resolveOutfits`: this call already cleared
-            // the server's quotaGate("recommendation") regardless of how it
+            // the server's creditGate("RECOMMENDATION") regardless of how it
             // classified the message, so the optimistic local mirror is
             // bumped here too, not only on a confirmed answer.
             usageTracker.recordRecommendationUsed()
@@ -717,11 +734,11 @@ final class DailyAssistantViewModel {
                 )
             }
             // A call that reaches this point already cleared the server's
-            // quotaGate("recommendation") — see backend/functions/src/
-            // middleware/quota.ts — so the monthly counter has already been
-            // incremented server-side regardless of what this response
-            // resolves to (clarification vs. outfits). Bump the local
-            // optimistic mirror here so the UI reflects it instantly.
+            // creditGate("RECOMMENDATION") — see backend/functions/src/
+            // middleware/creditGate.ts — so the credit debit has already
+            // happened server-side regardless of what this response resolves
+            // to (clarification vs. outfits). Bump the local optimistic
+            // mirror here so the UI reflects it instantly.
             usageTracker.recordRecommendationUsed()
             // Clarification Loop (Stylist Intelligence Engine ADR,
             // Phase 2): the model asked a follow-up instead of

@@ -72,15 +72,16 @@ struct CreditsStoreView: View {
                 case .failed:
                     storeUnavailableContent
                 case .loaded(let products):
-                    packSection(
-                        title: "Recommendations",
-                        footer: "Used when your monthly free recommendations run out. Purchased credits never expire.",
-                        creditType: .recommendation,
-                        products: products
-                    )
+                    // Recommendations and wardrobe/style questions are always
+                    // free (unmetered — see `UsageTracker.isRecommendationUnmetered`),
+                    // so credits are now a pure try-on-render currency. The
+                    // recommendation-credit packs still exist server-side
+                    // (fungible `purchased_credits_remaining`) but are no longer
+                    // surfaced for sale — the full membership+render paywall is
+                    // the next step (plan A3).
                     packSection(
                         title: "Try-On Renders",
-                        footer: "Used when your monthly free try-ons run out. Purchased credits never expire.",
+                        footer: "Recommendations and style questions are always free — credits are only spent on try-on renders. Purchased credits never expire.",
                         creditType: .tryOn,
                         products: products
                     )
@@ -99,15 +100,17 @@ struct CreditsStoreView: View {
         }
     }
 
-    /// Current purchased balances, straight from the shared `UsageTracker`
-    /// read-model (`purchased*Balance` on `users/{uid}/meta/usage`) — the
-    /// same source `AccountSectionView`'s readout uses, so a fresh grant
-    /// shows up here the moment `refreshUsage()` lands.
+    /// Current purchased-credit balance, straight from the shared
+    /// `UsageTracker` read-model (`purchased_credits_remaining` on
+    /// `users/{uid}/meta/usage`) — the same source `AccountSectionView`'s
+    /// readout uses, so a fresh grant shows up here the moment
+    /// `refreshUsage()` lands. Purchased credits are a single pool spendable
+    /// on either recommendations or try-ons (at their per-operation cost),
+    /// never expiring — see `Data/UsageTracker.swift`.
     private var balancesContent: some View {
         Section {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(usageTracker.purchasedRecommendationsRemaining) purchased recommendations remaining")
-                Text("\(usageTracker.purchasedCombinationsRemaining) purchased try-ons remaining")
+                Text("\(usageTracker.purchasedCreditsRemaining) purchased credits remaining")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

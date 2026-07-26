@@ -566,21 +566,77 @@ struct SyncStatusDTO: Codable {
     var lastPulledAt: Date?
 }
 
-/// Bookkeeping-only doc (`users/{uid}/meta/usage`) — written exclusively by
-/// the Admin SDK (`backend/functions/src/middleware/quota.ts`'s quota
+/// The credit-wallet doc (`users/{uid}/meta/usage`) — written exclusively by
+/// the Admin SDK (`backend/functions/src/middleware/creditGate.ts`'s credit
 /// transaction and `backend/functions/src/routes/iapVerify.ts`'s purchase
 /// grants; `backend/firestore.rules` denies client writes to this doc).
-/// Read-only on the client, for `AccountSectionView`'s usage readout only —
-/// never used to gate anything, since the proxy is the sole enforcer.
+/// Read-only on the client, the read-model behind `UsageTracker`'s quota
+/// display — never used to gate anything, since the proxy is the sole
+/// enforcer.
 ///
-/// The `purchased*Balance` fields are lifetime StoreKit credit balances,
-/// fully decoupled from the monthly `periodKey` reset. Optional is
-/// load-bearing: usage docs and `UsageTracker`'s UserDefaults caches that
-/// predate the IAP feature lack these fields entirely.
+/// Mirrors the fields `creditGate.ts` owns on the doc:
+/// `subscription_credits_remaining` (the tier allocation, refilled monthly on
+/// the `billing_cycle_start` anniversary for `autoReset` tiers) and
+/// `purchased_credits_remaining` (lifetime StoreKit top-ups, never reset) are
+/// a split wallet — recommendations and try-ons both spend from their sum, at
+/// per-operation costs the server reports via `/entitlement/limits`.
+/// `usage_counts` mirrors `creditGate.ts`'s per-cycle operation counts (used
+/// for hard-cap checks and the "used this month" readout).
+///
+/// All fields decode defensively (`decodeIfPresent` with safe defaults):
+/// a `nil` `tierId` means a doc that `creditGate.ts` hasn't migrated to the
+/// credit shape yet (a pre-rewrite legacy doc, or `UsageTracker`'s
+/// UserDefaults cache from before this shape) — `UsageTracker` treats that as
+/// "unknown, fall back to server-resolved `limits`" rather than as real zero
+/// balances.
 struct UsageDTO: Codable {
-    var periodKey: String
-    var recommendationCount: Int
-    var tryOnCount: Int
-    var purchasedRecommendationBalance: Int?
-    var purchasedTryOnBalance: Int?
+    /// `GUEST`/`FREE`/`PRO` (`meta/usage.tier_id`), or `nil` for a doc not yet
+    /// migrated to the credit shape.
+    var tierId: String?
+    var subscriptionCreditsRemaining: Int
+    var purchasedCreditsRemaining: Int
+    /// Keyed by `OperationType` raw value (`RECOMMENDATION`/`IMAGE_GEN`/`UPLOAD`).
+    var usageCounts: [String: Int]
+    /// Epoch milliseconds of the current billing cycle's start.
+    var billingCycleStart: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case tierId = "tier_id"
+        case subscriptionCreditsRemaining = "subscription_credits_remaining"
+        case purchasedCreditsRemaining = "purchased_credits_remaining"
+        case usageCounts = "usage_counts"
+        case billingCycleStart = "billing_cycle_start"
+    }
+
+    init(
+        tierId: String?,
+        subscriptionCreditsRemaining: Int,
+        purchasedCreditsRemaining: Int,
+        usageCounts: [String: Int],
+        billingCycleStart: Double?
+    ) {
+        self.tierId = tierId
+        self.subscriptionCreditsRemaining = subscriptionCreditsRemaining
+        self.purchasedCreditsRemaining = purchasedCreditsRemaining
+        self.usageCounts = usageCounts
+        self.billingCycleStart = billingCycleStart
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tierId = try c.decodeIfPresent(String.self, forKey: .tierId)
+        subscriptionCreditsRemaining = try c.decodeIfPresent(Int.self, forKey: .subscriptionCreditsRemaining) ?? 0
+        purchasedCreditsRemaining = try c.decodeIfPresent(Int.self, forKey: .purchasedCreditsRemaining) ?? 0
+        usageCounts = try c.decodeIfPresent([String: Int].self, forKey: .usageCounts) ?? [:]
+        // Firestore may store the epoch-ms anniversary as an int64 rather than
+        // a double; tolerate either (and never let a mismatch on this
+        // non-critical field fail the whole decode).
+        if let asDouble = try? c.decodeIfPresent(Double.self, forKey: .billingCycleStart) {
+            billingCycleStart = asDouble
+        } else if let asInt = try? c.decodeIfPresent(Int.self, forKey: .billingCycleStart) {
+            billingCycleStart = Double(asInt)
+        } else {
+            billingCycleStart = nil
+        }
+    }
 }

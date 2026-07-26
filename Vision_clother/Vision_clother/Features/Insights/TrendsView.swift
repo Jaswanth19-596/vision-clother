@@ -14,6 +14,7 @@ import SwiftData
 import SwiftUI
 
 struct TrendsView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var inventory: [WardrobeItem]
     @Query(sort: \ItemRating.recordedAt, order: .reverse) private var itemRatings: [ItemRating]
     @Query(sort: \OutfitFeedback.recordedAt, order: .reverse) private var outfitFeedbacks: [OutfitFeedback]
@@ -36,6 +37,8 @@ struct TrendsView: View {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
                         TimeRangeSelector(selection: $timeRange)
 
+                        TasteCalloutCard(snapshot: viewModel.tasteSnapshot)
+
                         if let snapshot = viewModel.snapshot {
                             trendCard(title: "Color Trend", chart: snapshot.colorTrend)
                             trendCard(title: "Category Trend", chart: snapshot.categoryTrend)
@@ -51,6 +54,7 @@ struct TrendsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             viewModel.loadConfigIfNeeded()
+            viewModel.refreshTaste(repository: SyncingWardrobeRepository(modelContext: modelContext))
             recompute()
         }
         .onChange(of: timeRange) { recompute() }

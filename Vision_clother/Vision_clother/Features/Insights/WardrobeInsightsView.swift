@@ -13,10 +13,11 @@ import SwiftData
 import SwiftUI
 
 struct WardrobeInsightsView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var inventory: [WardrobeItem]
     @Query private var wornLogEntries: [WornLogEntry]
 
-    @State private var viewModel = WardrobeInsightsViewModel()
+    @State private var viewModel: WardrobeInsightsViewModel?
 
     private var itemsByID: [UUID: WardrobeItem] {
         Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
@@ -31,15 +32,16 @@ struct WardrobeInsightsView: View {
                     systemImage: "tshirt",
                     description: Text("Add a few items to your closet to see wardrobe insights here.")
                 )
-            } else if let snapshot = viewModel.snapshot, !snapshot.hasEnoughItems {
+            } else if let viewModel, let snapshot = viewModel.snapshot, !snapshot.hasEnoughItems {
                 ContentUnavailableView(
                     "Still Building Your Closet",
                     systemImage: "tshirt",
                     description: Text("Add \(max(0, viewModel.thresholds.wardrobeInsightsMinItems - snapshot.totalRealItems)) more item\(viewModel.thresholds.wardrobeInsightsMinItems - snapshot.totalRealItems == 1 ? "" : "s") to unlock wardrobe insights.")
                 )
-            } else if let snapshot = viewModel.snapshot {
+            } else if let viewModel, let snapshot = viewModel.snapshot {
                 ScrollView {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
+                        TasteCalloutCard(snapshot: viewModel.tasteSnapshot)
                         if let gapReport = viewModel.gapReport {
                             ClosetGapView(report: gapReport)
                         }
@@ -63,7 +65,10 @@ struct WardrobeInsightsView: View {
         .navigationTitle("Wardrobe")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            viewModel.loadConfigIfNeeded()
+            if viewModel == nil {
+                viewModel = WardrobeInsightsViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
+            }
+            viewModel?.loadConfigIfNeeded()
             recompute()
         }
         .onChange(of: inventory.count) { recompute() }
@@ -71,7 +76,7 @@ struct WardrobeInsightsView: View {
     }
 
     private func recompute() {
-        viewModel.recompute(inventory: inventory, wornLogEntries: wornLogEntries)
+        viewModel?.recompute(inventory: inventory, wornLogEntries: wornLogEntries)
     }
 
     @ViewBuilder
@@ -87,7 +92,8 @@ struct WardrobeInsightsView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                let remaining = max(0, viewModel.thresholds.wardrobeInsightsMinWornLogs - wornLogEntries.count)
+                let minWornLogs = viewModel?.thresholds.wardrobeInsightsMinWornLogs ?? AnalyticsConfigResponse.conservativeDefault.wardrobeInsightsMinWornLogs
+                let remaining = max(0, minWornLogs - wornLogEntries.count)
                 Text("Log \(remaining) more wear\(remaining == 1 ? "" : "s") to unlock your utilization rate.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

@@ -39,6 +39,9 @@ struct Vision_clotherApp: App {
     /// (`Services/StoreKitPaymentManager.swift`) survives as long as the
     /// app does — same lifetime rationale as `usageTracker`.
     private let paymentManager: StoreKitPaymentManager
+    /// App-level navigation (selected tab + Outfit-of-the-Day deep link) —
+    /// retained for the app's lifetime, injected into the environment.
+    private let navigator = AppNavigator()
     private let notificationDelegate = NotificationDelegate()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -47,7 +50,7 @@ struct Vision_clotherApp: App {
         // Config/FirebaseBootstrap.swift.
         FirebaseBootstrap.configure()
 
-        let schema = Schema(SchemaV13.models)
+        let schema = Schema(SchemaV14.models)
         let container: ModelContainer
         do {
             container = try ModelContainer(
@@ -85,15 +88,21 @@ struct Vision_clotherApp: App {
         notificationDelegate.onNotificationTapped = { [store] in
             store.isPanelPresented = true
         }
+        // Outfit-of-the-Day reminder tap → Daily Assistant + auto-run today's
+        // outfit (see DailyOutfitReminder / AppNavigator).
+        notificationDelegate.onDailyOutfitTapped = { [navigator] in
+            navigator.requestDailyOutfit()
+        }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
+            AppRootView()
                 .environment(jobQueueStore)
                 .environment(syncCoordinator)
                 .environment(usageTracker)
                 .environment(paymentManager)
+                .environment(navigator)
                 // Starts the lifetime Transaction.updates listener and
                 // replays unfinished purchases from prior sessions — must
                 // run as early as possible so an interrupted purchase is

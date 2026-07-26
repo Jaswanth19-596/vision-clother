@@ -18,9 +18,11 @@
  * — the two option types aren't the same TS type but share these field
  * names, so a structural shape keeps this file trigger-type-agnostic.
  */
+import type { MemoryOption } from "firebase-functions/v2/options";
+
 interface ScalingConfig {
   cpu?: number;
-  memory?: string;
+  memory?: MemoryOption;
   concurrency?: number;
   maxInstances?: number;
   minInstances?: number;

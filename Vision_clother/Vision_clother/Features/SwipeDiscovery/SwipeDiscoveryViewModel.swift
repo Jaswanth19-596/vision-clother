@@ -2,13 +2,15 @@
 //  SwipeDiscoveryViewModel.swift
 //  Vision_clother
 //
-//  Swipe-to-Learn Visual Taste: loads a deck of licensed stock photos
-//  (`Services/StockImageFeedService.swift`) and, on each swipe, embeds the
-//  downloaded photo (`Services/ImageEmbeddingService.swift`) and folds it
-//  into the persisted visual-taste centroids via
-//  `WardrobeRepository.recordSwipe`. Persistence runs in the background so
-//  the swipe gesture itself never blocks on network/Vision work — the deck
-//  advances immediately, matching every other swipe-card UX.
+//  Swipe-to-Learn (attribute space): loads a deck of licensed stock photos
+//  (`Services/StockImageFeedService.swift`) and, on each swipe, tags the worn
+//  garment with the vision LLM (`Services/VisionMetadataExtractionService.swift`,
+//  `.wornInScene`) and folds its attributes into the one taste engine
+//  (`Domain/AttributePreferenceProfile.swift`) via
+//  `WardrobeRepository.recordSwipeAttributes`. A cheap `noteSwipeForCalibration`
+//  call bumps the calibration ring. The former pixel-embedding path was retired
+//  2026-07-24. Persistence runs in the background so the swipe gesture never
+//  blocks on network/Vision work — the deck advances immediately.
 //
 
 import Foundation
@@ -61,17 +63,6 @@ final class SwipeDiscoveryViewModel {
     private(set) var calibrationProgress: Double = 0
     private(set) var isTrained: Bool = false
 
-    /// Live, per-swipe centroid drift (`VisualClusterUpdater.update`'s return
-    /// value, as a fraction — e.g. `0.034` for 3.4%), surfaced as a transient
-    /// toast so the user sees the model's math actually move on every swipe,
-    /// rather than inferring "it's learning" from `calibrationProgress`'s
-    /// swipe-count ring alone. `nil` when the most recent swipe seeded a
-    /// fresh centroid instead of nudging one (no drift to report) — those
-    /// swipes don't trigger the toast.
-    private(set) var lastDriftAmount: Double = 0
-    private(set) var showDriftFeedback: Bool = false
-    private var driftFeedbackDismissTask: Task<Void, Never>?
-
     /// Once the deck runs low, top up rather than making the user hit a
     /// hard "no more photos" wall mid-session.
     private let refillThreshold = 5
@@ -79,12 +70,9 @@ final class SwipeDiscoveryViewModel {
 
     private let repository: WardrobeRepository
     private let feedService: StockImageFeedService
-    private let embeddingService: ImageEmbeddingService
-    /// Extracts the worn garment's attributes from each swiped photo — the
-    /// *primary* Swipe-to-Learn signal now, feeding
-    /// `Domain/AttributePreferenceProfile.swift` (the same space
-    /// recommendations reason in), while `embeddingService`'s pixel centroids
-    /// remain a secondary signal.
+    /// Extracts the worn garment's attributes from each swiped photo — the sole
+    /// Swipe-to-Learn signal now, feeding `Domain/AttributePreferenceProfile.swift`
+    /// (the same engine recommendations, Insights and shopping reason in).
     private let visionService: VisionMetadataExtractionService
     private let session: URLSession
 
@@ -96,13 +84,11 @@ final class SwipeDiscoveryViewModel {
     init(
         repository: WardrobeRepository,
         feedService: StockImageFeedService,
-        embeddingService: ImageEmbeddingService,
         visionService: VisionMetadataExtractionService,
         session: URLSession = .shared
     ) {
         self.repository = repository
         self.feedService = feedService
-        self.embeddingService = embeddingService
         self.visionService = visionService
         self.session = session
     }
@@ -165,21 +151,13 @@ final class SwipeDiscoveryViewModel {
                 throw StockImageFeedError.invalidResponse
             }
             let (data, _) = try await session.data(from: url)
-            let embedding = try await embeddingService.embedding(for: data)
-            let drift = try repository.recordSwipe(
-                sourcePhotoID: photo.id,
-                imageURLString: photo.imageURLString,
-                liked: liked,
-                embedding: embedding
-            )
+            // Bump the calibration ring immediately (cheap, no network/Vision).
+            try repository.noteSwipeForCalibration()
             refreshCalibrationState()
-            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: ok photo=\(photo.id) liked=\(liked) drift=\(drift.map(String.init(describing:)) ?? "nil")")
-            if let drift {
-                presentDriftFeedback(drift / 100.0)
-            }
-            // Primary signal: learn attribute affinities from the worn garment.
-            // Best-effort and separate from the visual path above — a tagging
-            // failure must not undo the swipe the user already saw commit.
+            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: ok photo=\(photo.id) liked=\(liked)")
+            // The taste signal itself: tag the worn garment and fold its
+            // attributes into the one preference engine. Best-effort — a
+            // tagging failure must not undo the swipe the user already saw commit.
             await tagSwipeAttributes(photo, liked: liked, imageData: data)
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: failed photo=\(photo.id) — \(String(describing: error))")
@@ -209,20 +187,6 @@ final class SwipeDiscoveryViewModel {
             AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: ok photo=\(photo.id) liked=\(liked) slot=\(metadata.slot.rawValue)")
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: failed photo=\(photo.id) — \(String(describing: error))")
-        }
-    }
-
-    /// Shows the live drift toast for ~1.5s, then auto-dismisses — cancels
-    /// any still-pending dismiss from a prior swipe first so a fast series of
-    /// swipes doesn't fight itself with overlapping auto-hide timers.
-    private func presentDriftFeedback(_ amount: Double) {
-        driftFeedbackDismissTask?.cancel()
-        lastDriftAmount = amount
-        showDriftFeedback = true
-        driftFeedbackDismissTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled else { return }
-            self?.showDriftFeedback = false
         }
     }
 }

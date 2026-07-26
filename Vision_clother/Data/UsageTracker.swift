@@ -2,20 +2,25 @@
 //  UsageTracker.swift
 //  Vision_clother
 //
-//  Quota visibility feature (2026-07-17): the single live source of quota
-//  state consumed by every point-of-use quota display/proactive-disable
-//  (Add Item, Daily Assistant, Manual Pairing) and the Profile usage
-//  summary (`Features/Profile/AccountSectionView.swift`). Enforcement
-//  itself is unchanged and stays server-side
-//  (`backend/functions/src/middleware/quota.ts` for recommendations/
+//  Quota visibility feature (2026-07-17; migrated to the credit model
+//  2026-07-25): the single live source of quota state consumed by every
+//  point-of-use quota display/proactive-disable (Add Item, Daily Assistant,
+//  Manual Pairing) and the Profile usage summary
+//  (`Features/Profile/AccountSectionView.swift`). Enforcement itself is
+//  unchanged and stays server-side
+//  (`backend/functions/src/middleware/creditGate.ts` for recommendations/
 //  try-ons, `backend/firestore.rules` for item counts) — this is purely a
 //  client-side read model plus an optimistic local nudge so the UI can
 //  decrement instantly on a successful call instead of waiting on a
 //  Firestore round-trip.
 //
-//  "Combinations" (the user-facing term for a generated/rendered outfit
-//  try-on) maps directly onto the existing `UsageDTO.tryOnCount` — there is
-//  no separate backend counter for it.
+//  Credit model: recommendations and try-ons both spend from one shared
+//  credit wallet (`UsageDTO`: `subscription_credits_remaining` +
+//  `purchased_credits_remaining`) at per-operation costs the server reports
+//  via `/entitlement/limits`. "Recommendations/combinations remaining" are
+//  therefore derived (credits ÷ cost), not independent counters.
+//  "Combinations" is the user-facing term for a generated/rendered outfit
+//  try-on (the `IMAGE_GEN` operation).
 //
 //  Item counts are local-only (no server fetch needed, and no optimistic-
 //  vs-reconciled split the way recommendation/try-on counts need) —
@@ -89,24 +94,69 @@ final class UsageTracker {
     /// "sign in for more" (guest) from "resets next month" (free tier
     /// already at its own cap) messaging without re-deriving auth state.
     var isAnonymousQuota: Bool { AuthService.shared.isAnonymous }
-    var isPremium: Bool { limits.tier == "premium" }
+    var isPremium: Bool { limits.tier == "PRO" }
+
+    // MARK: - Credit wallet (the single source of spendable balance)
+
+    /// Per-operation credit cost, from the server-resolved `limits`
+    /// (`operationCosts` on `/entitlement/limits`). RECOMMENDATION is
+    /// intentionally allowed to be `0` — the server unmetered it (credits are
+    /// now a pure try-on currency; see `backend/.../pricing.config.ts`), so
+    /// callers must treat `0` as "unlimited" and guard the divides below,
+    /// never floor it back to 1. IMAGE_GEN stays floored at 1 so a
+    /// malformed/zero cost can never divide-by-zero the try-on count.
+    private var recommendationCost: Int { max(0, limits.operationCosts?["RECOMMENDATION"] ?? 0) }
+    private var combinationCost: Int { max(1, limits.operationCosts?["IMAGE_GEN"] ?? 5) }
+
+    /// `true` when the server reports a 0 RECOMMENDATION cost — recommendations
+    /// (and wardrobe/Insights Q&A, which shares the route) are free for every
+    /// tier. Point-of-use captions/proactive-disable on the *recommend* action
+    /// key off this to show "unlimited" instead of a credit countdown.
+    var isRecommendationUnmetered: Bool { recommendationCost == 0 }
+
+    /// Total spendable credits = subscription + purchased. Prefers the real
+    /// credit doc (`tierId != nil`); falls back to the server-resolved
+    /// `limits.creditsRemaining` (or the tier allocation) when no migrated
+    /// doc is loaded yet — recommendations and try-ons both draw from this
+    /// one pool (mirrors `backend/functions/src/middleware/creditGate.ts`).
+    var creditsRemaining: Int {
+        if let usage, usage.tierId != nil {
+            return max(0, usage.subscriptionCreditsRemaining + usage.purchasedCreditsRemaining)
+        }
+        return limits.creditsRemaining ?? limits.creditAllocation ?? 0
+    }
+
+    /// Purchased (lifetime StoreKit) credits only — the never-reset half of
+    /// the wallet, shown in Profile so a buyer can see paid credit survives
+    /// the monthly refill. `0` until a migrated doc is loaded.
+    var purchasedCreditsRemaining: Int {
+        if let usage, usage.tierId != nil { return max(0, usage.purchasedCreditsRemaining) }
+        return 0
+    }
 
     var recommendationLimit: Int { limits.recommendationLimit }
     var combinationLimit: Int { limits.tryOnLimit }
-    var recommendationsUsed: Int { usage?.recommendationCount ?? 0 }
-    var combinationsUsed: Int { usage?.tryOnCount ?? 0 }
-    var recommendationsRemaining: Int { max(0, recommendationLimit - recommendationsUsed) }
-    var combinationsRemaining: Int { max(0, combinationLimit - combinationsUsed) }
+    /// This cycle's consumed counts (`usage_counts` on the doc) — for the
+    /// Profile "used this month" readout, not for gating.
+    var recommendationsUsed: Int { usage?.usageCounts["RECOMMENDATION"] ?? 0 }
+    var combinationsUsed: Int { usage?.usageCounts["IMAGE_GEN"] ?? 0 }
 
-    /// Lifetime StoreKit credit balances (`purchased*Balance` on the usage
-    /// doc, granted via `Services/StoreKitPaymentManager.swift` →
-    /// `backend/functions/src/routes/iapVerify.ts`). Standalone persistent
-    /// values, fully decoupled from the monthly reset — see
-    /// `currentPeriodUsage()`'s carry-forward.
-    var purchasedRecommendationsRemaining: Int { usage?.purchasedRecommendationBalance ?? 0 }
-    var purchasedCombinationsRemaining: Int { usage?.purchasedTryOnBalance ?? 0 }
-    var totalRecommendationsRemaining: Int { recommendationsRemaining + purchasedRecommendationsRemaining }
-    var totalCombinationsRemaining: Int { combinationsRemaining + purchasedCombinationsRemaining }
+    /// How many more of each operation the remaining credits could buy. Both
+    /// derive from the same shared wallet, so they are not independent
+    /// counters. Try-ons are additionally clamped by the tier's `IMAGE_GEN`
+    /// hard cap (guests: 0) — the credit-engine equivalent of the old
+    /// guest-blocked-from-try-on 403.
+    var recommendationsRemaining: Int {
+        guard recommendationCost > 0 else { return .max } // unmetered — effectively unlimited
+        return creditsRemaining / recommendationCost
+    }
+    var combinationsRemaining: Int {
+        let affordable = creditsRemaining / combinationCost
+        if let cap = limits.operationCaps?["IMAGE_GEN"] {
+            return max(0, min(affordable, cap - combinationsUsed))
+        }
+        return affordable
+    }
 
     /// Per-slot cap lookup — `AddItemViewModel.saveItem`/`JobQueueStore.performUpload`'s
     /// pre-save guards call this directly rather than re-deriving core vs.
@@ -155,7 +205,7 @@ final class UsageTracker {
             AppLog.error(.viewModel, "UsageTracker.refreshUsage: limits fetch failed, keeping last-known limits — \(error.localizedDescription)")
         }
 
-        AppLog.info(.viewModel, "UsageTracker.refreshUsage: recommendations=\(self.recommendationsUsed)/\(self.recommendationLimit) combinations=\(self.combinationsUsed)/\(self.combinationLimit) tier=\(self.limits.tier)")
+        AppLog.info(.viewModel, "UsageTracker.refreshUsage: credits=\(self.creditsRemaining) (purchased=\(self.purchasedCreditsRemaining)) recommendationsUsed=\(self.recommendationsUsed) combinationsUsed=\(self.combinationsUsed) tier=\(self.limits.tier)")
     }
 
     /// Local-only, synchronous — call after any wardrobe mutation
@@ -167,70 +217,94 @@ final class UsageTracker {
         accessoryItemCount = inventory.filter { !$0.slot.isRequired }.count
     }
 
-    /// Optimistic local increment, called immediately after a successful
+    /// Optimistic local debit, called immediately after a successful
     /// recommendation call — see file header. `refreshUsage()` reconciles
-    /// with the server's real count on the next foreground/uid change.
-    /// Mirrors the server's consumption order
-    /// (`backend/functions/src/middleware/quota.ts`): the monthly free tier
-    /// absorbs the use while under its limit; past it, the purchased balance
-    /// is decremented instead (floored at 0 — the server is authoritative).
+    /// with the server's real wallet on the next foreground/uid change.
     func recordRecommendationUsed() {
-        var current = currentPeriodUsage()
-        if current.recommendationCount < recommendationLimit {
-            current.recommendationCount += 1
-        } else {
-            current.purchasedRecommendationBalance = max(0, (current.purchasedRecommendationBalance ?? 0) - 1)
-        }
-        usage = current
-        if let uid = AuthService.shared.uid { Self.cacheUsage(current, uid: uid) }
-        AppLog.info(.viewModel, "UsageTracker.recordRecommendationUsed: now \(self.recommendationsUsed)/\(self.recommendationLimit) purchased=\(self.purchasedRecommendationsRemaining)")
+        guard recommendationCost > 0 else { return } // unmetered — nothing to debit
+        recordSpend(operation: "RECOMMENDATION", cost: recommendationCost)
+        AppLog.info(.viewModel, "UsageTracker.recordRecommendationUsed: creditsRemaining=\(self.creditsRemaining) (recommendations≈\(self.recommendationsRemaining))")
     }
 
     /// See `recordRecommendationUsed()`'s doc comment.
     func recordCombinationUsed() {
-        var current = currentPeriodUsage()
-        if current.tryOnCount < combinationLimit {
-            current.tryOnCount += 1
-        } else {
-            current.purchasedTryOnBalance = max(0, (current.purchasedTryOnBalance ?? 0) - 1)
-        }
-        usage = current
-        if let uid = AuthService.shared.uid { Self.cacheUsage(current, uid: uid) }
-        AppLog.info(.viewModel, "UsageTracker.recordCombinationUsed: now \(self.combinationsUsed)/\(self.combinationLimit) purchased=\(self.purchasedCombinationsRemaining)")
+        recordSpend(operation: "IMAGE_GEN", cost: combinationCost)
+        AppLog.info(.viewModel, "UsageTracker.recordCombinationUsed: creditsRemaining=\(self.creditsRemaining) (combinations≈\(self.combinationsRemaining))")
     }
 
-    /// Returns the in-memory `usage` DTO if it's still within the current
-    /// UTC month, or a DTO with zeroed *counts* otherwise — a stale DTO from
-    /// a prior period must never keep accumulating optimistic increments,
-    /// since the server's own counter has already rolled over (see
-    /// `backend/functions/src/middleware/quota.ts`'s lazy `periodKey` reset).
-    /// The purchased balances are lifetime values with no relationship to
-    /// the calendar and are always carried through the rollover — zeroing
-    /// them here (e.g. on an offline launch in a new month) would make paid
-    /// credits vanish from the UI until the next successful server fetch.
-    private func currentPeriodUsage() -> UsageDTO {
-        let period = Self.currentPeriodKey()
-        if let usage, usage.periodKey == period {
-            return usage
-        }
-        return UsageDTO(
-            periodKey: period,
-            recommendationCount: 0,
-            tryOnCount: 0,
-            purchasedRecommendationBalance: usage?.purchasedRecommendationBalance,
-            purchasedTryOnBalance: usage?.purchasedTryOnBalance
+    /// Debits `cost` credits from the local wallet, subscription bucket first
+    /// then purchased (both floored at 0), and bumps this cycle's usage count
+    /// — mirroring `backend/functions/src/middleware/creditGate.ts`'s debit
+    /// order exactly. The server remains authoritative; this is only so the
+    /// UI reflects the spend instantly instead of waiting on a Firestore
+    /// round-trip.
+    private func recordSpend(operation: String, cost: Int) {
+        let current = currentCycleUsage()
+        let fromSubscription = min(current.subscriptionCreditsRemaining, cost)
+        let fromPurchased = min(current.purchasedCreditsRemaining, cost - fromSubscription)
+        var counts = current.usageCounts
+        counts[operation] = (counts[operation] ?? 0) + 1
+
+        let updated = UsageDTO(
+            tierId: current.tierId,
+            subscriptionCreditsRemaining: max(0, current.subscriptionCreditsRemaining - fromSubscription),
+            purchasedCreditsRemaining: max(0, current.purchasedCreditsRemaining - fromPurchased),
+            usageCounts: counts,
+            billingCycleStart: current.billingCycleStart
         )
+        usage = updated
+        if let uid = AuthService.shared.uid { Self.cacheUsage(updated, uid: uid) }
     }
 
-    /// Matches `backend/functions/src/middleware/quota.ts`'s `periodKey()`
-    /// (UTC `YYYY-MM`) so an optimistic local bump never straddles a
-    /// different month boundary than the server's own counter.
-    private static func currentPeriodKey() -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM"
-        return formatter.string(from: Date())
+    /// The wallet to apply an optimistic debit to. Three cases:
+    ///  - A real, migrated credit doc still inside its billing cycle → use it.
+    ///  - A migrated doc whose local billing anniversary has passed but the
+    ///    server hasn't been re-fetched yet (offline across a monthly reset,
+    ///    `autoReset` tiers only) → refill the subscription bucket to the tier
+    ///    allocation and zero the counts, keeping purchased credits (lifetime,
+    ///    never reset — matching `creditGate.ts`'s reset step).
+    ///  - No migrated doc loaded (unmigrated legacy doc, cache miss) → seed
+    ///    from the server-resolved `limits` so the bump has a balance to draw
+    ///    from; reconciled on the next `refreshUsage()`.
+    private func currentCycleUsage() -> UsageDTO {
+        guard let usage, usage.tierId != nil else {
+            return UsageDTO(
+                tierId: limits.tier,
+                subscriptionCreditsRemaining: limits.creditsRemaining ?? limits.creditAllocation ?? 0,
+                purchasedCreditsRemaining: 0,
+                usageCounts: [:],
+                billingCycleStart: limits.billingCycleStart
+            )
+        }
+        if let start = usage.billingCycleStart, limits.autoReset == true, Self.isCycleExpired(start) {
+            return UsageDTO(
+                tierId: usage.tierId,
+                subscriptionCreditsRemaining: limits.creditAllocation ?? usage.subscriptionCreditsRemaining,
+                purchasedCreditsRemaining: usage.purchasedCreditsRemaining,
+                usageCounts: [:],
+                billingCycleStart: Self.addUTCMonth(toEpochMs: start)
+            )
+        }
+        return usage
+    }
+
+    /// True once `now` has passed the one-UTC-month anniversary of
+    /// `billingCycleStartMs`. Mirrors `creditGate.ts`'s `addUTCMonths(_, 1)`
+    /// boundary so a local optimistic bump never straddles a different cycle
+    /// than the server's own reset.
+    private static func isCycleExpired(_ billingCycleStartMs: Double) -> Bool {
+        Date().timeIntervalSince1970 * 1000 >= addUTCMonth(toEpochMs: billingCycleStartMs)
+    }
+
+    /// Adds one UTC calendar month to an epoch-ms instant, matching
+    /// `creditGate.ts`'s `addUTCMonths` (which clamps an overflowing
+    /// day-of-month forward via `setUTCMonth`).
+    private static func addUTCMonth(toEpochMs ms: Double) -> Double {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let date = Date(timeIntervalSince1970: ms / 1000)
+        let advanced = calendar.date(byAdding: .month, value: 1, to: date) ?? date
+        return advanced.timeIntervalSince1970 * 1000
     }
 
     // MARK: - Disk cache (last-known-good usage, shown instantly on cold launch)

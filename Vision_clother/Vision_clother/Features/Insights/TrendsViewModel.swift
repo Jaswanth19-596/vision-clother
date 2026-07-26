@@ -17,13 +17,30 @@ import Observation
 final class TrendsViewModel {
     private(set) var thresholds: AnalyticsConfigResponse = .conservativeDefault
     private(set) var snapshot: TrendsAggregator.TrendsSnapshot?
+    /// Learned-taste summary for the shared `TasteCalloutCard` — the "where
+    /// your taste sits now" anchor above the time-series charts.
+    private(set) var tasteSnapshot: TasteInsightsSnapshot?
     private(set) var isLoadingConfig = false
 
     private let configService: AnalyticsConfigService
     private var configTask: Task<Void, Never>?
+    private var tasteTask: Task<Void, Never>?
 
     init(configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
         self.configService = configService
+    }
+
+    /// Fetches the unified taste profile (version-cached) and builds the
+    /// callout summary. Repository injected by the view (same pattern as
+    /// `WardrobeInsightsView`).
+    func refreshTaste(repository: WardrobeRepository) {
+        tasteTask?.cancel()
+        tasteTask = Task { [weak self] in
+            guard let self else { return }
+            let history = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            guard !Task.isCancelled else { return }
+            self.tasteSnapshot = TasteInsightsAggregator.build(profile: history.attributeProfile)
+        }
     }
 
     func loadConfigIfNeeded() {

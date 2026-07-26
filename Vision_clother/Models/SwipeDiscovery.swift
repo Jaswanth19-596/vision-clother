@@ -77,6 +77,15 @@ final class SwipeAttributeEvent {
     var slot: Slot
     var styleTags: [String]
     var silhouette: String?
+    // Extended attribute set (added 2026-07-24, `SchemaV14`) so a swipe teaches
+    // the same undertone/material/texture/fit affinities owned-item ratings do
+    // — the vision LLM already extracts these in `.wornInScene` focus, they were
+    // just being dropped. All optional (`nil` for rows that predate the column
+    // or a photo whose tagging couldn't classify that attribute).
+    var undertone: Undertone?
+    var material: String?
+    var texture: String?
+    var fit: String?
     var recordedAt: Date
 
     init(
@@ -91,6 +100,10 @@ final class SwipeAttributeEvent {
         slot: Slot,
         styleTags: [String],
         silhouette: String?,
+        undertone: Undertone? = nil,
+        material: String? = nil,
+        texture: String? = nil,
+        fit: String? = nil,
         recordedAt: Date = .now
     ) {
         self.id = id
@@ -104,6 +117,10 @@ final class SwipeAttributeEvent {
         self.slot = slot
         self.styleTags = styleTags
         self.silhouette = silhouette
+        self.undertone = undertone
+        self.material = material
+        self.texture = texture
+        self.fit = fit
         self.recordedAt = recordedAt
     }
 }

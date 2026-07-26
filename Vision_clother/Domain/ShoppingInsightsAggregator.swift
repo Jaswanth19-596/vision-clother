@@ -45,7 +45,8 @@ enum ShoppingInsightsAggregator {
 
     static func buildSnapshot(
         inventory: [WardrobeItem],
-        wardrobeSnapshot: WardrobeInsightsAggregator.WardrobeInsightsSnapshot
+        wardrobeSnapshot: WardrobeInsightsAggregator.WardrobeInsightsSnapshot,
+        attributeProfile: AttributePreferenceProfile = AttributePreferenceProfile()
     ) -> ShoppingInsightsSnapshot {
         guard wardrobeSnapshot.hasEnoughItems else {
             return ShoppingInsightsSnapshot(seasonalGaps: [], suggestions: [], hasEnoughItems: false)
@@ -54,12 +55,21 @@ enum ShoppingInsightsAggregator {
         let realItems = inventory.filter { !$0.isGhostElement }
         let seasonalGaps = findSeasonalGaps(items: realItems)
 
+        // Taste hint (Unified Preference Engine, 2026-07-24): steer *what* to
+        // buy toward the user's strongest learned color vibe / material so a
+        // structural gap gets filled in their taste. Empty at cold start, in
+        // which case every suggestion keeps its original taste-free phrasing.
+        let tasteClause = preferredTasteClause(
+            vibe: topPreferred(attributeProfile.colorVibeAffinity, min: 0.55),
+            material: topPreferred(attributeProfile.materialAffinity, min: 0.6)
+        )
+
         var suggestions: [ShoppingSuggestion] = []
 
         for gap in seasonalGaps.prefix(2) {
             suggestions.append(ShoppingSuggestion(
                 id: "gap-\(gap.id)",
-                text: "You have no \(gap.slot.rawValue) items tagged for \(seasonLabel(gap.season)) — worth adding one before the season shifts."
+                text: "You have no \(gap.slot.rawValue) items tagged for \(seasonLabel(gap.season)) — worth adding one before the season shifts.\(tasteClause)"
             ))
         }
 
@@ -67,7 +77,7 @@ enum ShoppingInsightsAggregator {
             let count = wardrobeSnapshot.slotBalance.first { $0.slot == bottleneck }?.count ?? 0
             suggestions.append(ShoppingSuggestion(
                 id: "bottleneck-\(bottleneck.rawValue)",
-                text: "Consider adding \(bottleneck.rawValue) — you only have \(count), the fewest of your essential categories, which limits your outfit combinations."
+                text: "Consider adding \(bottleneck.rawValue) — you only have \(count), the fewest of your essential categories, which limits your outfit combinations.\(tasteClause)"
             ))
         }
 
@@ -116,6 +126,27 @@ enum ShoppingInsightsAggregator {
         case .summer: return "summer"
         case .springFall: return "spring/fall"
         case .winter: return "winter"
+        }
+    }
+
+    /// Strongest-affinity key above `min` (0.5 = neutral), or `nil` at cold
+    /// start — taste hints only ever *add* direction, never fabricate one.
+    /// Mirrors `ClosetGapAnalyzer`'s helper of the same shape.
+    private static func topPreferred<Key: Hashable>(_ map: [Key: Double], min: Double) -> Key? {
+        map.filter { $0.value >= min }.max(by: { $0.value < $1.value })?.key
+    }
+
+    private static func preferredTasteClause(vibe: ColorVibe?, material: String?) -> String {
+        let vibeText = vibe.map { $0.rawValue.replacingOccurrences(of: "_", with: " ") }
+        switch (vibeText, material) {
+        case let (vibe?, material?):
+            return " Ideally in your go-to \(vibe) tones and a material like \(material.lowercased())."
+        case let (vibe?, nil):
+            return " Ideally in your go-to \(vibe) tones."
+        case let (nil, material?):
+            return " Ideally in a material you favor, like \(material.lowercased())."
+        case (nil, nil):
+            return ""
         }
     }
 }

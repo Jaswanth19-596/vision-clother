@@ -113,3 +113,13 @@ This score is computed fresh on each view appearance (no persisted/cached field 
 - Ranks candidates by distance from the neutral `0.5` prior, so the most confident signals surface first; an empty or sparse profile yields `[]`, never a fabricated statement.
 
 English copy per signal lives in `Features/Profile/ProfileView.swift`, not in Domain — `TasteSignal` carries only structured data (slot/vibe/band/affinity), per `Domain/CLAUDE.md`'s no-UI-imports rule.
+
+### Taste vs. Closet Alignment (Insights → Taste, 2026-07-24)
+
+`Domain/TasteClosetAlignmentAggregator.swift` contrasts the two things the app otherwise only knows in isolation — what the user *loves* (`AttributePreferenceProfile`'s affinity maps, the same ones the Taste tab renders) and what they *own* (live wardrobe composition) — to answer "does my closet actually match my taste?" Like `TasteSynthesis`, it's pure presentation/ranking, no new preference model. Per attribute dimension (colours, warmth/undertone, patterns, fabric weight, fit, materials, texture, style, formality) it computes each value's **ownership share** (fraction of owned items with that value) against its **learned affinity**, and emits:
+
+- an **alignment score** (0–100): the ownership-weighted mean affinity of what the user owns, averaged over dimensions that carry real signal — ~50 for a neutral/unlearned profile, so the whole card is gated on `AttributePreferenceProfile.hasSignal`;
+- **"worth adding"** — values with affinity `> lovedThreshold` (0.6) but a low ownership share (a grounded shopping cue);
+- **"worth a second look"** — values filling a large share of the closet despite a below-neutral affinity (a declutter / stop-buying cue). Because an unrated value defaults to exactly 0.5, this never fires on a value the profile knows nothing about — only on ones the user actually rated down.
+
+Composition counts owned items only (`isGhostElement` excluded exactly as `WardrobeCatalogBuilder` does; laundry items still count). It reuses `TasteInsightsAggregator`'s plain-language value labels and colour swatches (promoted from `private` to shared statics) so a value reads identically here and on the affinity cards below it. Rendered as a card at the top of `Features/Insights/TasteInsightsView.swift`, above the per-dimension affinity cards.

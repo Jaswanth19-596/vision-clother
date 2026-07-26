@@ -20,13 +20,30 @@ import Observation
 final class OverviewViewModel {
     private(set) var thresholds: AnalyticsConfigResponse = .conservativeDefault
     private(set) var snapshot: AnalyticsAggregator.OverviewSnapshot?
+    /// Learned-taste summary for the shared `TasteCalloutCard`, so the default
+    /// Insights tab immediately reflects the user, not just their closet.
+    private(set) var tasteSnapshot: TasteInsightsSnapshot?
     private(set) var isLoadingConfig = false
 
     private let configService: AnalyticsConfigService
     private var configTask: Task<Void, Never>?
+    private var tasteTask: Task<Void, Never>?
 
     init(configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
         self.configService = configService
+    }
+
+    /// Fetches the unified taste profile (version-cached) and builds the
+    /// callout summary. Repository is injected by the view — same repo
+    /// pattern `WardrobeInsightsView` uses — so the VM stays testable.
+    func refreshTaste(repository: WardrobeRepository) {
+        tasteTask?.cancel()
+        tasteTask = Task { [weak self] in
+            guard let self else { return }
+            let history = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            guard !Task.isCancelled else { return }
+            self.tasteSnapshot = TasteInsightsAggregator.build(profile: history.attributeProfile)
+        }
     }
 
     func loadConfigIfNeeded() {

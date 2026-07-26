@@ -258,6 +258,10 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.hasSwipeAttributes(sourcePhotoID: sourcePhotoID)
     }
 
+    func noteSwipeForCalibration() throws {
+        try underlying.noteSwipeForCalibration()
+    }
+
     func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
         try underlying.fetchWardrobeItemEmbedding(itemID: itemID)
     }

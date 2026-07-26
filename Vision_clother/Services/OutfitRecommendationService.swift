@@ -53,9 +53,12 @@ enum OutfitRecommendationError: Error, LocalizedError {
     case missingAPIKey
     case network(Error)
     case httpStatus(Int)
-    /// 429 from `backend/functions/src/middleware/quota.ts`'s `"recommendation"`
-    /// gate — `limit` is the monthly cap that was hit (20 guest / 100 free).
-    case quotaExceeded(limit: Int)
+    /// 429 from `backend/functions/src/middleware/creditGate.ts` — either
+    /// `insufficient_credits` (the shared credit wallet can't cover the
+    /// recommendation cost) or `cap_reached` (a tier hard cap). The server
+    /// draws down subscription then purchased credits before rejecting, so
+    /// this always means "no spendable credit left."
+    case quotaExceeded
     case emptyChoices
     case decoding(Error)
 
@@ -67,11 +70,11 @@ enum OutfitRecommendationError: Error, LocalizedError {
             return "Couldn't reach the styling service. Check your connection."
         case .httpStatus(let code):
             return "Styling service returned an error (\(code))."
-        case .quotaExceeded(let limit):
-            // The server only 429s once purchased credits are also 0
-            // (quota.ts draws down the balance first), so this copy can
-            // safely point at buying more.
-            return "You've used all \(limit) free recommendations this month and any purchased credits. Buy more in Profile, or wait for the monthly reset."
+        case .quotaExceeded:
+            // The server only 429s once both credit buckets are exhausted
+            // (creditGate.ts draws down subscription then purchased first),
+            // so this copy can safely point at buying more.
+            return "You're out of credits. Buy more in Profile, or wait for your monthly refill."
         case .emptyChoices:
             return "The styling service didn't return any outfits."
         case .decoding:
@@ -187,9 +190,10 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            if statusCode == 429, let quota = try? JSONDecoder().decode(QuotaExceededResponse.self, from: data) {
-                AppLog.notice(.recommendation, "[\(requestID)] recommend: quota exceeded, limit=\(quota.limit)")
-                throw OutfitRecommendationError.quotaExceeded(limit: quota.limit)
+            if statusCode == 429 {
+                let rejection = try? JSONDecoder().decode(CreditGateRejection.self, from: data)
+                AppLog.notice(.recommendation, "[\(requestID)] recommend: credit rejected error=\(rejection?.error ?? "unknown") creditsRemaining=\(rejection?.creditsRemaining.map(String.init) ?? "-")")
+                throw OutfitRecommendationError.quotaExceeded
             }
             AppLog.error(.recommendation, "[\(requestID)] recommend: HTTP \(statusCode)")
             throw OutfitRecommendationError.httpStatus(statusCode)
@@ -523,10 +527,17 @@ private struct OpenRouterRecommendationChatResponse: Decodable {
     let usage: Usage?
 }
 
-/// `backend/functions/src/middleware/quota.ts`'s 429 body shape:
-/// `{ error: "quota_exceeded", limit, period }`.
-private struct QuotaExceededResponse: Decodable {
-    let limit: Int
+/// `backend/functions/src/middleware/creditGate.ts`'s 429 body shapes:
+/// `{ error: "insufficient_credits", creditsRemaining, cost }` or
+/// `{ error: "cap_reached", cap, used }`. All fields optional so either
+/// shape decodes; used only for logging — any 429 on this credit-gated
+/// route means "no spendable credit."
+private struct CreditGateRejection: Decodable {
+    let error: String
+    let creditsRemaining: Int?
+    let cost: Int?
+    let cap: Int?
+    let used: Int?
 }
 
 // MARK: - Mock for previews/tests — never touches the network.

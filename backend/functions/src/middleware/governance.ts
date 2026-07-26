@@ -4,7 +4,7 @@ import type { AuthedRequest } from "../types";
 import { logEvent } from "../logger";
 
 /** Coarse per-user daily request cap, shared across all routes. */
-const DAILY_REQUEST_LIMIT = 500;
+const DAILY_REQUEST_LIMIT = 1000;
 
 /**
  * Below this many requests of headroom under the daily cap, `rateLimitOnly`
@@ -49,7 +49,6 @@ function putCache(uid: string, patch: Partial<CacheEntry>): CacheEntry {
     dailyRequestCount: existing?.dailyRequestCount ?? 0,
     ...existing,
     ...patch,
-    cachedAt: Date.now(),
   };
   if (!cache.has(uid) && cache.size >= MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next().value;

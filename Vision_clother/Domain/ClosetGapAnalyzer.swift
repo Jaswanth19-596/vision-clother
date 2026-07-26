@@ -66,7 +66,8 @@ enum ClosetGapAnalyzer {
 
     static func analyze(
         inventory: [WardrobeItem],
-        profile: UserStyleProfile? = nil
+        profile: UserStyleProfile? = nil,
+        attributeProfile: AttributePreferenceProfile = AttributePreferenceProfile()
     ) -> ClosetGapReport {
         let realItems = inventory.filter { !$0.isGhostElement }
         guard realItems.count >= minItemsForAnalysis else {
@@ -82,6 +83,16 @@ enum ClosetGapAnalyzer {
 
         var gaps: [ClosetGap] = []
 
+        // Taste hints (Unified Preference Engine, 2026-07-24): the user's
+        // strongest learned color vibe / material / style, if any — used to
+        // steer *what* to buy toward their taste, so a structural gap is
+        // filled in the direction that improves their style rather than a
+        // generic neutral. Empty/cold-start profile => `nil`, and every gap
+        // below falls back to its original taste-free phrasing.
+        let preferredVibe = topPreferred(attributeProfile.colorVibeAffinity, min: 0.55)
+        let preferredMaterial = topPreferred(attributeProfile.materialAffinity, min: 0.6)
+        let tasteClause = preferredTasteClause(vibe: preferredVibe, material: preferredMaterial)
+
         // 1. Essential Slot Bottlenecks
         let countsBySlot = Dictionary(grouping: realItems, by: \.slot).mapValues(\.count)
         let reqCounts = requiredSlots.map { (slot: $0, count: countsBySlot[$0] ?? 0) }
@@ -95,13 +106,13 @@ enum ClosetGapAnalyzer {
                 gaps.append(ClosetGap(
                     id: "bottleneck-\(minReq.slot.rawValue)",
                     title: "Essential Category Shortage: \(minReq.slot.rawValue.capitalized)",
-                    description: "You have only \(minReq.count) \(minReq.slot.rawValue)\(minReq.count == 1 ? "" : "s") compared to \(maxReqCount) in your largest essential category. This severely restricts combination variety.",
+                    description: "You have only \(minReq.count) \(minReq.slot.rawValue)\(minReq.count == 1 ? "" : "s") compared to \(maxReqCount) in your largest essential category. This severely restricts combination variety.\(tasteClause)",
                     priority: priority,
                     category: .bottleneck,
                     suggestedSlot: minReq.slot,
                     targetSeason: nil,
                     targetFormalityBand: nil,
-                    targetColorVibe: nil
+                    targetColorVibe: preferredVibe
                 ))
             }
         }
@@ -183,6 +194,34 @@ enum ClosetGapAnalyzer {
             ))
         }
 
+        // 5. Preferred Style Underrepresented (Unified Preference Engine,
+        // 2026-07-24): a style the user has clearly demonstrated they love
+        // (learned affinity > 0.6, from ratings AND swipes) but owns almost
+        // nothing in — the highest-leverage "buy this to improve your style"
+        // signal, since it's grounded in their own taste rather than pure
+        // structural balance. Only the single strongest such style, to avoid
+        // burying the structural gaps.
+        let ownedStyleTags = realItems.reduce(into: [String: Int]()) { counts, item in
+            for tag in item.styleTags { counts[tag, default: 0] += 1 }
+        }
+        let underrepresentedStyle = attributeProfile.styleTagAffinity
+            .filter { $0.value > 0.6 && (ownedStyleTags[$0.key] ?? 0) < 2 }
+            .max(by: { $0.value < $1.value })?.key
+        if let underrepresentedStyle {
+            let owned = ownedStyleTags[underrepresentedStyle] ?? 0
+            gaps.append(ClosetGap(
+                id: "preferred-style-\(underrepresentedStyle)",
+                title: "Lean Into Your \(underrepresentedStyle.capitalized) Side",
+                description: "You consistently rate and swipe toward \"\(underrepresentedStyle)\" pieces, but own \(owned == 0 ? "none" : "just \(owned)"). Adding a \(underrepresentedStyle) piece\(tasteClause) is the highest-impact way to build the look you keep reaching for.",
+                priority: .recommended,
+                category: .colorPalette,
+                suggestedSlot: .top,
+                targetSeason: nil,
+                targetFormalityBand: nil,
+                targetColorVibe: preferredVibe
+            ))
+        }
+
         // Calculate Overall Health Score
         var penalty = 0
         for gap in gaps {
@@ -213,6 +252,30 @@ enum ClosetGapAnalyzer {
         case .summer: return "Summer"
         case .springFall: return "Spring/Fall"
         case .winter: return "Winter"
+        }
+    }
+
+    /// Strongest-affinity key above `min` (0.5 = neutral), or `nil` when the
+    /// profile is cold-start or has no clear lean — so taste hints only ever
+    /// *add* direction, never fabricate one.
+    private static func topPreferred<Key: Hashable>(_ map: [Key: Double], min: Double) -> Key? {
+        map.filter { $0.value >= min }.max(by: { $0.value < $1.value })?.key
+    }
+
+    /// A trailing sentence fragment naming the user's go-to vibe/material, or
+    /// "" when nothing is learned yet. Kept as one place so every gap's
+    /// description phrases the taste hint identically.
+    private static func preferredTasteClause(vibe: ColorVibe?, material: String?) -> String {
+        let vibeText = vibe.map { $0.rawValue.replacingOccurrences(of: "_", with: " ") }
+        switch (vibeText, material) {
+        case let (vibe?, material?):
+            return " Ideally in your go-to \(vibe) tones and a material like \(material.lowercased())."
+        case let (vibe?, nil):
+            return " Ideally in your go-to \(vibe) tones."
+        case let (nil, material?):
+            return " Ideally in a material you favor, like \(material.lowercased())."
+        case (nil, nil):
+            return ""
         }
     }
 }

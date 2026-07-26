@@ -20,6 +20,13 @@ Models/     Shared value/persisted types used by every layer above
 
 The dependency direction is strictly downward — `Domain/` never imports `Data/` or `Services/`, it just operates on plain `WardrobeItem`/`StyleConstraints` values passed in by whoever calls it (a view model). This is what keeps `Domain/PairCompatibilityScoring.swift` mockable and 100%-testable per CLAUDE.md §4: every test in `Vision_clotherTests/` constructs its own `WardrobeItem`s and calls the pure functions directly, with no SwiftData container and no network involved.
 
+## App entry, onboarding & navigation
+
+`Vision_clotherApp`'s `WindowGroup` hosts `Features/Root/AppRootView`, which wraps `RootTabView` (the 5-tab shell) and adds two app-level concerns:
+
+- **First-run onboarding** (`Features/Onboarding/OnboardingFlowView`): presented as a `.fullScreenCover` when the user is genuinely not set up — `!hasCompletedOnboarding && (no portrait OR empty non-ghost closet)`, evaluated once per launch. Keyed on real state so a returning/Cloud-Sync-restored user never sees it and no step traps the user (portrait has a default-silhouette escape hatch, the rest are skippable). It *reuses* the real setup flows (`ProfileViewModel` portrait pipeline, `AddItemView`, `SwipeDiscoveryView`) rather than reimplementing them.
+- **Navigation state** (`Features/Root/AppNavigator`, injected app-wide): owns the selected tab (`RootTabView` uses `TabView(selection:)` with per-tab `.tag`) and a one-shot `pendingDailyOutfit` flag. The Outfit-of-the-Day daily reminder (`AppWiring/DailyOutfitReminder`, an idempotent 8am `UNCalendarNotificationTrigger` scheduled from `AppRootView` once the closet is non-empty) routes its tap through `NotificationDelegate.onDailyOutfitTapped` → `AppNavigator.requestDailyOutfit()`, which switches to the Daily Assistant; `DailyAssistantView` consumes the flag and auto-runs `askForTodaysOutfit()`. Job-completion notification taps still route separately to the Activity panel.
+
 ## Persistence (CLAUDE.md guardrail #3 — SwiftData)
 
 - `Models/WardrobeItem.swift`, `Models/FeedbackEvent.swift`, `Models/SavedCombination.swift`, `Models/UserStyleProfile.swift` — `@Model` classes.

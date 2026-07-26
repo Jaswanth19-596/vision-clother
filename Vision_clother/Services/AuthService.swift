@@ -4,8 +4,8 @@
 //
 //  Guest-first: `ensureGuestSession()` starts a Firebase Anonymous session
 //  at launch so every install gets a working (if capped, see
-//  `backend/functions/src/middleware/quota.ts`) AI session with no sign-in
-//  wall. Google Sign-In + Phone Number Auth *link* that anonymous session to
+//  `backend/functions/src/middleware/creditGate.ts`) AI session with no
+//  sign-in wall. Google Sign-In + Phone Number Auth *link* that anonymous session to
 //  a real credential rather than replacing it, keeping the guest's local
 //  closet. Sign in with Apple is deferred (needs a paid Apple Developer
 //  account for the capability) — see docs/decisions/resolved-v1.md.

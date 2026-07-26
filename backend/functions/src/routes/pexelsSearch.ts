@@ -10,6 +10,7 @@ const querySchema = z.object({
   query: z.string().min(1),
   per_page: z.string().optional(),
   page: z.string().optional(),
+  orientation: z.string().optional(),
 });
 
 export const pexelsSearchRouter = Router();
@@ -26,6 +27,7 @@ pexelsSearchRouter.get("/", async (req: AuthedRequest, res) => {
   url.searchParams.set("query", parsed.data.query);
   if (parsed.data.per_page) url.searchParams.set("per_page", parsed.data.per_page);
   if (parsed.data.page) url.searchParams.set("page", parsed.data.page);
+  if (parsed.data.orientation) url.searchParams.set("orientation", parsed.data.orientation);
 
   const start = Date.now();
   try {

@@ -201,11 +201,10 @@ describe("getPricingConfig", () => {
   });
 });
 
-describe("getOperationCost / getTierConfig", () => {
-  it("reads costs and tiers from a given config object", async () => {
-    const { getOperationCost, getTierConfig, DEFAULT_TIER_CONFIGS } = await freshModule();
+describe("getTierConfig", () => {
+  it("reads tiers from a given config object", async () => {
+    const { getTierConfig, DEFAULT_TIER_CONFIGS } = await freshModule();
     const config = { operationCosts: DEFAULT_OPERATION_COSTS, tierConfigs: DEFAULT_TIER_CONFIGS };
-    expect(getOperationCost("RECOMMENDATION", config)).toBe(1);
     expect(getTierConfig("GUEST", config)?.hardCaps?.IMAGE_GEN).toBe(0);
     expect(getTierConfig("NOT_A_TIER", config)).toBeUndefined();
   });

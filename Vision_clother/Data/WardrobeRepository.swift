@@ -154,6 +154,11 @@ protocol WardrobeRepository {
     /// Whether a swipe-attribute event already exists for this photo id — lets
     /// the deck skip a redundant (paid) LLM tagging call on a re-shown card.
     func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool
+    /// Increments the swipe deck's calibration counter only (no pixel work) —
+    /// the taste signal itself is learned via `recordSwipeAttributes`. The
+    /// single surviving use of `VisualPreferenceState` after the pixel engine
+    /// was retired (2026-07-24).
+    func noteSwipeForCalibration() throws
     /// Cached embedding for one wardrobe item's current photo, `nil` if never
     /// computed (or the item has no photo). `fetchFeedbackHistory()` is the
     /// only caller that needs this in bulk; exposed individually for tests
@@ -498,7 +503,12 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 silhouetteTag: event.silhouette,
                 silhouetteFit: event.silhouette != nil ? signal : nil,
                 fabricWeight: event.fabricWeight,
-                fabricComfort: signal
+                fabricComfort: signal,
+                undertone: event.undertone,
+                material: event.material,
+                texture: event.texture,
+                fit: event.fit,
+                fitLike: event.fit != nil ? signal : nil
             )
         }
 
@@ -522,7 +532,12 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     silhouetteTag: item.silhouette,
                     silhouetteFit: item.silhouette != nil ? rating.fit.centeredness : nil,
                     fabricWeight: item.fabricWeight,
-                    fabricComfort: Double(rating.comfort - 1) / 4.0
+                    fabricComfort: Double(rating.comfort - 1) / 4.0,
+                    undertone: item.colorProfile.undertone,
+                    material: item.material,
+                    texture: item.texture,
+                    fit: item.fit,
+                    fitLike: item.fit != nil ? rating.fit.centeredness : nil
                 )
             }
 
@@ -570,7 +585,11 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                         pattern: item.pattern,
                         patternDissatisfaction: patternDissatisfaction,
                         recordedAt: feedback.recordedAt,
-                        slot: item.slot
+                        slot: item.slot,
+                        undertone: item.colorProfile.undertone,
+                        material: item.material,
+                        texture: item.texture,
+                        fit: item.fit
                     )
                 }
             }
@@ -583,7 +602,11 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     styleTags: item.styleTags,
                     silhouette: item.silhouette,
                     fabricWeight: item.fabricWeight,
-                    slot: item.slot
+                    slot: item.slot,
+                    undertone: item.colorProfile.undertone,
+                    material: item.material,
+                    texture: item.texture,
+                    fit: item.fit
                 )
             }
 
@@ -599,81 +622,15 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             history.attributeProfile = attributeProfile
         }
 
-        // Swipe-to-Learn Visual Taste: read the persisted centroid state and
-        // lazily compute/cache per-item embeddings for every real (non-ghost)
-        // inventory item that has a photo — powers both
-        // Domain/OutfitRecommendationEngine.swift's re-rank term and
-        // Domain/WardrobeCatalogBuilder.swift's truncation ranking. Runs
-        // unconditionally (unlike the attribute-profile block above), since
-        // an item can have a photo with zero ratings.
-        if let visualState = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first {
-            history.visualProfile = VisualPreferenceProfile(
-                likedCentroids: visualState.likedCentroids,
-                dislikedCentroids: visualState.dislikedCentroids
-            )
-        }
-
-        let cachedEmbeddings = try modelContext.fetch(FetchDescriptor<WardrobeItemEmbedding>())
-        let embeddingsByItemID = Dictionary(uniqueKeysWithValues: cachedEmbeddings.map { ($0.itemID, $0) })
-
-        // Cheap, synchronous pass on the main actor: a persisted
-        // `imageFingerprint` matching the cached embedding's fingerprint is
-        // a pure in-memory compare — no disk I/O, no hashing. Only items
-        // that can't be resolved this way (a pre-existing row saved before
-        // `imageFingerprint` existed, or a genuine cache miss) get queued
-        // for the off-main-actor fingerprint pass below.
-        var pendingFingerprintChecks: [WardrobeEmbeddingWorker.FingerprintRequest] = []
-        var itemsPendingFingerprintPersist: [UUID: WardrobeItem] = [:]
-        for item in inventory {
-            guard !item.isGhostElement, let assetName = item.imageAssetName else { continue }
-
-            if let fingerprint = item.imageFingerprint,
-               let cached = embeddingsByItemID[item.id], cached.sourceFingerprint == fingerprint {
-                history.itemEmbeddings[item.id] = cached.vector
-                continue
-            }
-
-            pendingFingerprintChecks.append(WardrobeEmbeddingWorker.FingerprintRequest(itemID: item.id, filename: assetName))
-            if item.imageFingerprint == nil {
-                itemsPendingFingerprintPersist[item.id] = item
-            }
-        }
-
-        // Off-main-actor, parallel across cores — best-effort per item, same
-        // posture as `computeEmbeddings` below (a missing/unreadable photo
-        // just drops that item rather than failing the whole fetch).
-        let fingerprintResults = await embeddingWorker.computeFingerprints(for: pendingFingerprintChecks)
-
-        var pendingEmbeddingRequests: [WardrobeEmbeddingWorker.EmbeddingRequest] = []
-        for result in fingerprintResults {
-            // Backfill: this item had no persisted fingerprint yet — cache
-            // it now so every later fetch for this item takes the cheap
-            // branch above instead of re-resolving it every time.
-            itemsPendingFingerprintPersist[result.itemID]?.imageFingerprint = result.fingerprint
-
-            if let cached = embeddingsByItemID[result.itemID], cached.sourceFingerprint == result.fingerprint {
-                history.itemEmbeddings[result.itemID] = cached.vector
-            } else {
-                pendingEmbeddingRequests.append(WardrobeEmbeddingWorker.EmbeddingRequest(
-                    itemID: result.itemID, imageData: result.imageData, sourceFingerprint: result.fingerprint
-                ))
-            }
-        }
-        if !itemsPendingFingerprintPersist.isEmpty {
-            try? modelContext.save()
-        }
-
-        // Off-main-actor, parallel across cores — best-effort per item, same
-        // posture as the serial loop this replaces (a Vision failure on one
-        // item's photo shouldn't fail the whole feedback-history fetch).
-        let embeddingResults = await embeddingWorker.computeEmbeddings(for: pendingEmbeddingRequests)
-
-        // Back on the main actor: this is the only place that touches
-        // `ModelContext`, so the worker itself never needs to.
-        for result in embeddingResults {
-            try? saveWardrobeItemEmbedding(itemID: result.itemID, vector: result.vector, sourceFingerprint: result.sourceFingerprint)
-            history.itemEmbeddings[result.itemID] = result.vector
-        }
+        // Swipe-to-Learn taste is now unified into `attributeProfile` above
+        // (2026-07-24): the former pixel-embedding pass here — reading
+        // `VisualPreferenceState` centroids and lazily computing/caching a
+        // `WardrobeItemEmbedding` per item to feed a separate visual re-rank —
+        // was removed when the engine and catalog builder switched to the
+        // single `AttributePreferenceProfile`. `VisualPreferenceState`/
+        // `SwipeEvent`/`WardrobeItemEmbedding` remain as inert tables (kept to
+        // avoid a destructive migration; `VisualPreferenceState.totalSwipes`
+        // still drives the swipe deck's calibration ring).
 
         self.feedbackHistoryCache = history
         self.cachedFeedbackHistoryVersion = currentVersion
@@ -717,11 +674,10 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         )
         modelContext.insert(rating)
         try saveAndMarkMutated()
-
-        // Close the loop with Swipe-to-Learn Visual Taste: best-effort — a
-        // rating should still save even if the visual-taste update fails or
-        // this item has no cached embedding yet (see `applyImplicitSwipe`).
-        try? applyImplicitSwipe(itemID: itemID, liked: rating.impliesLiked)
+        // Taste learning happens entirely through `fetchFeedbackHistory()`'s
+        // `AttributePreferenceProfile` rebuild now (2026-07-24) — this rating's
+        // per-attribute values are folded in there. The former implicit-swipe
+        // pixel-centroid nudge was removed with the rest of the visual engine.
     }
 
     /// Folds a rating's derived liked/disliked signal into the same
@@ -736,31 +692,24 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     /// photo embedding hasn't been computed yet — `WardrobeItemEmbedding` is
     /// populated lazily by `fetchFeedbackHistory()`, so a rating recorded
     /// before that happens simply misses this one nudge.
-    private func applyImplicitSwipe(itemID: UUID, liked: Bool) throws {
-        guard let embedding = try fetchWardrobeItemEmbedding(itemID: itemID)?.vector else { return }
-
+    /// Bumps the swipe deck's calibration counter (`VisualPreferenceState.totalSwipes`)
+    /// without any pixel-embedding work — the only thing the retired visual
+    /// engine still powers is the gamified calibration ring. The garment's
+    /// taste signal itself is learned separately via `recordSwipeAttributes`
+    /// (attribute space). Best-effort; a counter hiccup must never fail a swipe.
+    func noteSwipeForCalibration() throws {
         let state = try loadOrCreateVisualPreferenceState()
-        var likedCentroids = state.likedCentroids
-        var dislikedCentroids = state.dislikedCentroids
-        let drift: Double?
-        if liked {
-            drift = VisualClusterUpdater.update(&likedCentroids, with: embedding, learningRate: VisualClusterUpdater.implicitLearningRate)
-        } else {
-            drift = VisualClusterUpdater.update(&dislikedCentroids, with: embedding, learningRate: VisualClusterUpdater.implicitLearningRate)
-        }
-        state.likedCentroids = likedCentroids
-        state.dislikedCentroids = dislikedCentroids
+        let wasTrained = state.isTrained
+        state.totalSwipes += 1
         state.updatedAt = .now
-        try modelContext.save()
-
-        if let drift {
-            MLLog.logger.notice("[AI-Stylist-ML] centroid drift: type=implicit side=\(liked ? "liked" : "disliked", privacy: .public) drift=\(drift, format: .fixed(precision: 2), privacy: .public)%")
+        try saveAndMarkMutated()
+        if !wasTrained && state.isTrained {
+            MLLog.logger.notice("[AI-Stylist-ML] calibration complete: isTrained=true totalSwipes=\(state.totalSwipes, privacy: .public)")
         }
     }
 
     /// Shared fetch-or-create for the single-row `VisualPreferenceState` —
-    /// used by both `recordSwipe` (explicit) and `applyImplicitSwipe`
-    /// (rating-derived).
+    /// used by `recordSwipe` (legacy/inert) and `noteSwipeForCalibration`.
     private func loadOrCreateVisualPreferenceState() throws -> VisualPreferenceState {
         let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
         let state = existing ?? VisualPreferenceState()
@@ -1008,6 +957,10 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             existing.slot = metadata.slot
             existing.styleTags = metadata.styleTags
             existing.silhouette = metadata.silhouette
+            existing.undertone = metadata.colorProfile.undertone
+            existing.material = metadata.material
+            existing.texture = metadata.texture
+            existing.fit = metadata.fit
             existing.recordedAt = .now
         } else {
             modelContext.insert(SwipeAttributeEvent(
@@ -1020,7 +973,11 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 fabricWeight: metadata.fabricWeight,
                 slot: metadata.slot,
                 styleTags: metadata.styleTags,
-                silhouette: metadata.silhouette
+                silhouette: metadata.silhouette,
+                undertone: metadata.colorProfile.undertone,
+                material: metadata.material,
+                texture: metadata.texture,
+                fit: metadata.fit
             ))
         }
         // `fetchFeedbackHistory()` reads `SwipeAttributeEvent` into the

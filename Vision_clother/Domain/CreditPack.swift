@@ -22,7 +22,8 @@
 import Foundation
 
 /// The two metered features purchased credits can top up — mirrors
-/// `quota.ts`'s `QuotaFeature` / `products.ts`'s `CreditType` raw values.
+/// `pricing.config.ts`'s `OperationType` (via `creditGate.ts`) /
+/// `products.ts`'s `CreditType` raw values.
 enum CreditType: String, CaseIterable {
     case recommendation
     case tryOn

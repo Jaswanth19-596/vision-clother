@@ -21,12 +21,19 @@ final class WardrobeInsightsViewModel {
     private(set) var snapshot: WardrobeInsightsAggregator.WardrobeInsightsSnapshot?
     private(set) var shoppingSnapshot: ShoppingInsightsAggregator.ShoppingInsightsSnapshot?
     private(set) var gapReport: ClosetGapReport?
+    /// Learned-taste summary for the shared `TasteCalloutCard`, built from the
+    /// same `history.attributeProfile` the taste-aware shopping/gap suggestions
+    /// already use — so the card gives those suggestions a visible reason.
+    private(set) var tasteSnapshot: TasteInsightsSnapshot?
     private(set) var isLoadingConfig = false
 
+    private let repository: WardrobeRepository
     private let configService: AnalyticsConfigService
     private var configTask: Task<Void, Never>?
+    private var recomputeTask: Task<Void, Never>?
 
-    init(configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
+    init(repository: WardrobeRepository, configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
+        self.repository = repository
         self.configService = configService
     }
 
@@ -56,10 +63,29 @@ final class WardrobeInsightsViewModel {
             thresholds: thresholds
         )
         snapshot = wardrobeSnapshot
-        shoppingSnapshot = ShoppingInsightsAggregator.buildSnapshot(
-            inventory: inventory,
-            wardrobeSnapshot: wardrobeSnapshot
-        )
-        gapReport = ClosetGapAnalyzer.analyze(inventory: inventory, profile: profile)
+
+        // Shopping/closet-gap suggestions are taste-aware (Unified Preference
+        // Engine, 2026-07-24): fetch the version-cached learned taste — the
+        // same `AttributePreferenceProfile` swipes and ratings feed — and pass
+        // it to both aggregators so "what to buy" is steered toward the user's
+        // own style. Async + cancellable, mirroring `StyleViewModel.recompute`.
+        recomputeTask?.cancel()
+        recomputeTask = Task { [weak self] in
+            guard let self else { return }
+            let history = (try? await self.repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            guard !Task.isCancelled else { return }
+
+            self.shoppingSnapshot = ShoppingInsightsAggregator.buildSnapshot(
+                inventory: inventory,
+                wardrobeSnapshot: wardrobeSnapshot,
+                attributeProfile: history.attributeProfile
+            )
+            self.gapReport = ClosetGapAnalyzer.analyze(
+                inventory: inventory,
+                profile: profile,
+                attributeProfile: history.attributeProfile
+            )
+            self.tasteSnapshot = TasteInsightsAggregator.build(profile: history.attributeProfile)
+        }
     }
 }

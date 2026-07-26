@@ -2,6 +2,56 @@
 
 History of features and fixes, newest first. Kept up to date per `CLAUDE.md` §6 so a future session can see what shipped and why without re-deriving it from `git log`.
 
+## 2026-07-25 — Fix: finish the credit-system migration (client) + purge legacy quota code
+
+**Status:** Implemented. iOS `xcodebuild -project Vision_clother.xcodeproj -scheme Vision_clother -sdk iphonesimulator clean build` verified (**BUILD SUCCEEDED**). Backend edits verified by reading — not built/deployed by Claude per project convention; user deploys. Tests skipped per CLAUDE.md §2 (backend `getOperationCost` test removed alongside the function).
+
+**Problem:** `madhajaswanth@gmail.com` (uid `iY1EpZVPFXf38Ofw2Nmd8abGl7F2`, a premium/pre-rewrite account) got "You've used all your recommendations this month." Cloud Logging confirmed the root cause: production was still gating `/openrouter/recommend` with the old flat `rateLimitOnly` counter (`limit:500`, shared with `/chat`+`/pexels`), blind to the account's entitlement — rejections at 15:49 & 16:08 UTC (running hash `6e78c58…`). A `proxyApi` redeploy at 16:11 UTC (new hash `0aeb354…`, revision `proxyapi-00002-gom`) put the credit-gated source live, but two deeper problems remained: (1) the client was never migrated off the pre-rewrite *counter* model, so its quota UI would drift from the server's real credit wallet, its 429 decoders expected a wire shape the backend no longer sends, and `isPremium` compared against `"premium"` when the server now returns `"PRO"`; (2) the deleted `middleware/quota.ts` was still named in ~15 live code comments and living docs, and `pricing.config.ts` carried two unused exports.
+
+**Fix — backend (dead code only; migration path deliberately kept):**
+- `backend/functions/src/pricing.config.ts`: removed the unused `itemCapForSlot` and `getOperationCost` exports (zero src callers); `backend/functions/test/pricing.config.test.ts` dropped the `getOperationCost` assertions.
+- `backend/functions/src/middleware/creditGate.ts`: corrected stale comments (`governanceGate`/`refundQuota` → the actual now-deleted `quota.ts`'s `quotaGate`/`refundQuota`) and added an explicit **REMOVAL DEFERRED** note on `LEGACY_TIER_LIMITS` + the `else if (usageData)` migration branch — that branch, plus the `meta/entitlement.tier` read (`governance.ts`'s `entitlementRefFor`), heals pre-rewrite accounts (incl. this user's) on their next gated call and must not be removed until all such accounts are migrated (lazily or via a one-time backfill).
+
+**Fix — client (full credit-model migration):**
+- `Vision_clother/Data/Sync/FirestoreDTOs.swift`: reshaped `UsageDTO` to the credit-wallet doc (`tier_id`, `subscription_credits_remaining`, `purchased_credits_remaining`, `usage_counts`, `billing_cycle_start`) with snake_case `CodingKeys` and defensive `decodeIfPresent` (a not-yet-migrated doc decodes to `tierId == nil` → treated as "fall back to server limits").
+- `Vision_clother/Data/UsageTracker.swift`: recomputes everything from the shared credit wallet — `creditsRemaining`, `recommendationsRemaining`/`combinationsRemaining` derived as `credits ÷ operationCost` (try-ons additionally clamped by the `IMAGE_GEN` hard cap so guests still get 0), `isPremium` now `tier == "PRO"`, `record*Used` optimistically debits credits subscription-first then purchased (mirrors `creditGate.ts`), and the `periodKey` UTC-month reset was replaced with `billing_cycle_start` anniversary logic. Removed the now-redundant `total*`/`purchased*Remaining`-per-feature accessors (one wallet).
+- `Vision_clother/Models/EntitlementLimitsResponse.swift`: `conservativeDefault.tier` `"guest"` → `"GUEST"`, plus populated credit fields so pre-fetch guest headroom resolves correctly.
+- `Vision_clother/Services/OutfitRecommendationService.swift` + `Vision_clother/Vision_clother/AppWiring/OpenRouterTryOnRenderService.swift`: rewrote the 429 decoders to `creditGate`'s shapes (`insufficient_credits` / `cap_reached`) and refreshed the copy; try-on now maps `cap_reached` (guest `IMAGE_GEN` cap 0) → "sign in", `insufficient_credits` → "buy more credits" (the old 403 `sign_in_required` path is gone).
+- Point-of-use gating/copy updated to the shared-wallet framing: `Features/DailyAssistant/DailyAssistantView.swift` (+`DailyAssistantViewModel.swift`), `Features/Pairing/ManualPairingView.swift` (+`ManualPairingViewModel.swift`), `Features/Profile/AccountSectionView.swift` (credits + used-this-cycle readout), `Features/Profile/CreditsStoreView.swift` (single purchased-credit balance).
+
+**Fix — docs/comment sync:** repointed the deleted `quota.ts` references to `creditGate.ts` (rate-limit aspects → `governance.ts`) across `Config/ProxyConfig.swift`, `Domain/CreditPack.swift`, `Services/AuthService.swift`, `Services/EntitlementLimitsService.swift`, `Data/UsageTracker.swift`, `Data/Sync/FirestoreDTOs.swift`, `Models/EntitlementLimitsResponse.swift`; corrected `docs/decisions/resolved-v1.md` (credit gate/refund) and `docs/backend/architecture.md` (`governanceGate`/`refundQuota` → `quotaGate`/`refundQuota`). `docs/backend/architecture.md`'s route table already reflected `creditGate`/`rateLimitOnly` and the un-gated `/entitlement/limits`.
+
+**Verification:** confirmed live — a `/openrouter/recommend` call from uid `iY1EpZVPFXf38Ofw2Nmd8abGl7F2` at 16:53:54 UTC logged `creditGate.ok` (`operation: RECOMMENDATION, cost: 1`), proving `creditGate` (not the old `rateLimitOnly`) is running and the legacy account healed into a real credit tier and was allowed. No force-redeploy needed.
+
+## 2026-07-24 — Feature: "Taste vs. Your Closet" alignment insight (Insights → Taste tab)
+
+**Status:** Implemented. `xcodebuild -sdk iphonesimulator clean build` verified (BUILD SUCCEEDED). Tests skipped per CLAUDE.md §2.
+
+**Problem / motivation:** The app already learned a rich per-dimension taste model (`AttributePreferenceProfile`) and separately reported closet composition, utilisation, and gaps — but nothing unified the two. It knew *what you love* (Taste tab) and *what you own* (Wardrobe/Style tabs) yet never showed the user where those diverge. The only prior overlap was a single colour-only "you own X but rate Y highly" sentence inside `ColorInsightsAggregator`. This was the highest-leverage new decision insight because it reuses machinery already built.
+
+**What shipped:** A new **Taste vs. Your Closet** card at the top of the Taste sub-tab (above the per-dimension affinity cards), showing a 0–100 **alignment score** (ownership-weighted mean affinity of what you own, over dimensions with real signal), a **"Worth adding"** list (values you love — affinity > 0.6 — but under-own, a shopping cue) and a **"Worth a second look"** list (values dominating the closet despite a below-neutral affinity, a declutter cue). Computed across colours, warmth, patterns, fabric weight, fit, materials, texture, style, and formality. Gated on `AttributePreferenceProfile.hasSignal`, so a brand-new user still sees the unchanged "Still Learning" state. No new tracking, no server or schema changes.
+
+**File changes:**
+- `Vision_clother/Domain/TasteClosetAlignmentAggregator.swift` (new) — pure aggregator + `TasteClosetAlignmentSnapshot`; NaN-safe for empty closet/profile; excludes ghost elements, counts laundry items.
+- `Vision_clother/Domain/TasteInsightsAggregator.swift` — promoted six label/swatch helpers (`colorVibeLabel`/`colorVibeSwatches`/`undertoneLabel`/`undertoneSwatch`/`prettify`/`formalityDescriptor`) from `private static` to shared `static` so both aggregators use one vocabulary instead of duplicating fashion labels.
+- `Vision_clother/Vision_clother/Features/Insights/TasteInsightsViewModel.swift` — added `alignment` snapshot; `recompute()` → `recompute(inventory:)`, building the alignment off the same `attributeProfile`; extended the `[viewModel]` log line.
+- `Vision_clother/Vision_clother/Features/Insights/TasteInsightsView.swift` — renders the alignment card (reusing `SwatchCluster`/`InsightSourceCaption`/`.premiumCard`); passes `@Query` inventory into `recompute`.
+- `Vision_clother/Vision_clother/Features/Insights/InsightsView.swift` — updated the Taste sub-tab description string.
+- `docs/domain/vision-clother-concepts.md` — new "Taste vs. Closet Alignment" concept subsection.
+
+**Deferred:** Feeding the alignment summary into `Domain/InsightsSummaryBuilder.swift` so the Q&A LLM can answer "should I buy more colour?" is a follow-up — kept this insight self-contained first.
+
+## 2026-07-25 — Fix: GET /entitlement/limits HTTP 429 rate-limit block & credit engine model alignment
+
+**Status:** Implemented. `npm test` passed (71 vitest tests) and `xcodebuild -sdk iphonesimulator build` verified (BUILD SUCCEEDED).
+
+**Problem:** `GET /accountApi/entitlement/limits` returned `HTTP 429 rate_limit_exceeded`, causing `UsageTracker.refreshUsage` to fail with "Couldn't load usage limits (429)".
+
+**Fix:**
+1. `backend/functions/src/app.ts`: Removed `rateLimitOnly` middleware from `/entitlement/limits` and `/analytics/config` in `buildAccountApp()`.
+2. `backend/functions/src/routes/entitlementLimits.ts`: Added derived `recommendationLimit` and `tryOnLimit` fields to the JSON response.
+3. `Vision_clother/Models/EntitlementLimitsResponse.swift`: Updated `EntitlementLimitsResponse` model to decode both credit-engine fields and legacy limit fields.
+
 ## 2026-07-24 — Fix: "Discover Your Style" swipes now teach attribute preferences, not noisy pixel embeddings
 
 **Status:** Implemented. `xcodebuild -sdk iphonesimulator build` verified (BUILD SUCCEEDED).

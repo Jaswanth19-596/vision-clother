@@ -23,6 +23,10 @@ struct DailyAssistantView: View {
     /// recommendation/combination captions + proactive disable, see
     /// `promptInput`/`prospectivePurchaseInput`/`roundView`.
     @Environment(UsageTracker.self) private var usageTracker
+    /// Outfit-of-the-Day deep link (C2): a notification tap sets
+    /// `navigator.pendingDailyOutfit`, which this view consumes to auto-run
+    /// today's outfit turn — see `consumePendingDailyOutfit`.
+    @Environment(AppNavigator.self) private var navigator
     /// Account-switch reactivity: `viewModel` is constructed once for this
     /// tab's lifetime (SwiftUI's plain `TabView` keeps every tab alive), so
     /// without this the chat timeline from the previous account would just
@@ -46,10 +50,11 @@ struct DailyAssistantView: View {
     /// "Invalid image data-url" error from the render API.
     @State private var isMissingPortraitAlertPresented = false
     /// Guest-first quota plan: try-on requires a linked account
-    /// (`backend/functions/src/middleware/quota.ts`'s `tryOn` cap is 0 for
-    /// guests) — this pre-flight guard avoids a round trip to the proxy just
-    /// to get the same 403 back. Checked before the portrait check below so
-    /// a guest sees "sign in" rather than "add a photo" first.
+    /// (`backend/functions/src/pricing.config.ts`'s GUEST `IMAGE_GEN` hard cap
+    /// is 0, enforced by `middleware/creditGate.ts`) — this pre-flight guard
+    /// avoids a round trip to the proxy just to get the same `cap_reached`
+    /// back. Checked before the portrait check below so a guest sees "sign in"
+    /// rather than "add a photo" first.
     @State private var isGuestTryOnAlertPresented = false
 
     // Prospective Purchase Evaluation (2026-07-15) — "Buying something new?"
@@ -101,16 +106,25 @@ struct DailyAssistantView: View {
             }
         }
         .task {
-            guard viewModel == nil else { return }
-            viewModel = DailyAssistantViewModel(
-                repository: SyncingWardrobeRepository(modelContext: modelContext),
-                jobQueueStore: jobQueueStore,
-                recommendationService: ServiceFactory.makeOutfitRecommendationService(),
-                stylistQAService: ServiceFactory.makeStylistQAService(),
-                weatherProvider: ServiceFactory.makeWeatherProvider(),
-                profileDerivationService: ServiceFactory.makeUserProfileDerivationService(),
-                usageTracker: usageTracker
-            )
+            if viewModel == nil {
+                viewModel = DailyAssistantViewModel(
+                    repository: SyncingWardrobeRepository(modelContext: modelContext),
+                    jobQueueStore: jobQueueStore,
+                    recommendationService: ServiceFactory.makeOutfitRecommendationService(),
+                    stylistQAService: ServiceFactory.makeStylistQAService(),
+                    weatherProvider: ServiceFactory.makeWeatherProvider(),
+                    profileDerivationService: ServiceFactory.makeUserProfileDerivationService(),
+                    usageTracker: usageTracker
+                )
+            }
+            // Cold launch straight from the Outfit-of-the-Day notification:
+            // the flag may already be set before this view first appeared.
+            await consumePendingDailyOutfit()
+        }
+        .onChange(of: navigator.pendingDailyOutfit) { _, pending in
+            // Warm path: the app was already running when the reminder was
+            // tapped.
+            if pending { Task { await consumePendingDailyOutfit() } }
         }
         .onChange(of: viewModel?.uid) { _, _ in
             viewModel?.resetConversation()
@@ -554,6 +568,17 @@ struct DailyAssistantView: View {
     /// `continueConversation`), not here — clearing `viewModel.prompt`
     /// before the `async` call starts would empty it out from under
     /// `requestOutfitIdeas()`'s own read of `prompt`.
+    /// Outfit-of-the-Day (C2): if a notification tap left a pending request,
+    /// consume it once and auto-run today's outfit turn. Idempotent — clears
+    /// the flag before running so a re-entrant call (task + onChange both
+    /// firing) can't double-submit.
+    private func consumePendingDailyOutfit() async {
+        guard navigator.pendingDailyOutfit, let viewModel else { return }
+        navigator.pendingDailyOutfit = false
+        isPromptFocused = false
+        await viewModel.askForTodaysOutfit()
+    }
+
     private func submit(viewModel: DailyAssistantViewModel) {
         guard viewModel.extractionState != .loading,
               !viewModel.prompt.trimmingCharacters(in: .whitespaces).isEmpty else { return }
@@ -581,19 +606,24 @@ struct DailyAssistantView: View {
     }
 
     /// Quota visibility feature — shown above both the free-text and
-    /// prospective-purchase submit buttons, which both spend one
-    /// `recommendationCount` unit per call (`DailyAssistantViewModel`'s
-    /// `resolveOutfits`/`resolveProspectivePurchase`).
+    /// prospective-purchase submit buttons. Recommendations are now unmetered
+    /// (`UsageTracker.isRecommendationUnmetered`; credits apply only to try-on
+    /// renders), so this collapses to nothing on the common path — no credit
+    /// countdown for a free action. The out-of-credits branch below only ever
+    /// shows if the server re-meters recommendations (a non-zero
+    /// `RECOMMENDATION` cost), which the code still handles gracefully.
     @ViewBuilder
     private var recommendationQuotaCaption: some View {
-        if usageTracker.recommendationsRemaining <= 0 {
+        if usageTracker.isRecommendationUnmetered {
+            EmptyView()
+        } else if usageTracker.recommendationsRemaining <= 0 {
             Text(usageTracker.isAnonymousQuota
-                 ? "You've used all your recommendations this month. Sign in for more."
-                 : "You've used all your recommendations this month. Resets next month.")
+                 ? "You're out of credits. Sign in for more."
+                 : "You're out of credits. Buy more in Profile.")
                 .font(.caption)
                 .foregroundStyle(.red)
         } else {
-            Text("\(usageTracker.recommendationsRemaining) recommendation\(usageTracker.recommendationsRemaining == 1 ? "" : "s") left this month")
+            Text("\(usageTracker.recommendationsRemaining) recommendation\(usageTracker.recommendationsRemaining == 1 ? "" : "s") left")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -952,7 +982,7 @@ private struct TryOnActionButton: View {
             .animation(.easeInOut(duration: 0.2), value: isQueued)
 
             if !isQueued && !isBlocked {
-                Text("\(combinationsRemaining) combination\(combinationsRemaining == 1 ? "" : "s") left this month")
+                Text("\(combinationsRemaining) combination\(combinationsRemaining == 1 ? "" : "s") left")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1006,6 +1036,7 @@ private struct ConditionalElevatedShadow: ViewModifier {
     let previewRepository = SyncingWardrobeRepository(modelContext: container.mainContext)
     DailyAssistantView()
         .modelContainer(container)
+        .environment(AppNavigator())
         .environment(JobQueueStore(
             repository: previewRepository,
             backgroundIsolationService: MockBackgroundIsolationService(),

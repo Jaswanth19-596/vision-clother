@@ -152,14 +152,16 @@ export function buildHeavyApp(): Express {
  * comment history and `docs/backend/architecture.md` for the individual
  * justifications (Admin SDK privileges / server-only-write access). None
  * of the four touch `openRouterApiKey`/`pexelsApiKey`, so this deployment
- * binds no provider secrets. All four are behind `rateLimitOnly`'s daily
- * guardrail — none carry a per-feature quota.
+ * binds no provider secrets. Action-taking endpoints (/account/delete, /iap/verify)
+ * are behind `rateLimitOnly`'s daily guardrail; read-only config endpoints
+ * (/entitlement/limits, /analytics/config) are uncapped so limits and app state
+ * can always be read even if AI quotas are reached.
  */
 export function buildAccountApp(): Express {
   const app = baseApp();
   app.use("/account/delete", rateLimitOnly, accountDeleteRouter);
   app.use("/iap/verify", rateLimitOnly, iapVerifyRouter);
-  app.use("/entitlement/limits", rateLimitOnly, entitlementLimitsRouter);
-  app.use("/analytics/config", rateLimitOnly, responseCache("analyticsConfig"), analyticsConfigRouter);
+  app.use("/entitlement/limits", entitlementLimitsRouter);
+  app.use("/analytics/config", responseCache("analyticsConfig"), analyticsConfigRouter);
   return app;
 }

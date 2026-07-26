@@ -11,7 +11,12 @@
 import UserNotifications
 
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    /// Tap on a job-completion notification (upload/try-on) — opens the
+    /// Activity panel.
     var onNotificationTapped: (() -> Void)?
+    /// Tap on the daily Outfit-of-the-Day reminder — routes to the Daily
+    /// Assistant and auto-runs today's outfit (see `DailyOutfitReminder`).
+    var onDailyOutfitTapped: (() -> Void)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -26,8 +31,14 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let onTapped = onNotificationTapped
-        Task { @MainActor in onTapped?() }
+        let request = response.notification.request
+        let isDailyOutfit = request.identifier == DailyOutfitReminder.identifier
+            || request.content.categoryIdentifier == DailyOutfitReminder.categoryIdentifier
+        let onJobTapped = onNotificationTapped
+        let onDaily = onDailyOutfitTapped
+        Task { @MainActor in
+            if isDailyOutfit { onDaily?() } else { onJobTapped?() }
+        }
         completionHandler()
     }
 }

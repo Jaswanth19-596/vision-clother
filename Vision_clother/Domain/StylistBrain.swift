@@ -241,6 +241,47 @@ enum StylistBrain {
                     avoidList.append("Fabric weights for the conditions: \(lowFabricWeights.joined(separator: ", "))")
                 }
 
+                // Unified Preference Engine (2026-07-24): undertone, material,
+                // texture and fit are learned the same way as the six
+                // dimensions above (from ratings AND swipes) — surface them
+                // symmetrically too so the recommender reasons in the full
+                // attribute space the taste engine now covers.
+                let highUndertones = attributeProfile.undertoneAffinity.filter { $0.value > 0.6 }.map { $0.key.rawValue }
+                if !highUndertones.isEmpty {
+                    favoritesList.append("Color undertones: \(highUndertones.joined(separator: ", "))")
+                }
+                let lowUndertones = attributeProfile.undertoneAffinity.filter { $0.value < 0.4 }.map { $0.key.rawValue }
+                if !lowUndertones.isEmpty {
+                    avoidList.append("Color undertones: \(lowUndertones.joined(separator: ", "))")
+                }
+
+                let highMaterials = attributeProfile.materialAffinity.filter { $0.value > 0.6 }.map { $0.key }
+                if !highMaterials.isEmpty {
+                    favoritesList.append("Materials: \(highMaterials.joined(separator: ", "))")
+                }
+                let lowMaterials = attributeProfile.materialAffinity.filter { $0.value < 0.4 }.map { $0.key }
+                if !lowMaterials.isEmpty {
+                    avoidList.append("Materials: \(lowMaterials.joined(separator: ", "))")
+                }
+
+                let highTextures = attributeProfile.textureAffinity.filter { $0.value > 0.6 }.map { $0.key }
+                if !highTextures.isEmpty {
+                    favoritesList.append("Textures: \(highTextures.joined(separator: ", "))")
+                }
+                let lowTextures = attributeProfile.textureAffinity.filter { $0.value < 0.4 }.map { $0.key }
+                if !lowTextures.isEmpty {
+                    avoidList.append("Textures: \(lowTextures.joined(separator: ", "))")
+                }
+
+                let highFits = attributeProfile.fitAffinity.filter { $0.value > 0.6 }.map { $0.key }
+                if !highFits.isEmpty {
+                    favoritesList.append("Fits/cuts: \(highFits.joined(separator: ", "))")
+                }
+                let lowFits = attributeProfile.fitAffinity.filter { $0.value < 0.4 }.map { $0.key }
+                if !lowFits.isEmpty {
+                    avoidList.append("Fits/cuts: \(lowFits.joined(separator: ", "))")
+                }
+
                 if !favoritesList.isEmpty {
                     prompt += """
 

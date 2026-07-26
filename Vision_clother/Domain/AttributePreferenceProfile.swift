@@ -75,6 +75,26 @@ struct RatedAttributes {
     /// `ItemRating.comfort` ("how did the fabric feel?"), normalized to
     /// `[0,1]` — the item-level signal for `fabricWeightAffinity`.
     let fabricComfort: Double
+    /// `WardrobeItem.colorProfile.undertone` for the rated item — feeds
+    /// `undertoneAffinity`, keyed off the same color signal (`colorLike`).
+    /// `nil` for items with no classified undertone.
+    let undertone: Undertone?
+    /// `WardrobeItem.material` for the rated item — feeds `materialAffinity`,
+    /// keyed off the fabric-feel signal (`fabricComfort`), same as the vision
+    /// LLM extracts it (`Services/VisionMetadataExtractionService.swift`).
+    let material: String?
+    /// `WardrobeItem.texture` for the rated item — feeds `textureAffinity`,
+    /// also keyed off `fabricComfort` (texture is a tactile fabric property).
+    let texture: String?
+    /// `WardrobeItem.fit` (the free-form cut descriptor, e.g. "Slim",
+    /// "Oversized") for the rated item — feeds `fitAffinity`, keyed off
+    /// `fitLike` below. Distinct from `silhouetteTag`/`silhouetteAffinity`
+    /// (shape) — fit is how the garment sits on the body.
+    let fit: String?
+    /// Signal for `fitAffinity`: `ItemRating.fit.centeredness` (1.0 = "just
+    /// right") for owned items, or the swipe like/dislike signal for swipes.
+    /// `nil` whenever `fit` is `nil`, so it never contributes alone.
+    let fitLike: Double?
 
     /// Explicit init (rather than relying on the synthesized memberwise
     /// init's default-value support) — with trailing defaulted parameters,
@@ -85,7 +105,9 @@ struct RatedAttributes {
         colorVibe: ColorVibe, pattern: GarmentPattern, formalityBand: Int,
         styleIdentity: Double = 0.5, styleTags: [String] = [], recordedAt: Date = .now, slot: Slot? = nil,
         silhouetteTag: String? = nil, silhouetteFit: Double? = nil,
-        fabricWeight: FabricWeight = .medium, fabricComfort: Double = 0.5
+        fabricWeight: FabricWeight = .medium, fabricComfort: Double = 0.5,
+        undertone: Undertone? = nil, material: String? = nil, texture: String? = nil,
+        fit: String? = nil, fitLike: Double? = nil
     ) {
         self.colorLike = colorLike
         self.patternLike = patternLike
@@ -101,6 +123,11 @@ struct RatedAttributes {
         self.silhouetteFit = silhouetteFit
         self.fabricWeight = fabricWeight
         self.fabricComfort = fabricComfort
+        self.undertone = undertone
+        self.material = material
+        self.texture = texture
+        self.fit = fit
+        self.fitLike = fitLike
     }
 }
 
@@ -145,12 +172,23 @@ struct OutfitDimensionRatedAttributes {
     /// `WardrobeItem.slot` for the rated item — feeds `colorVibeAffinityBySlot`,
     /// same as `RatedAttributes.slot`.
     let slot: Slot?
+    /// The rated item's `undertone`/`material`/`texture`/`fit` — feed the four
+    /// affinity maps added 2026-07-24, reusing the closest existing outfit
+    /// dimension as each one's signal: undertone <- Color Harmony,
+    /// material/texture <- Weather Suitability+Practicality (`weatherFit`),
+    /// fit <- Fit & Silhouette (`silhouette`). `nil` when the item lacks that
+    /// attribute, so it simply doesn't contribute.
+    let undertone: Undertone?
+    let material: String?
+    let texture: String?
+    let fit: String?
 
     init(
         colorHarmony: Double, occasionMatch: Double, styleMatch: Double, silhouette: Double, weatherFit: Double,
         colorVibe: ColorVibe, styleTags: [String], silhouetteTag: String?, formalityBand: Int,
         fabricWeight: FabricWeight, pattern: GarmentPattern = .solid, patternDissatisfaction: Double? = nil,
-        recordedAt: Date = .now, slot: Slot? = nil
+        recordedAt: Date = .now, slot: Slot? = nil,
+        undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil
     ) {
         self.colorHarmony = colorHarmony
         self.occasionMatch = occasionMatch
@@ -166,6 +204,10 @@ struct OutfitDimensionRatedAttributes {
         self.pattern = pattern
         self.recordedAt = recordedAt
         self.slot = slot
+        self.undertone = undertone
+        self.material = material
+        self.texture = texture
+        self.fit = fit
     }
 }
 
@@ -182,8 +224,12 @@ struct ItemAttributeSnapshot: Sendable {
     let silhouette: String?
     let fabricWeight: FabricWeight
     let slot: Slot
+    let undertone: Undertone?
+    let material: String?
+    let texture: String?
+    let fit: String?
 
-    init(colorCategory: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleTags: [String], silhouette: String?, fabricWeight: FabricWeight, slot: Slot) {
+    init(colorCategory: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleTags: [String], silhouette: String?, fabricWeight: FabricWeight, slot: Slot, undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil) {
         self.colorCategory = colorCategory
         self.pattern = pattern
         self.formalityBand = formalityBand
@@ -191,6 +237,10 @@ struct ItemAttributeSnapshot: Sendable {
         self.silhouette = silhouette
         self.fabricWeight = fabricWeight
         self.slot = slot
+        self.undertone = undertone
+        self.material = material
+        self.texture = texture
+        self.fit = fit
     }
 }
 
@@ -217,6 +267,21 @@ struct AttributePreferenceProfile {
     /// Weather Suitability + Practicality (folded into one bucket), keyed by
     /// `WardrobeItem.fabricWeight`.
     var fabricWeightAffinity: [FabricWeight: Double] = [:]
+    /// Color undertone taste (warm/cool/neutral), keyed by
+    /// `WardrobeItem.colorProfile.undertone` — added 2026-07-24 so the merged
+    /// engine learns undertone, not just color vibe.
+    var undertoneAffinity: [Undertone: Double] = [:]
+    /// Fabric material taste (e.g. "Linen", "Denim"), keyed by
+    /// `WardrobeItem.material` — previously extracted by the vision LLM but
+    /// never learned.
+    var materialAffinity: [String: Double] = [:]
+    /// Tactile surface-texture taste (e.g. "Ribbed", "Smooth"), keyed by
+    /// `WardrobeItem.texture`.
+    var textureAffinity: [String: Double] = [:]
+    /// Fit/cut taste (e.g. "Slim", "Oversized"), keyed by `WardrobeItem.fit`
+    /// — how the garment sits on the body, distinct from `silhouetteAffinity`
+    /// (its shape).
+    var fitAffinity: [String: Double] = [:]
 
     /// Bounds how far `affinityBonus` can push a score, so attribute bias
     /// can re-rank candidates but never overwhelm the deterministic
@@ -282,7 +347,11 @@ struct AttributePreferenceProfile {
                 styleTags: item.styleTags,
                 silhouette: item.silhouette,
                 fabricWeight: item.fabricWeight,
-                slot: item.slot
+                slot: item.slot,
+                undertone: item.colorProfile.undertone,
+                material: item.material,
+                texture: item.texture,
+                fit: item.fit
             )
         }
         return build(
@@ -306,6 +375,10 @@ struct AttributePreferenceProfile {
         var styleTagSums: [String: (sum: Double, count: Double)] = [:]
         var silhouetteSums: [String: (sum: Double, count: Double)] = [:]
         var fabricWeightSums: [FabricWeight: (sum: Double, count: Double)] = [:]
+        var undertoneSums: [Undertone: (sum: Double, count: Double)] = [:]
+        var materialSums: [String: (sum: Double, count: Double)] = [:]
+        var textureSums: [String: (sum: Double, count: Double)] = [:]
+        var fitSums: [String: (sum: Double, count: Double)] = [:]
 
         for rating in ratings {
             let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
@@ -334,6 +407,23 @@ struct AttributePreferenceProfile {
 
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.fabricComfort * weight
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
+
+            if let undertone = rating.undertone {
+                undertoneSums[undertone, default: (0, 0)].sum += rating.colorLike * weight
+                undertoneSums[undertone, default: (0, 0)].count += weight
+            }
+            if let material = rating.material {
+                materialSums[material, default: (0, 0)].sum += rating.fabricComfort * weight
+                materialSums[material, default: (0, 0)].count += weight
+            }
+            if let texture = rating.texture {
+                textureSums[texture, default: (0, 0)].sum += rating.fabricComfort * weight
+                textureSums[texture, default: (0, 0)].count += weight
+            }
+            if let fit = rating.fit, let fitLike = rating.fitLike {
+                fitSums[fit, default: (0, 0)].sum += fitLike * weight
+                fitSums[fit, default: (0, 0)].count += weight
+            }
         }
 
         for rating in outfitDimensionRatings {
@@ -363,6 +453,23 @@ struct AttributePreferenceProfile {
 
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.weatherFit * weight
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
+
+            if let undertone = rating.undertone {
+                undertoneSums[undertone, default: (0, 0)].sum += rating.colorHarmony * weight
+                undertoneSums[undertone, default: (0, 0)].count += weight
+            }
+            if let material = rating.material {
+                materialSums[material, default: (0, 0)].sum += rating.weatherFit * weight
+                materialSums[material, default: (0, 0)].count += weight
+            }
+            if let texture = rating.texture {
+                textureSums[texture, default: (0, 0)].sum += rating.weatherFit * weight
+                textureSums[texture, default: (0, 0)].count += weight
+            }
+            if let fit = rating.fit {
+                fitSums[fit, default: (0, 0)].sum += rating.silhouette * weight
+                fitSums[fit, default: (0, 0)].count += weight
+            }
         }
 
         var colorBaseline: [ColorVibe: Int] = [:]
@@ -372,6 +479,10 @@ struct AttributePreferenceProfile {
         var styleTagBaseline: [String: Int] = [:]
         var silhouetteBaseline: [String: Int] = [:]
         var fabricWeightBaseline: [FabricWeight: Int] = [:]
+        var undertoneBaseline: [Undertone: Int] = [:]
+        var materialBaseline: [String: Int] = [:]
+        var textureBaseline: [String: Int] = [:]
+        var fitBaseline: [String: Int] = [:]
         for item in inventorySnapshots {
             colorBaseline[item.colorCategory, default: 0] += 1
             var slotBaselineMap = colorBaselineBySlot[item.slot] ?? [:]
@@ -386,6 +497,18 @@ struct AttributePreferenceProfile {
                 silhouetteBaseline[silhouette, default: 0] += 1
             }
             fabricWeightBaseline[item.fabricWeight, default: 0] += 1
+            if let undertone = item.undertone {
+                undertoneBaseline[undertone, default: 0] += 1
+            }
+            if let material = item.material {
+                materialBaseline[material, default: 0] += 1
+            }
+            if let texture = item.texture {
+                textureBaseline[texture, default: 0] += 1
+            }
+            if let fit = item.fit {
+                fitBaseline[fit, default: 0] += 1
+            }
         }
 
         func affinityMap<Key: Hashable>(
@@ -412,6 +535,10 @@ struct AttributePreferenceProfile {
         profile.styleTagAffinity = affinityMap(sums: styleTagSums, baseline: styleTagBaseline)
         profile.silhouetteAffinity = affinityMap(sums: silhouetteSums, baseline: silhouetteBaseline)
         profile.fabricWeightAffinity = affinityMap(sums: fabricWeightSums, baseline: fabricWeightBaseline)
+        profile.undertoneAffinity = affinityMap(sums: undertoneSums, baseline: undertoneBaseline)
+        profile.materialAffinity = affinityMap(sums: materialSums, baseline: materialBaseline)
+        profile.textureAffinity = affinityMap(sums: textureSums, baseline: textureBaseline)
+        profile.fitAffinity = affinityMap(sums: fitSums, baseline: fitBaseline)
         return profile
     }
 
@@ -444,6 +571,8 @@ struct AttributePreferenceProfile {
     var hasSignal: Bool {
         !colorVibeAffinity.isEmpty || !patternAffinity.isEmpty || !formalityAffinity.isEmpty
             || !styleTagAffinity.isEmpty || !silhouetteAffinity.isEmpty || !fabricWeightAffinity.isEmpty
+            || !undertoneAffinity.isEmpty || !materialAffinity.isEmpty || !textureAffinity.isEmpty
+            || !fitAffinity.isEmpty
     }
 
     /// Same bounded bias as `affinityBonus`, but also surfaces the per-attribute
@@ -470,7 +599,17 @@ struct AttributePreferenceProfile {
         let silhouetteAff = item.silhouette.flatMap { silhouetteAffinity[$0] } ?? 0.5
         let fabricWeightAff = fabricWeightAffinity[item.fabricWeight] ?? 0.5
 
-        let mean = (colorAff + patternAff + formalityAff + styleTagAff + silhouetteAff + fabricWeightAff) / 6.0
+        let undertoneAff = item.colorProfile.undertone.flatMap { undertoneAffinity[$0] } ?? 0.5
+        let materialAff = item.material.flatMap { materialAffinity[$0] } ?? 0.5
+        let textureAff = item.texture.flatMap { textureAffinity[$0] } ?? 0.5
+        let fitAff = item.fit.flatMap { fitAffinity[$0] } ?? 0.5
+
+        // Fixed 10-way mean (was 6-way before undertone/material/texture/fit
+        // were learned, 2026-07-24) — an unrated attribute still contributes
+        // its neutral 0.5, keeping `bonus` identical to `affinityBonus`; each
+        // attribute's individual pull is correspondingly a touch smaller.
+        let mean = (colorAff + patternAff + formalityAff + styleTagAff + silhouetteAff + fabricWeightAff
+            + undertoneAff + materialAff + textureAff + fitAff) / 10.0
         let bonus = ((mean - 0.5) * 2.0 * Self.maxBonusMagnitude)
             .clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
 
@@ -492,6 +631,18 @@ struct AttributePreferenceProfile {
         }
         if fabricWeightAffinity[item.fabricWeight] != nil {
             components.append(.init(label: "\(Self.prettify(item.fabricWeight.rawValue)) fabric", affinity: fabricWeightAff))
+        }
+        if let undertone = item.colorProfile.undertone, undertoneAffinity[undertone] != nil {
+            components.append(.init(label: "\(Self.prettify(undertone.rawValue)) undertone", affinity: undertoneAff))
+        }
+        if let material = item.material, materialAffinity[material] != nil {
+            components.append(.init(label: "\(material) material", affinity: materialAff))
+        }
+        if let texture = item.texture, textureAffinity[texture] != nil {
+            components.append(.init(label: "\(texture) texture", affinity: textureAff))
+        }
+        if let fit = item.fit, fitAffinity[fit] != nil {
+            components.append(.init(label: "\(fit) fit", affinity: fitAff))
         }
 
         return AttributeMatchDetail(components: components, bonus: bonus)

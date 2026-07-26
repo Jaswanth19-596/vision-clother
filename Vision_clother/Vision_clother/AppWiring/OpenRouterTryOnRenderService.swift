@@ -42,11 +42,13 @@ enum TryOnError: Error, LocalizedError, Equatable {
     case renderFailed(reason: String)
     case timedOut
     case cancelled
-    /// 429 from `backend/functions/src/middleware/quota.ts`'s `"tryOn"` gate
-    /// — the signed-in free-tier monthly cap (10) was hit.
+    /// 429 `insufficient_credits` from `backend/functions/src/middleware/creditGate.ts`'s
+    /// `IMAGE_GEN` gate — the linked account's shared credit wallet can't
+    /// cover the try-on cost.
     case quotaExceeded
-    /// 403 `sign_in_required` from the same gate — guests have a 0 try-on
-    /// cap, so this always means "you're browsing as a guest."
+    /// 429 `cap_reached` from the same gate — GUEST's `IMAGE_GEN` hard cap is
+    /// 0 (`pricing.config.ts`), so this always means "you're browsing as a
+    /// guest."
     case signInRequired
 
     var errorDescription: String? {
@@ -62,10 +64,10 @@ enum TryOnError: Error, LocalizedError, Equatable {
         case .cancelled:
             return "Render cancelled."
         case .quotaExceeded:
-            // The server only 429s once purchased credits are also 0
-            // (quota.ts draws down the balance first), so this copy can
-            // safely point at buying more.
-            return "You've used this month's free try-ons and any purchased credits. Buy more in Profile, or wait for the monthly reset."
+            // The server only 429s once both credit buckets are exhausted
+            // (creditGate.ts draws down subscription then purchased first),
+            // so this copy can safely point at buying more.
+            return "You're out of credits for try-ons. Buy more in Profile, or wait for your monthly refill."
         case .signInRequired:
             return "Sign in to try this on."
         }
@@ -219,14 +221,18 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 let failedStatusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
                 if failedStatusCode == 429 {
-                    AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: quota exceeded")
+                    let rejection = try? JSONDecoder().decode(CreditGateRejection.self, from: data)
+                    // `cap_reached` on IMAGE_GEN means the tier can't do
+                    // try-ons at all — the only such hard cap is GUEST's 0
+                    // (`pricing.config.ts`), so it's effectively "sign in."
+                    // `insufficient_credits` means a linked account is simply
+                    // out of spendable credit.
+                    if rejection?.error == "cap_reached" {
+                        AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: try-on cap reached (guest tier)")
+                        throw TryOnError.signInRequired
+                    }
+                    AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: out of credits error=\(rejection?.error ?? "unknown")")
                     throw TryOnError.quotaExceeded
-                }
-                if failedStatusCode == 403,
-                   let proxyError = try? JSONDecoder().decode(ProxyQuotaErrorResponse.self, from: data),
-                   proxyError.error == "sign_in_required" {
-                    AppLog.notice(.tryOn, "[\(requestID)] renderTryOn: sign-in required")
-                    throw TryOnError.signInRequired
                 }
 
                 let errorReason: String
@@ -428,11 +434,17 @@ private struct OpenRouterErrorResponse: Decodable {
     let error: ErrorDetail?
 }
 
-/// `backend/functions/src/middleware/quota.ts`'s 403 body shape:
-/// `{ error: "sign_in_required" }` — a flat string, not `OpenRouterErrorResponse`'s
-/// nested `{ error: { message } }` shape.
-private struct ProxyQuotaErrorResponse: Decodable {
+/// `backend/functions/src/middleware/creditGate.ts`'s 429 body shapes:
+/// `{ error: "insufficient_credits", creditsRemaining, cost }` or
+/// `{ error: "cap_reached", cap, used }` — a flat `error` string, not
+/// `OpenRouterErrorResponse`'s nested `{ error: { message } }` shape. All
+/// numeric fields optional so either shape decodes; only `error` is read.
+private struct CreditGateRejection: Decodable {
     let error: String
+    let creditsRemaining: Int?
+    let cost: Int?
+    let cap: Int?
+    let used: Int?
 }
 
 // MARK: - Mock for previews/tests — never touches the network.

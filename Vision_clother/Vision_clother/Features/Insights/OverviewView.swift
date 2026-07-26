@@ -17,6 +17,7 @@ import SwiftData
 import SwiftUI
 
 struct OverviewView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query private var inventory: [WardrobeItem]
     @Query(sort: \ItemRating.recordedAt, order: .reverse) private var itemRatings: [ItemRating]
     @Query(sort: \OutfitFeedback.recordedAt, order: .reverse) private var outfitFeedbacks: [OutfitFeedback]
@@ -38,6 +39,8 @@ struct OverviewView: View {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
                         TimeRangeSelector(selection: $timeRange)
 
+                        TasteCalloutCard(snapshot: viewModel.tasteSnapshot)
+
                         if let summary = viewModel.snapshot?.styleSummary {
                             styleSummaryCard(summary)
                         }
@@ -56,6 +59,7 @@ struct OverviewView: View {
         .navigationTitle("Overview")
         .task {
             viewModel.loadConfigIfNeeded()
+            viewModel.refreshTaste(repository: SyncingWardrobeRepository(modelContext: modelContext))
             recompute()
         }
         .onChange(of: timeRange) { recompute() }

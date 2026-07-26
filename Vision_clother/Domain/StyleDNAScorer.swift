@@ -4,8 +4,9 @@
 //
 //  Analytics & Insights, Phase 10 — Style DNA (Style sub-tab, joining
 //  Phase 5's Favorite Colors on the same screen per the Phase 1 plan). Pure,
-//  NaN-safe (Domain/CLAUDE.md) — 12 named 0-100 spectrums (50 = neutral/no
-//  lean), each derived from a specific field already computed elsewhere
+//  NaN-safe (Domain/CLAUDE.md) — 14 named 0-100 spectrums (50 = neutral/no
+//  lean; Material Signature + Texture Preference added 2026-07-24 with the
+//  Unified Preference Engine), each derived from a specific field already computed elsewhere
 //  (`Domain/AttributePreferenceProfile.swift`'s learned affinities, or raw
 //  `ItemRating`/`OutfitFeedback`/`WornLogEntry` rows) — never an invented
 //  number. Gated behind `AnalyticsConfigResponse.styleDNAMinRatings`; the
@@ -35,7 +36,7 @@ enum StyleDNAScorer {
     }
 
     struct StyleDNASnapshot: Equatable {
-        /// Fixed order, always 12 entries when `isUnlocked`, empty otherwise.
+        /// Fixed order, always 14 entries when `isUnlocked`, empty otherwise.
         let dimensions: [DimensionScore]
         let isUnlocked: Bool
         let ratingSampleSize: Int
@@ -61,6 +62,8 @@ enum StyleDNAScorer {
             formalityLean(attributeProfile),
             silhouetteConsistency(attributeProfile),
             fabricWeightLean(attributeProfile),
+            materialSignature(attributeProfile),
+            texturePreference(attributeProfile),
             signatureStyleStrength(attributeProfile),
             colorPaletteBreadth(attributeProfile),
             wearLoyalty(wornLogEntries),
@@ -166,6 +169,40 @@ enum StyleDNAScorer {
         else if score <= 40 { why = "You favor lighter fabrics." }
         else { why = "You favor mid-weight fabrics." }
         return DimensionScore(id: "fabricWeightLean", name: "Fabric Weight Lean", score: score, why: why)
+    }
+
+    /// Strongest learned `materialAffinity` — the material (e.g. "Linen",
+    /// "Denim") the user rates/swipes most favorably, and how strong that
+    /// lean is. Mirrors `signatureStyleStrength`'s "top key" shape. Added
+    /// 2026-07-24 (Unified Preference Engine) — material was extracted long
+    /// before but never learned until swipes/ratings fed it.
+    private static func materialSignature(_ profile: AttributePreferenceProfile) -> DimensionScore {
+        guard let top = profile.materialAffinity.max(by: { $0.value < $1.value }) else {
+            return neutralScore(id: "materialSignature", name: "Material Signature", why: "Rate or swipe a few more pieces to see your go-to material.")
+        }
+        let score = (top.value * 100).clamped(to: 0...100)
+        return DimensionScore(
+            id: "materialSignature",
+            name: "Material Signature",
+            score: score,
+            why: "\"\(top.key.capitalized)\" is the material you gravitate to most, rated \(Int(score))/100."
+        )
+    }
+
+    /// Strongest learned `textureAffinity` — the tactile surface (e.g.
+    /// "Ribbed", "Smooth") the user favors. Same "top key" shape as
+    /// `materialSignature`.
+    private static func texturePreference(_ profile: AttributePreferenceProfile) -> DimensionScore {
+        guard let top = profile.textureAffinity.max(by: { $0.value < $1.value }) else {
+            return neutralScore(id: "texturePreference", name: "Texture Preference", why: "Rate or swipe a few more pieces to see your texture preference.")
+        }
+        let score = (top.value * 100).clamped(to: 0...100)
+        return DimensionScore(
+            id: "texturePreference",
+            name: "Texture Preference",
+            score: score,
+            why: "\"\(top.key.capitalized)\" is the texture you lean toward, rated \(Int(score))/100."
+        )
     }
 
     private static func signatureStyleStrength(_ profile: AttributePreferenceProfile) -> DimensionScore {

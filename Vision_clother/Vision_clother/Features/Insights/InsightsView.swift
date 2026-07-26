@@ -25,7 +25,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .style: return "Style"
         case .trends: return "Trends"
         case .wardrobe: return "Wardrobe"
-        case .discover: return "Discover"
+        case .discover: return "Taste"
         }
     }
 
@@ -35,7 +35,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .style: return "paintpalette"
         case .trends: return "chart.line.uptrend.xyaxis"
         case .wardrobe: return "tshirt"
-        case .discover: return "sparkle.magnifyingglass"
+        case .discover: return "heart.text.square"
         }
     }
 
@@ -45,7 +45,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .style: return "The colors and patterns you actually gravitate toward, based on your closet and feedback."
         case .trends: return "How your color, category, and style preferences are shifting over time."
         case .wardrobe: return "How well you're using what you already own — worn vs. unworn, gaps, and duplicates."
-        case .discover: return "Personalized recommendations, coming soon."
+        case .discover: return "The colors, fits, and materials you gravitate toward — and where your closet matches or misses what you love."
         }
     }
 }
@@ -95,18 +95,8 @@ struct InsightsView: View {
         case .wardrobe:
             WardrobeInsightsView()
         case .discover:
-            comingSoon(section)
+            TasteInsightsView()
         }
-    }
-
-    private func comingSoon(_ section: InsightsSection) -> some View {
-        ContentUnavailableView(
-            "\(section.label) — Coming Soon",
-            systemImage: section.systemImage,
-            description: Text("This section is on the way in a future update.")
-        )
-        .navigationTitle(section.label)
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

@@ -3,10 +3,13 @@
 //  Vision_clother
 //
 //  Sheet content for Manual Outfit Pairing with AI Virtual Try-On. Presented
-//  from ClosetView. Two sections once a portrait exists: the top/bottom
-//  pickers and the state-driven generation result — mirrors AddItemView's
-//  capture-source-picker / progress-state / failed-with-retry shape for
-//  consistency with the rest of the ingestion-flavored UI in this app.
+//  from ClosetView. Once a portrait exists: one horizontal garment picker per
+//  slot the user owns items in (top/bottom/footwear/outerwear/headwear/
+//  accessory/bag — 2026-07-25, previously only top+bottom) plus the
+//  state-driven generation result — mirrors AddItemView's capture-source-picker
+//  / progress-state / failed-with-retry shape for consistency with the rest of
+//  the ingestion-flavored UI in this app. At least one garment must be picked;
+//  every selected piece is composed into the single render call.
 //
 //  The user's own photo is captured/managed exclusively on the Profile tab
 //  (Features/Profile/ProfileView.swift) — this view only reads its presence
@@ -74,20 +77,54 @@ struct ManualPairingView: View {
     private func content(viewModel: ManualPairingViewModel) -> some View {
         if !viewModel.hasPortrait {
             missingPortraitPrompt
+        } else if viewModel.orderedAvailableSlots.isEmpty {
+            emptyClosetPrompt
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    itemPicker(title: "Shirt", items: viewModel.availableTops, selected: viewModel.selectedTop) {
-                        viewModel.selectTop($0)
-                    }
-                    itemPicker(title: "Pants", items: viewModel.availableBottoms, selected: viewModel.selectedBottom) {
-                        viewModel.selectBottom($0)
+                    Text("Pick any pieces to try on together — at least one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(viewModel.orderedAvailableSlots) { slot in
+                        itemPicker(
+                            title: slotTitle(slot),
+                            items: viewModel.availableItemsBySlot[slot] ?? [],
+                            selected: viewModel.selected[slot]
+                        ) {
+                            viewModel.selectItem($0)
+                        }
                     }
                     generationSection(viewModel: viewModel)
                 }
                 .padding()
             }
         }
+    }
+
+    /// Human-readable picker heading for a slot (e.g. `footwear` → "Footwear").
+    private func slotTitle(_ slot: Slot) -> String {
+        switch slot {
+        case .top: return "Top"
+        case .bottom: return "Bottom"
+        case .footwear: return "Footwear"
+        case .outerwear: return "Outerwear"
+        case .headwear: return "Headwear"
+        case .accessory: return "Accessory"
+        case .bag: return "Bag"
+        }
+    }
+
+    private var emptyClosetPrompt: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tshirt")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Add some clothes to your closet to try them on.")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var missingPortraitPrompt: some View {
@@ -215,11 +252,11 @@ struct ManualPairingView: View {
         if usageTracker.combinationsRemaining <= 0 {
             Text(usageTracker.isAnonymousQuota
                  ? "Sign in to try this on."
-                 : "You've used all your combinations this month. Resets next month.")
+                 : "You're out of credits for try-ons. Buy more in Profile.")
                 .font(.caption)
                 .foregroundStyle(.red)
         } else {
-            Text("\(usageTracker.combinationsRemaining) combination\(usageTracker.combinationsRemaining == 1 ? "" : "s") left this month")
+            Text("\(usageTracker.combinationsRemaining) combination\(usageTracker.combinationsRemaining == 1 ? "" : "s") left")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

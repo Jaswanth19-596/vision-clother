@@ -221,27 +221,27 @@ struct AccountSectionView: View {
         .disabled(viewModel.isBusy || syncCoordinator.isSyncingAccountSwitch)
     }
 
-    /// Quota summary this billing period — item counts are always shown
-    /// (local-only, `Data/UsageTracker.swift.refreshItemCounts()`);
-    /// recommendation/combination counts are server-authoritative
-    /// (`users/{uid}/meta/usage`, written by
-    /// `backend/functions/src/middleware/quota.ts`) and stay hidden until
-    /// a first request has actually been made this period (`usage == nil`),
-    /// rather than showing a misleading "0/20" before any real server round
-    /// trip has happened. "Combinations" is the user-facing term for what
-    /// the server tracks as `tryOnCount` — see `UsageTracker`'s doc comment.
+    /// Quota summary — item counts are always shown (local-only,
+    /// `Data/UsageTracker.swift.refreshItemCounts()`); the credit wallet is
+    /// server-authoritative (`users/{uid}/meta/usage`, written by
+    /// `backend/functions/src/middleware/creditGate.ts`) and stays hidden
+    /// until a first credit-gated request has migrated the doc to the credit
+    /// shape (`usage == nil`), rather than showing a misleading balance
+    /// before any real server round trip has happened. Recommendations and
+    /// try-ons both spend from the one credit balance shown here (see
+    /// `UsageTracker`'s doc comment); "combinations" is the user-facing term
+    /// for a try-on render (`IMAGE_GEN`).
     @ViewBuilder
     private var usageContent: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("\(usageTracker.coreItemCount)/\(usageTracker.coreItemCap) core items \u{00B7} \(usageTracker.accessoryItemCount)/\(usageTracker.accessoryItemCap) accessories")
             if usageTracker.usage != nil {
-                // "+N purchased" = the lifetime StoreKit credit balance
-                // (never expires, spent only after the month's free tier) —
-                // hidden at 0 so the pre-IAP readout is unchanged.
-                Text("\(usageTracker.recommendationsUsed)/\(usageTracker.recommendationLimit) recommendations this month"
-                     + (usageTracker.purchasedRecommendationsRemaining > 0 ? " · +\(usageTracker.purchasedRecommendationsRemaining) purchased" : ""))
-                Text("\(usageTracker.combinationsUsed)/\(usageTracker.combinationLimit) combinations this month"
-                     + (usageTracker.purchasedCombinationsRemaining > 0 ? " · +\(usageTracker.purchasedCombinationsRemaining) purchased" : ""))
+                // "· N purchased" = the lifetime StoreKit credit balance
+                // (never expires, spent only after the tier allocation) —
+                // hidden at 0 so a non-buyer's readout stays clean.
+                Text("\(usageTracker.creditsRemaining) credits remaining"
+                     + (usageTracker.purchasedCreditsRemaining > 0 ? " · \(usageTracker.purchasedCreditsRemaining) purchased" : ""))
+                Text("\(usageTracker.recommendationsUsed) recommendations \u{00B7} \(usageTracker.combinationsUsed) combinations this cycle")
             }
         }
         .font(.caption)
