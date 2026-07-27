@@ -35,6 +35,12 @@ struct ItemDetailView: View {
                         VStack(spacing: 24) {
                             garmentPreview(for: item)
                             metadataSection(for: item)
+                            if !item.isGhostElement {
+                                // Item-Level Feedback — ghosts are placeholders
+                                // the user doesn't own, so there's nothing to
+                                // note about them.
+                                ItemNotesSectionView(itemID: item.id)
+                            }
                         }
                         .padding()
                     }

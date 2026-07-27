@@ -37,6 +37,25 @@ struct TasteInsightsSnapshot: Equatable {
         /// Values the user tends to avoid (affinity < `avoidThreshold`), most
         /// avoided first.
         let avoided: [String]
+        /// Category-partitioned taste (surfaced 2026-07-27b): the same ranked
+        /// rows broken out per `Slot`, off the profile's `*BySlot` maps —
+        /// "oversized" means something different for a top than for a bottom,
+        /// and those maps already drove scoring
+        /// (`AttributePreferenceProfile.matchDetail`) without ever being shown.
+        /// Empty for a dimension with no per-slot signal yet, in which case
+        /// the UI renders exactly the flat card it always did.
+        let categories: [Category]
+    }
+
+    /// One `Slot`'s slice of a dimension — e.g. the Colors dimension's
+    /// "Tops" breakdown.
+    struct Category: Identifiable, Equatable {
+        let id: String
+        let slot: Slot
+        /// Plural display name for the slot ("Tops", "Shoes").
+        let title: String
+        /// Ranked highest-affinity first, same scale as `Dimension.rows`.
+        let rows: [Row]
     }
 
     struct Row: Identifiable, Equatable {
@@ -78,6 +97,7 @@ enum TasteInsightsAggregator {
         // Colours — plain-language labels + example swatches keyed off the vibe.
         if let d = makeDimension(id: "colors", title: "Colors", caption: nil,
                                  map: profile.colorVibeAffinity,
+                                 bySlot: profile.colorVibeAffinityBySlot,
                                  label: { colorVibeLabel($0) },
                                  swatches: { colorVibeSwatches($0) }) {
             dimensions.append(d)
@@ -86,40 +106,84 @@ enum TasteInsightsAggregator {
         if let d = makeDimension(id: "warmth", title: "Color Warmth",
                                  caption: "Whether your colours lean warm (golden-based) or cool (blue-based).",
                                  map: profile.undertoneAffinity,
+                                 bySlot: profile.undertoneAffinityBySlot,
                                  label: { undertoneLabel($0) },
                                  swatches: { [undertoneSwatch($0)] }) {
             dimensions.append(d)
         }
         if let d = makeStringDimension(id: "patterns", title: "Patterns", caption: nil,
-                                       map: enumKeyedToStrings(profile.patternAffinity) { prettify($0.rawValue) }) {
+                                       map: enumKeyedToStrings(profile.patternAffinity) { prettify($0.rawValue) },
+                                       bySlot: enumKeyedToStringsBySlot(profile.patternAffinityBySlot) { prettify($0.rawValue) }) {
             dimensions.append(d)
         }
         if let d = makeStringDimension(id: "fit", title: "Fit", caption: nil,
-                                       map: profile.fitAffinity) {
+                                       map: profile.fitAffinity,
+                                       bySlot: profile.fitAffinityBySlot) {
             dimensions.append(d)
         }
         // Silhouette deliberately omitted (unreliable free-text, overlaps Fit).
         if let d = makeStringDimension(id: "materials", title: "Materials", caption: nil,
-                                       map: profile.materialAffinity) {
+                                       map: profile.materialAffinity,
+                                       bySlot: profile.materialAffinityBySlot) {
             dimensions.append(d)
         }
         if let d = makeStringDimension(id: "texture", title: "Texture", caption: nil,
-                                       map: profile.textureAffinity) {
+                                       map: profile.textureAffinity,
+                                       bySlot: profile.textureAffinityBySlot) {
             dimensions.append(d)
         }
         if let d = makeStringDimension(id: "style", title: "Style", caption: nil,
-                                       map: profile.styleTagAffinity) {
+                                       map: profile.styleTagAffinity,
+                                       bySlot: profile.styleTagAffinityBySlot) {
             dimensions.append(d)
         }
         if let d = makeStringDimension(id: "fabric", title: "Fabric Weight", caption: nil,
-                                       map: enumKeyedToStrings(profile.fabricWeightAffinity) { "\(prettify($0.rawValue)) weight" }) {
+                                       map: enumKeyedToStrings(profile.fabricWeightAffinity) { "\(prettify($0.rawValue)) weight" },
+                                       bySlot: enumKeyedToStringsBySlot(profile.fabricWeightAffinityBySlot) { "\(prettify($0.rawValue)) weight" }) {
             dimensions.append(d)
         }
         // Formality is keyed by numeric band (0–5); collapse bands that share a
         // descriptor (Casual/Smart-Casual/Formal) into one row, averaging their
         // affinities, so the chart reads in words rather than raw band numbers.
         if let d = makeStringDimension(id: "formality", title: "Formality", caption: nil,
-                                       map: mergedFormality(profile.formalityAffinity)) {
+                                       map: mergedFormality(profile.formalityAffinity),
+                                       bySlot: profile.formalityAffinityBySlot.mapValues { mergedFormality($0) }) {
+            dimensions.append(d)
+        }
+
+        // Expanded per-garment attributes (2026-07-27b) — the five richer
+        // fields the vision extraction returns, which until now were stored
+        // and sent to the recommendation LLM but never learned or shown. Only
+        // items ingested since that extraction expanded carry them, so these
+        // cards stay hidden for a closet added before it.
+        if let d = makeStringDimension(id: "pattern-scale", title: "Pattern Scale",
+                                       caption: "How large the print reads on the garment, independent of which pattern it is.",
+                                       map: enumKeyedToStrings(profile.patternScaleAffinity) { patternScaleLabel($0) },
+                                       bySlot: enumKeyedToStringsBySlot(profile.patternScaleAffinityBySlot) { patternScaleLabel($0) }) {
+            dimensions.append(d)
+        }
+        if let d = makeStringDimension(id: "finish", title: "Fabric Finish",
+                                       caption: "The surface look of the fabric — matte, glossy, knitted, and so on.",
+                                       map: enumKeyedToStrings(profile.textureFinishAffinity) { prettify($0.rawValue) },
+                                       bySlot: enumKeyedToStringsBySlot(profile.textureFinishAffinityBySlot) { prettify($0.rawValue) }) {
+            dimensions.append(d)
+        }
+        if let d = makeStringDimension(id: "cut", title: "Cut",
+                                       caption: "How the garment is shaped — fitted, relaxed, oversized, cropped.",
+                                       map: enumKeyedToStrings(profile.silhouetteCutAffinity) { prettify($0.rawValue) },
+                                       bySlot: enumKeyedToStringsBySlot(profile.silhouetteCutAffinityBySlot) { prettify($0.rawValue) }) {
+            dimensions.append(d)
+        }
+        if let d = makeStringDimension(id: "neckline-rise", title: "Neckline & Rise",
+                                       caption: "Where a top opens at the neck, and where a bottom sits on the waist.",
+                                       map: profile.necklineOrRiseAffinity,
+                                       bySlot: profile.necklineOrRiseAffinityBySlot) {
+            dimensions.append(d)
+        }
+        if let d = makeStringDimension(id: "drape", title: "Drape",
+                                       caption: "How the fabric hangs — flowy and light, or structured and heavy.",
+                                       map: enumKeyedToStrings(profile.fabricWeightDetailAffinity) { fabricWeightDetailLabel($0) },
+                                       bySlot: enumKeyedToStringsBySlot(profile.fabricWeightDetailAffinityBySlot) { fabricWeightDetailLabel($0) }) {
             dimensions.append(d)
         }
 
@@ -140,6 +204,7 @@ enum TasteInsightsAggregator {
         title: String,
         caption: String?,
         map: [Key: Double],
+        bySlot: [Slot: [Key: Double]] = [:],
         label: (Key) -> String,
         swatches: (Key) -> [String]
     ) -> TasteInsightsSnapshot.Dimension? {
@@ -147,7 +212,46 @@ enum TasteInsightsAggregator {
         guard map.values.contains(where: { abs($0 - 0.5) > neutralEpsilon }) else { return nil }
 
         let entries = map.map { (label: label($0.key), affinity: $0.value, swatches: swatches($0.key)) }
-        return assemble(id: id, title: title, caption: caption, entries: entries)
+        let categories = makeCategories(dimensionID: id, bySlot: bySlot) { slotMap in
+            slotMap.map { (label: label($0.key), affinity: $0.value, swatches: swatches($0.key)) }
+        }
+        return assemble(id: id, title: title, caption: caption, entries: entries, categories: categories)
+    }
+
+    /// Shared per-`Slot` breakdown builder for both dimension builders — one
+    /// `Category` per slot that has non-neutral signal, in `Slot.allCases`
+    /// order so the sections read top-to-bottom the way an outfit does.
+    private static func makeCategories<Key: Hashable>(
+        dimensionID: String,
+        bySlot: [Slot: [Key: Double]],
+        entries: ([Key: Double]) -> [(label: String, affinity: Double, swatches: [String])]
+    ) -> [TasteInsightsSnapshot.Category] {
+        Slot.allCases.compactMap { slot -> TasteInsightsSnapshot.Category? in
+            guard let slotMap = bySlot[slot], !slotMap.isEmpty,
+                  slotMap.values.contains(where: { abs($0 - 0.5) > neutralEpsilon })
+            else { return nil }
+            let categoryID = "\(dimensionID)-\(slot.rawValue)"
+            return TasteInsightsSnapshot.Category(
+                id: categoryID,
+                slot: slot,
+                title: slotTitle(slot),
+                rows: rank(entries(slotMap), idPrefix: categoryID)
+            )
+        }
+    }
+
+    /// Plural, plain-language slot names — the Insights tabs address the user
+    /// about groups of garments ("your tops"), not one slot of one outfit.
+    static func slotTitle(_ slot: Slot) -> String {
+        switch slot {
+        case .top: return "Tops"
+        case .bottom: return "Bottoms"
+        case .footwear: return "Shoes"
+        case .outerwear: return "Outerwear"
+        case .headwear: return "Headwear"
+        case .accessory: return "Accessories"
+        case .bag: return "Bags"
+        }
     }
 
     /// String-keyed convenience that also case-folds keys so free-text values
@@ -156,12 +260,23 @@ enum TasteInsightsAggregator {
         id: String,
         title: String,
         caption: String?,
-        map: [String: Double]
+        map: [String: Double],
+        bySlot: [Slot: [String: Double]] = [:]
     ) -> TasteInsightsSnapshot.Dimension? {
         guard !map.isEmpty else { return nil }
 
-        // Merge case-insensitively; canonical label is the prettified form,
-        // affinity is the mean of the collided buckets.
+        let entries = foldedEntries(map)
+        guard !entries.isEmpty else { return nil }
+        guard entries.contains(where: { abs($0.affinity - 0.5) > neutralEpsilon }) else { return nil }
+
+        let categories = makeCategories(dimensionID: id, bySlot: bySlot) { foldedEntries($0) }
+        return assemble(id: id, title: title, caption: caption, entries: entries, categories: categories)
+    }
+
+    /// Merges a free-text affinity map case-insensitively; canonical label is
+    /// the prettified first-seen spelling, affinity the mean of the collided
+    /// buckets — so "Cotton" and "cotton" don't render as two separate bars.
+    private static func foldedEntries(_ map: [String: Double]) -> [(label: String, affinity: Double, swatches: [String])] {
         var grouped: [String: (labelSeed: String, total: Double, count: Int)] = [:]
         for (rawKey, affinity) in map {
             let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -170,13 +285,17 @@ enum TasteInsightsAggregator {
             let existing = grouped[foldKey]
             grouped[foldKey] = (existing?.labelSeed ?? trimmed, (existing?.total ?? 0) + affinity, (existing?.count ?? 0) + 1)
         }
-        guard !grouped.isEmpty else { return nil }
+        return grouped.map { (label: prettify($0.value.labelSeed), affinity: $0.value.total / Double($0.value.count), swatches: [String]()) }
+    }
 
-        let merged = grouped.mapValues { $0.total / Double($0.count) }
-        guard merged.values.contains(where: { abs($0 - 0.5) > neutralEpsilon }) else { return nil }
-
-        let entries = grouped.map { (label: prettify($0.value.labelSeed), affinity: $0.value.total / Double($0.value.count), swatches: [String]()) }
-        return assemble(id: id, title: title, caption: caption, entries: entries)
+    /// Highest affinity first; tie-break by label for a stable order.
+    private static func rank(
+        _ entries: [(label: String, affinity: Double, swatches: [String])],
+        idPrefix: String
+    ) -> [TasteInsightsSnapshot.Row] {
+        entries
+            .sorted { $0.affinity == $1.affinity ? $0.label < $1.label : $0.affinity > $1.affinity }
+            .map { TasteInsightsSnapshot.Row(id: "\(idPrefix)-\($0.label)", label: $0.label, affinity: $0.affinity, swatchHexes: $0.swatches) }
     }
 
     /// Shared ranking + loved/avoided split for both dimension builders.
@@ -184,28 +303,31 @@ enum TasteInsightsAggregator {
         id: String,
         title: String,
         caption: String?,
-        entries: [(label: String, affinity: Double, swatches: [String])]
+        entries: [(label: String, affinity: Double, swatches: [String])],
+        categories: [TasteInsightsSnapshot.Category]
     ) -> TasteInsightsSnapshot.Dimension {
-        // Highest affinity first; tie-break by label for a stable order.
-        let ranked = entries.sorted { lhs, rhs in
-            lhs.affinity == rhs.affinity ? lhs.label < rhs.label : lhs.affinity > rhs.affinity
-        }
-
-        let rows = ranked.map {
-            TasteInsightsSnapshot.Row(id: "\(id)-\($0.label)", label: $0.label, affinity: $0.affinity, swatchHexes: $0.swatches)
-        }
-        let loved = ranked.filter { $0.affinity > lovedThreshold }.map(\.label)
-        let avoided = ranked.filter { $0.affinity < avoidThreshold }
+        let rows = rank(entries, idPrefix: id)
+        let loved = rows.filter { $0.affinity > lovedThreshold }.map(\.label)
+        let avoided = rows.filter { $0.affinity < avoidThreshold }
             .sorted { $0.affinity < $1.affinity }
             .map(\.label)
 
-        return TasteInsightsSnapshot.Dimension(id: id, title: title, caption: caption, rows: rows, loved: loved, avoided: avoided)
+        return TasteInsightsSnapshot.Dimension(id: id, title: title, caption: caption, rows: rows, loved: loved, avoided: avoided, categories: categories)
     }
 
     private static func enumKeyedToStrings<Key: Hashable>(_ map: [Key: Double], label: (Key) -> String) -> [String: Double] {
         var out: [String: Double] = [:]
         for (key, value) in map { out[label(key)] = value }
         return out
+    }
+
+    /// `enumKeyedToStrings` applied to each slot's map, so an enum-keyed
+    /// dimension can reuse the string-keyed builder for its per-slot
+    /// breakdown too.
+    private static func enumKeyedToStringsBySlot<Key: Hashable>(
+        _ bySlot: [Slot: [Key: Double]], label: (Key) -> String
+    ) -> [Slot: [String: Double]] {
+        bySlot.mapValues { enumKeyedToStrings($0, label: label) }
     }
 
     /// Collapses the numeric formality bands into their descriptor buckets,
@@ -278,6 +400,25 @@ enum TasteInsightsAggregator {
         case .monochrome: return ["#000000", "#808080", "#FFFFFF"]
         case .vibrant: return ["#E4002B", "#0057FF", "#FFD400"]
         case .pastel: return ["#F7CAC9", "#B5EAD7", "#AEC6CF"]
+        }
+    }
+
+    /// Plain-language names for the expanded per-garment enums — same
+    /// "no fashion vocabulary required" posture as `colorVibeLabel`.
+    static func patternScaleLabel(_ scale: PatternScale) -> String {
+        switch scale {
+        case .solid: return "No print"
+        case .microPattern: return "Tiny prints"
+        case .mediumPattern: return "Medium prints"
+        case .boldStatementPattern: return "Bold statement prints"
+        }
+    }
+
+    static func fabricWeightDetailLabel(_ detail: FabricWeightDetail) -> String {
+        switch detail {
+        case .lightFlowy: return "Light & flowy"
+        case .mediumStandard: return "Medium & standard"
+        case .heavyStructured: return "Heavy & structured"
         }
     }
 

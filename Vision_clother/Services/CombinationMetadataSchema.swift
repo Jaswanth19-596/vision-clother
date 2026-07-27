@@ -44,4 +44,36 @@ enum CombinationMetadataSchema {
         ],
         "additionalProperties": false,
     ]
+
+    /// Item-Level Feedback (2026-07-27): the same chemistry object plus
+    /// per-garment notes extracted from the user's free-text comment.
+    ///
+    /// A *wrapper* around `objectSchema` rather than extra properties on it,
+    /// deliberately: `objectSchema` is shared verbatim with
+    /// `VisionMetadataExtractionService`'s stock-photo scene tagging, where
+    /// there are no owned-item ids to attribute a note to. Only the text-only
+    /// combination-feedback path (`CombinationChemistryInferenceService`) has
+    /// real `WardrobeItem` ids in scope, so only it asks for this.
+    static let chemistryWithItemNotesSchema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "chemistry": objectSchema,
+            "item_notes": [
+                "type": "array",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "item_id": ["type": "string"],
+                        "text": ["type": "string"],
+                        "severity": ["type": "string", "enum": ItemNoteSeverity.allCases.map(\.rawValue)],
+                        "context": ["type": "string", "enum": ItemNoteContext.allCases.map(\.rawValue)],
+                    ],
+                    "required": ["item_id", "text", "severity", "context"],
+                    "additionalProperties": false,
+                ],
+            ],
+        ],
+        "required": ["chemistry", "item_notes"],
+        "additionalProperties": false,
+    ]
 }

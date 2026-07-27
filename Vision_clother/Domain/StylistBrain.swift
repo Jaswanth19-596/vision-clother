@@ -30,6 +30,7 @@ enum StylistBrain {
     enum DecisionHierarchy: Int, CaseIterable {
         case hardConstraints = 1     // E.g. slot category matching, no duplicated items
         case dressCode               // E.g. matching formality range, incl. accent slots
+        case itemSuitability         // E.g. the user's own notes on a garment ("runs loose")
         case weatherContext          // E.g. seasonality, layers, fabric weight
         case userStyleProfile        // E.g. intrinsic profile, learned ratings/affinities
         case visualCohesion          // E.g. color pairing, proportion/silhouette, material harmony
@@ -50,7 +51,7 @@ enum StylistBrain {
         var enforcement: Enforcement {
             switch self {
             case .hardConstraints: return .reject
-            case .dressCode, .weatherContext, .userStyleProfile, .visualCohesion: return .penalize
+            case .dressCode, .itemSuitability, .weatherContext, .userStyleProfile, .visualCohesion: return .penalize
             case .aestheticTrend: return .guide
             }
         }
@@ -73,30 +74,37 @@ enum StylistBrain {
                    Priority: Overrides weather, ratings, color theory, fit, and personal preference below. Social etiquette and situational appropriateness (e.g. a funeral, interview, or gala) always outrank weather comfort and personal taste.
                    Never: Recommend any item — including an accent item — whose formality differs from the scenario's range by more than \(FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta.formatted()) points (hard mismatch) or \(FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta.formatted()) points (soft mismatch); avoid both. Never add an accent slot to `desired_accent_slots` just because the scenario loosely resembles its usual trigger (e.g. treating "interview" as "errand" and forcing in a bag) — resolve accents by scenario type instead: business/interview/formal-event scenarios call for at most one subtle accessory and never headwear, and a bag only if a structured/formal option exists in the catalog; outdoor/sunny/casual scenarios call for headwear; errands/commute/travel scenarios call for a bag (casual is fine there). When no compliant option exists for a wanted accent slot, omit the slot rather than force a mismatch. For a formal suit jacket/blazer worn as outerwear, top_id must still be a compatible layer worn underneath it (e.g. a dress shirt), never left implied or empty. Layered accessorizing (accessory_id plus supplementary_accessory_ids) is only ever appropriate for casual/going-out scenarios — business, interview, and formal-event scenarios must stay at one subtle accessory or none, same as the single-accessory rule above.
                 """
+            case .itemSuitability:
+                return """
+                3. Item Suitability
+                   Purpose: Honor what the user has told you about specific garments. A catalog entry's "user_note" is the user's own words about that exact item ("runs loose", "not warm enough", "rubs after a while") — a fact about the garment, not a style preference.
+                   Priority: Overrides Weather, Preferences, Visual Cohesion and Aesthetic Trend below, but never Dress Code above: a noted garment is still the right answer when it is the only dress-code-compliant option the wardrobe offers.
+                   Never: Ignore a note when the situation is exactly the one it warns about — don't put an item noted "runs loose" or "sleeve length is off" in an interview, wedding, or formal-event outfit, and don't put one noted "not warm enough" in a cold-weather outfit. A note is not a blanket ban: the same item is perfectly correct for a casual scenario where the flaw doesn't matter, so keep using it there rather than quietly retiring it. When a note forces you to pass over an otherwise-strong item, say so plainly in rationale.summary.
+                """
             case .weatherContext:
                 return """
-                3. Weather
+                4. Weather
                    Purpose: Adjust layering and fabric weight for temperature and conditions.
                    Priority: Operates only within the Dress Code tier's bounds — never below its formality floor.
                    Never: Drop to short sleeves or casual pieces to beat the heat when the dress code demands more coverage — prefer lightweight formal fabrics (e.g. linen, light cotton) instead.
                 """
             case .userStyleProfile:
                 return """
-                4. Preferences
+                5. Preferences
                    Purpose: Honor the user's intrinsic profile (skin tone, undertone, body type, style keywords, recommended/avoid colors — see USER PROFILE below) and their learned behavior (each catalog item's own "user_rating", 0-100, 50 = neutral default for an item with no feedback yet; and historical taste affinities derived from feedback).
                    Priority: Applies only among choices the Dress Code and Weather tiers already permit — never to justify under-dressing or a weather violation. Ratings only break ties among otherwise comparable candidates — never let a high rating substitute for correct formality, color, or fit.
                    Never: Let a historical taste preference or an item's rating override Dress Code or Weather.
                 """
             case .visualCohesion:
                 return """
-                5. Visual Cohesion
+                6. Visual Cohesion
                    Purpose: Color pairing (complementary, analogous, or monochrome), proportion/silhouette balance (e.g. oversized top with slim bottom), and material harmony (e.g. cotton with denim, not heavy wool with lightweight linen) read as one intentional look — these sub-attributes may trade off against each other.
-                   Priority: Breaks ties among options that already satisfy tiers 1-4.
+                   Priority: Breaks ties among options that already satisfy tiers 1-5.
                    Never: Justify violating Dress Code, Weather, or Preferences above it.
                 """
             case .aestheticTrend:
                 return """
-                6. Aesthetic Trend
+                7. Aesthetic Trend
                    Purpose: Match user style keywords and general aesthetic vibe.
                    Priority: Tie-break only, lowest tier.
                    Never: Justify violating any higher tier.
@@ -135,7 +143,7 @@ enum StylistBrain {
             - Diversity: no single top_id, bottom_id, footwear_id, or outerwear_id may appear in more than one outfit in your response — every outfit must use a genuinely different item in each of those primary slots, not just a different combination built around the same one. Only repeat a primary-garment item across outfits if the wardrobe catalog truly has no other valid option for that slot at this formality/season, and say so plainly in that outfit's rationale when it happens. Treat repeating a primary garment as a mission failure, not a stylistic nicety — it is never acceptable just because that item scored well.
             - Ranking: sort "outfits" from strongest to weakest recommendation per the Decision Hierarchy below — index 0 must be your best recommendation, not an arbitrary order.
 
-            DECISION HIERARCHY: reason strictly in this order — a lower-numbered tier always outranks a higher one; tier 6 may only break ties, never justify violating tiers 1-5. Before finalizing an outfit, confirm every higher-priority tier is satisfied before considering a lower one — never trade a higher tier's requirement for a lower tier's improvement.
+            DECISION HIERARCHY: reason strictly in this order — a lower-numbered tier always outranks a higher one; tier 7 may only break ties, never justify violating tiers 1-6. Before finalizing an outfit, confirm every higher-priority tier is satisfied before considering a lower one — never trade a higher tier's requirement for a lower tier's improvement.
             \(DecisionHierarchy.allCases.map { $0.description }.joined(separator: "\n\n"))
 
             CLARIFICATION PROTOCOL:
@@ -282,10 +290,37 @@ enum StylistBrain {
                     avoidList.append("Fits/cuts: \(lowFits.joined(separator: ", "))")
                 }
 
+                // Item-Level Feedback pass (2026-07-27): the five expanded
+                // per-garment attributes have been learned since 2026-07-27b
+                // and rendered in Insights, but were never surfaced to the
+                // recommender — so the model reasoned in a strictly smaller
+                // attribute space than the taste engine actually covers.
+                // Same symmetric high/low treatment as every dimension above.
+                appendSymmetric(
+                    attributeProfile.patternScaleAffinity, label: "Pattern scale",
+                    describe: { Self.prettifyRaw($0.rawValue) }, favorites: &favoritesList, avoid: &avoidList
+                )
+                appendSymmetric(
+                    attributeProfile.textureFinishAffinity, label: "Fabric finishes",
+                    describe: { Self.prettifyRaw($0.rawValue) }, favorites: &favoritesList, avoid: &avoidList
+                )
+                appendSymmetric(
+                    attributeProfile.silhouetteCutAffinity, label: "Cuts",
+                    describe: { Self.prettifyRaw($0.rawValue) }, favorites: &favoritesList, avoid: &avoidList
+                )
+                appendSymmetric(
+                    attributeProfile.necklineOrRiseAffinity, label: "Necklines/rises",
+                    describe: { $0 }, favorites: &favoritesList, avoid: &avoidList
+                )
+                appendSymmetric(
+                    attributeProfile.fabricWeightDetailAffinity, label: "Fabric drape",
+                    describe: { Self.prettifyRaw($0.rawValue) }, favorites: &favoritesList, avoid: &avoidList
+                )
+
                 if !favoritesList.isEmpty {
                     prompt += """
 
-                    USER HISTORICAL TASTE PREFERENCES (Derived from feedback — Tier 4, subordinate to Dress Code/Tier 2: apply these only among choices the scenario's dress code already permits, never to justify under-dressing):
+                    USER HISTORICAL TASTE PREFERENCES (Derived from feedback — Tier 5, subordinate to Dress Code/Tier 2: apply these only among choices the scenario's dress code already permits, never to justify under-dressing):
                     \(favoritesList.map { " - \($0)" }.joined(separator: "\n"))
 
                     """
@@ -293,8 +328,58 @@ enum StylistBrain {
                 if !avoidList.isEmpty {
                     prompt += """
 
-                    USER HISTORICAL TASTE — TENDS TO DISLIKE (Derived from feedback — Tier 4: avoid these where the dress code leaves a choice, but a scenario's formality/etiquette requirement (Tier 2) always overrides this if the two conflict, e.g. a disliked "monochrome" vibe is still correct for a funeral):
+                    USER HISTORICAL TASTE — TENDS TO DISLIKE (Derived from feedback — Tier 5: avoid these where the dress code leaves a choice, but a scenario's formality/etiquette requirement (Tier 2) always overrides this if the two conflict, e.g. a disliked "monochrome" vibe is still correct for a funeral):
                     \(avoidList.map { " - \($0)" }.joined(separator: "\n"))
+
+                    """
+                }
+
+                // Category-partitioned taste (2026-07-27): the `*BySlot` maps
+                // have driven on-device scoring since the data-model refactor
+                // and are rendered in Insights, but the prompt only ever saw
+                // the flat ones — so "leans muted, but likes bold shoes"
+                // reached the model as a single "leans muted". Only slots
+                // whose affinity actually *diverges* from the flat value are
+                // emitted: listing all seven slots across every dimension
+                // would multiply this block roughly sevenfold while mostly
+                // restating what the lists above already said.
+                let perSlotLines = perSlotDivergenceLines(attributeProfile)
+                if !perSlotLines.isEmpty {
+                    prompt += """
+
+                    USER TASTE BY GARMENT CATEGORY (Tier 5 — exceptions to the general preferences above, where this user's taste differs for one category specifically. These are more specific than the lists above, so prefer them for that category):
+                    \(perSlotLines.map { " - \($0)" }.joined(separator: "\n"))
+
+                    """
+                }
+
+                // Whole-look combination taste (2026-07-27). Learned from the
+                // user's swiped/rated combinations and, until now, applied
+                // only by `AttributePreferenceProfile.combinationAffinityBonus`
+                // re-ranking outfits the model had *already* chosen — so it
+                // could reorder the output but never influence what got built.
+                // These describe relationships *between* garments, which is
+                // precisely the choice being made here.
+                let combinationLines = combinationDynamicsLines(attributeProfile)
+                if !combinationLines.isEmpty {
+                    prompt += """
+
+                    USER TASTE IN HOW A LOOK COMES TOGETHER (Tier 5 — learned from whole outfits the user has reacted to. These are about the relationship between the garments, not any single piece):
+                    \(combinationLines.map { " - \($0)" }.joined(separator: "\n"))
+
+                    """
+                }
+
+                // Restated once here, deliberately: this whole taste section
+                // roughly doubled in size with the three blocks added above,
+                // and a longer, more specific-sounding preference list is
+                // exactly the thing that tempts a model to let Tier 5 outrank
+                // Tier 2. The per-block parentheticals say this individually;
+                // this says it about the section as a whole.
+                if !favoritesList.isEmpty || !perSlotLines.isEmpty || !combinationLines.isEmpty {
+                    prompt += """
+
+                    ALL OF THE ABOUT-THE-USER PREFERENCES ABOVE ARE TIER 5. However detailed and confident they look, they only ever choose *between* options that Dress Code (Tier 2), Item Suitability (Tier 3) and Weather (Tier 4) have already allowed. Never cite a taste preference — including a category-specific or whole-look one — as a reason to under-dress, ignore a garment note, or dress wrongly for the conditions.
 
                     """
                 }
@@ -356,6 +441,162 @@ enum StylistBrain {
             """
 
             return prompt
+        }
+
+        // MARK: - Taste-block helpers
+
+        /// Affinity above which an attribute is "liked" / below which it's
+        /// "disliked" in the prompt. Matches the thresholds the ten original
+        /// dimensions were already filtered by inline.
+        private static let highAffinity = 0.6
+        private static let lowAffinity = 0.4
+
+        /// Appends one dimension's liked/disliked values to the two lists, in
+        /// the same symmetric shape the ten original dimensions use. Extracted
+        /// so the five expanded attributes don't repeat that 10-line pattern
+        /// five more times.
+        private static func appendSymmetric<Key: Hashable>(
+            _ affinity: [Key: Double],
+            label: String,
+            describe: (Key) -> String,
+            favorites: inout [String],
+            avoid: inout [String]
+        ) {
+            let high = affinity.filter { $0.value > highAffinity }.map { describe($0.key) }
+            if !high.isEmpty {
+                favorites.append("\(label): \(high.sorted().joined(separator: ", "))")
+            }
+            let low = affinity.filter { $0.value < lowAffinity }.map { describe($0.key) }
+            if !low.isEmpty {
+                avoid.append("\(label): \(low.sorted().joined(separator: ", "))")
+            }
+        }
+
+        /// `snake_case`/`camelCase` raw value -> human words, for enum-keyed
+        /// dimensions whose raw values are identifiers rather than prose.
+        private static func prettifyRaw(_ raw: String) -> String {
+            raw.replacingOccurrences(of: "_", with: " ").lowercased()
+        }
+
+        /// How far a slot's affinity must sit from the flat (all-slots) value
+        /// before it's worth spending prompt tokens calling out. Below this,
+        /// the per-slot number is saying the same thing the flat list already
+        /// said.
+        private static let slotDivergenceThreshold = 0.15
+
+        /// One line per (slot, dimension) whose learned affinity genuinely
+        /// disagrees with the same dimension's flat value — the exceptions,
+        /// not the whole cross-product. Capped so a heavily-trained profile
+        /// can't crowd out the rest of the prompt.
+        private static let maxPerSlotLines = 12
+
+        private static func perSlotDivergenceLines(_ profile: AttributePreferenceProfile) -> [String] {
+            var lines: [(magnitude: Double, text: String)] = []
+
+            func collect<Key: Hashable>(
+                flat: [Key: Double],
+                bySlot: [Slot: [Key: Double]],
+                dimension: String,
+                describe: (Key) -> String
+            ) {
+                for (slot, slotMap) in bySlot {
+                    for (key, slotValue) in slotMap {
+                        let flatValue = flat[key] ?? 0.5
+                        let delta = slotValue - flatValue
+                        guard abs(delta) >= slotDivergenceThreshold else { continue }
+                        // Only report a divergence that flips the verdict —
+                        // "slightly more positive than usual, still neutral"
+                        // isn't actionable guidance for the model.
+                        let verdict: String
+                        if slotValue > highAffinity {
+                            verdict = "prefers"
+                        } else if slotValue < lowAffinity {
+                            verdict = "avoids"
+                        } else {
+                            continue
+                        }
+                        lines.append((
+                            abs(delta),
+                            "For \(slotLabel(slot)) specifically, the user \(verdict) \(dimension) \(describe(key))"
+                        ))
+                    }
+                }
+            }
+
+            collect(flat: profile.colorVibeAffinity, bySlot: profile.colorVibeAffinityBySlot,
+                    dimension: "color vibe", describe: { prettifyRaw($0.rawValue) })
+            collect(flat: profile.patternAffinity, bySlot: profile.patternAffinityBySlot,
+                    dimension: "pattern", describe: { prettifyRaw($0.rawValue) })
+            collect(flat: profile.formalityAffinity, bySlot: profile.formalityAffinityBySlot,
+                    dimension: "formality band", describe: { "\($0)" })
+            collect(flat: profile.styleTagAffinity, bySlot: profile.styleTagAffinityBySlot,
+                    dimension: "style", describe: { $0 })
+            collect(flat: profile.silhouetteAffinity, bySlot: profile.silhouetteAffinityBySlot,
+                    dimension: "silhouette", describe: { $0 })
+            collect(flat: profile.fabricWeightAffinity, bySlot: profile.fabricWeightAffinityBySlot,
+                    dimension: "fabric weight", describe: { prettifyRaw($0.rawValue) })
+            collect(flat: profile.materialAffinity, bySlot: profile.materialAffinityBySlot,
+                    dimension: "material", describe: { $0 })
+            collect(flat: profile.fitAffinity, bySlot: profile.fitAffinityBySlot,
+                    dimension: "fit", describe: { $0 })
+
+            // Strongest disagreements first — if the cap bites, it should drop
+            // the marginal lines, not arbitrary ones.
+            return lines
+                .sorted { $0.magnitude > $1.magnitude }
+                .prefix(maxPerSlotLines)
+                .map(\.text)
+        }
+
+        private static func slotLabel(_ slot: Slot) -> String {
+            switch slot {
+            case .top: return "tops"
+            case .bottom: return "bottoms"
+            case .footwear: return "shoes"
+            case .outerwear: return "outerwear"
+            case .headwear: return "headwear"
+            case .accessory: return "accessories"
+            case .bag: return "bags"
+            }
+        }
+
+        /// The 7 scoreable whole-look dimensions, phrased as guidance rather
+        /// than as raw enum names. `aestheticVibeAffinity`/
+        /// `complexityScoreAffinity` stay out, matching their existing
+        /// Insights-only status — there's no reliable way for the model to
+        /// act on a learned "vibe" score for a candidate it hasn't built yet.
+        private static func combinationDynamicsLines(_ profile: AttributePreferenceProfile) -> [String] {
+            var lines: [String] = []
+
+            func append<Key: Hashable>(_ affinity: [Key: Double], noun: String, describe: (Key) -> String) {
+                let high = affinity.filter { $0.value > highAffinity }.map { describe($0.key) }.sorted()
+                if !high.isEmpty {
+                    lines.append("Responds well to \(noun): \(high.joined(separator: ", "))")
+                }
+                let low = affinity.filter { $0.value < lowAffinity }.map { describe($0.key) }.sorted()
+                if !low.isEmpty {
+                    lines.append("Responds poorly to \(noun): \(low.joined(separator: ", "))")
+                }
+            }
+
+            append(profile.paletteArchetypeAffinity, noun: "overall palettes", describe: { prettifyRaw($0.rawValue) })
+            append(profile.contrastLevelAffinity, noun: "contrast levels between pieces", describe: { prettifyRaw($0.rawValue) })
+            append(profile.proportionRatioAffinity, noun: "top-to-bottom proportions", describe: { prettifyRaw($0.rawValue) })
+            append(profile.volumeBalanceAffinity, noun: "volume balance", describe: { prettifyRaw($0.rawValue) })
+            append(profile.textureContrastAffinity, noun: "texture mixing", describe: { prettifyRaw($0.rawValue) })
+            append(profile.formalityBridgeAffinity, noun: "mixing formality levels", describe: { prettifyRaw($0.rawValue) })
+
+            // Boolean-keyed, so it reads as a single statement rather than a
+            // list of "true"/"false".
+            if let sandwichAffinity = profile.colorSandwichingAffinity[true] {
+                if sandwichAffinity > highAffinity {
+                    lines.append("Likes colour sandwiching — repeating one colour in two separated places (e.g. hat and shoes)")
+                } else if sandwichAffinity < lowAffinity {
+                    lines.append("Dislikes colour sandwiching — don't deliberately echo one colour across separated pieces")
+                }
+            }
+
+            return lines
         }
 
         /// Generates the user prompt combining the scenario, weather, and wardrobe catalog JSON.

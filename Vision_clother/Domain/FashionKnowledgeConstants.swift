@@ -47,4 +47,34 @@ enum FashionKnowledgeConstants {
         /// (deprioritized, not blocked). Beyond this window, no penalty.
         static let softPenalizeWindowDays = 14
     }
+
+    /// Item-Level Feedback's `itemSuitability` tier
+    /// (`Domain/StylistBrain.swift`, 2026-07-27). Same rationale as the two
+    /// groups above: the tier's prompt prose names the situations a note
+    /// bites in ("an interview, wedding, or formal-event outfit", "a
+    /// cold-weather outfit") and `OutfitRecommendationEngine.outfitScore`
+    /// enforces the matching numbers, so they live once here.
+    enum ItemSuitability {
+        /// A scenario whose required formality floor is at or above this is
+        /// "dressed up" for the purposes of an `ItemNoteContext.formalOccasions`
+        /// note. Sits above the smart-casual band so an ordinary
+        /// smart-casual request isn't treated as a formal one.
+        static let formalOccasionFormalityFloor: Double = 3.5
+        /// Below this, a `coldWeather` note applies — matches `outfitScore`'s
+        /// existing cold threshold so "cold" means one thing in this file.
+        static let coldTemperatureFahrenheit: Double = 50
+        /// Above this, a `hotWeather` note applies.
+        static let hotTemperatureFahrenheit: Double = 80
+        /// Score penalty when a note's context matches the request. Sized
+        /// between the weather penalty (0.15) and the whole-outfit dislike
+        /// penalty (0.25): a garment the user has explicitly complained about
+        /// in exactly this situation is a stronger signal than a generic
+        /// fabric-weight mismatch, but weaker than having rejected the entire
+        /// combination before.
+        static let contextMatchPenalty: Double = 0.2
+        /// Penalty for an `extendedWear` note, which has no external trigger
+        /// to gate on and so applies to every outfit containing the item.
+        /// Deliberately small for that reason — it is always on.
+        static let extendedWearPenalty: Double = 0.05
+    }
 }

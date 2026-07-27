@@ -157,9 +157,7 @@ final class ItemRating {
     }
 
     /// Threshold that folds this rich rating into the existing binary
-    /// item-preference channel (`ItemFeedback.likedFit` / `FeedbackHistory.itemFeedback`)
-    /// and into the Swipe-to-Learn visual centroids as an implicit swipe
-    /// (`Data/WardrobeRepository.swift`'s `applyImplicitSwipe`).
+    /// item-preference channel (`ItemFeedback.likedFit` / `FeedbackHistory.itemFeedback`).
     var impliesLiked: Bool {
         normalizedValue >= 0.6
     }

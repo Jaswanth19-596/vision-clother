@@ -24,12 +24,12 @@
 //  up those types by their own row id, only by the foreign keys already
 //  present as inputs.
 //
-//  `WardrobeItemEmbedding`, `RecommendationImpressionEvent`, and `SwipeEvent`
-//  are deliberately never marked dirty here — the Cloud Sync architecture
-//  keeps all three local-only (cheap to recompute / meaningless across an
-//  account switch / superseded by the compact `VisualPreferenceState`
-//  centroids it feeds, respectively). `recordSwipe` below still pushes the
-//  mutated `VisualPreferenceState` — just not the raw per-swipe event.
+//  `RecommendationImpressionEvent` is deliberately never marked dirty here —
+//  the Cloud Sync architecture keeps it local-only (meaningless across an
+//  account switch). `VisualPreferenceState` still syncs, but now carries only
+//  the swipe-deck calibration counter: the pixel-embedding tables it used to
+//  summarize (`SwipeEvent`, `WardrobeItemEmbedding`) were retired 2026-07-24
+//  and removed from this layer entirely on 2026-07-27.
 //
 
 import Foundation
@@ -141,11 +141,6 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         if let rating = try underlying.fetchItemRatings(for: itemID).first {
             markDirty(.itemRating, entityID: rating.id, dto: ItemRatingDTO.from(rating))
         }
-        // `recordItemRating` folds an implicit swipe into `VisualPreferenceState`
-        // (`SwiftDataWardrobeRepository.applyImplicitSwipe`) — push that too.
-        if let state = try? underlying.fetchVisualPreferenceState() {
-            markDirty(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
-        }
     }
 
     func fetchItemRatings(for itemID: UUID) throws -> [ItemRating] {
@@ -227,32 +222,10 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         }
     }
 
-    // MARK: - Swipe-to-Learn Visual Taste
-
-    @discardableResult
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? {
-        let drift = try underlying.recordSwipe(sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, liked: liked, embedding: embedding)
-        if let state = try? underlying.fetchVisualPreferenceState() {
-            markDirty(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
-        }
-        return drift
-    }
+    // MARK: - Swipe-to-Learn
 
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? {
         try underlying.fetchVisualPreferenceState()
-    }
-
-    func updateVisualPreferenceState(
-        likedCentroids: [VisualCentroid],
-        dislikedCentroids: [VisualCentroid],
-        embeddingDimension: Int
-    ) throws {
-        try underlying.updateVisualPreferenceState(
-            likedCentroids: likedCentroids, dislikedCentroids: dislikedCentroids, embeddingDimension: embeddingDimension
-        )
-        if let state = try underlying.fetchVisualPreferenceState() {
-            markDirty(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
-        }
     }
 
     // MARK: - Local-only (never synced — see file header)
@@ -265,16 +238,14 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.hasSwipeAttributes(sourcePhotoID: sourcePhotoID)
     }
 
+    /// Bumps the calibration counter, then pushes the mutated
+    /// `VisualPreferenceState` — the counter is the only field still synced,
+    /// and the swipe deck's progress ring should survive a device switch.
     func noteSwipeForCalibration() throws {
         try underlying.noteSwipeForCalibration()
-    }
-
-    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
-        try underlying.fetchWardrobeItemEmbedding(itemID: itemID)
-    }
-
-    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {
-        try underlying.saveWardrobeItemEmbedding(itemID: itemID, vector: vector, sourceFingerprint: sourceFingerprint)
+        if let state = try? underlying.fetchVisualPreferenceState() {
+            markDirty(.visualPreferenceState, entityID: state.id, dto: VisualPreferenceStateDTO.from(state))
+        }
     }
 
     func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws {
@@ -393,6 +364,45 @@ final class SyncingWardrobeRepository: WardrobeRepository {
 
     func fetchAllSessionSummaries() throws -> [SessionSummary] {
         try underlying.fetchAllSessionSummaries()
+    }
+
+    // MARK: - Item-Level Feedback (Models/ItemNote.swift)
+
+    func fetchItemNotes(for itemID: UUID) throws -> [ItemNote] {
+        try underlying.fetchItemNotes(for: itemID)
+    }
+
+    func fetchAllItemNotes() throws -> [UUID: [ItemNote]] {
+        try underlying.fetchAllItemNotes()
+    }
+
+    @discardableResult
+    func addItemNote(itemID: UUID, text: String, severity: ItemNoteSeverity, source: ItemNoteSource, context: ItemNoteContext) throws -> ItemNote? {
+        // Unlike `recordPairBan`/`recordSessionSummary`, which have to recover
+        // the minted id by re-querying, this write returns the row it touched
+        // (new *or* refreshed duplicate) directly — so the queued payload is
+        // always the exact row that landed.
+        guard let note = try underlying.addItemNote(itemID: itemID, text: text, severity: severity, source: source, context: context) else { return nil }
+        markDirty(.itemNote, entityID: note.id, dto: ItemNoteDTO.from(note))
+        AppLog.info(.sync, "[ItemNote] queued for sync id=\(note.id)")
+        return note
+    }
+
+    func updateItemNote(id: UUID, text: String, severity: ItemNoteSeverity) throws {
+        try underlying.updateItemNote(id: id, text: text, severity: severity)
+        // Re-read rather than reconstructing the DTO from the arguments: the
+        // underlying write normalizes/truncates `text` and re-stamps `source`,
+        // so the arguments alone would push a payload that doesn't match what
+        // is actually stored locally.
+        let allNotes = ((try? underlying.fetchAllItemNotes()) ?? [:]).values.flatMap { $0 }
+        guard let note = allNotes.first(where: { $0.id == id }) else { return }
+        markDirty(.itemNote, entityID: note.id, dto: ItemNoteDTO.from(note))
+        AppLog.info(.sync, "[ItemNote] edit queued for sync id=\(id)")
+    }
+
+    func deleteItemNote(id: UUID) throws {
+        try underlying.deleteItemNote(id: id)
+        markDeleted(.itemNote, entityID: id)
     }
 
     // MARK: - Outbox bookkeeping

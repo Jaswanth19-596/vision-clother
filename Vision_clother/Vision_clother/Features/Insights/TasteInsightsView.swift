@@ -16,6 +16,7 @@ import SwiftUI
 
 struct TasteInsightsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Recompute whenever the signals that feed the profile change. Swipes are
     // local-only events, but returning to this tab re-fires `.task` → recompute.
     @Query private var inventory: [WardrobeItem]
@@ -23,6 +24,10 @@ struct TasteInsightsView: View {
     @Query private var outfitFeedbacks: [OutfitFeedback]
 
     @State private var viewModel = TasteInsightsViewModel()
+    /// Which dimension cards have their per-category breakdown expanded.
+    /// Collapsed by default so the tab still opens on the overall picture —
+    /// the breakdown is the "why", not the headline.
+    @State private var expandedCategoryDimensions: Set<String> = []
 
     var body: some View {
         Group {
@@ -164,9 +169,63 @@ struct TasteInsightsView: View {
                 lovedAvoidRow(icon: "hand.thumbsdown.fill", tint: .secondary,
                               lead: "You avoid", values: dimension.avoided)
             }
+            if !dimension.categories.isEmpty {
+                categoryBreakdown(dimension)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .premiumCard()
+    }
+
+    /// Category-partitioned taste: the same dimension, split per garment
+    /// category. Collapsed behind a toggle so a card with seven slots of data
+    /// doesn't bury the overall ranking above it.
+    @ViewBuilder
+    private func categoryBreakdown(_ dimension: TasteInsightsSnapshot.Dimension) -> some View {
+        let isExpanded = expandedCategoryDimensions.contains(dimension.id)
+        VStack(alignment: .leading, spacing: VCSpacing.sm) {
+            Divider()
+                .padding(.vertical, VCSpacing.xs)
+            Button {
+                withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                    if isExpanded {
+                        expandedCategoryDimensions.remove(dimension.id)
+                    } else {
+                        expandedCategoryDimensions.insert(dimension.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: VCSpacing.xs) {
+                    Text("By category")
+                        .font(.subheadline.weight(.semibold))
+                    Text("(\(dimension.categories.count))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                InsightSourceCaption(text: "The same taste, split by garment category — what you like in tops isn't what you like in shoes")
+                ForEach(dimension.categories) { category in
+                    VStack(alignment: .leading, spacing: VCSpacing.xs) {
+                        Text(category.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(category.rows) { row in
+                            AffinityBarRow(label: row.label, affinity: row.affinity, swatchHexes: row.swatchHexes)
+                        }
+                    }
+                    .padding(.top, VCSpacing.xs)
+                }
+            }
+        }
     }
 
     private func lovedAvoidRow(icon: String, tint: Color, lead: String, values: [String]) -> some View {

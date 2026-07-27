@@ -15,6 +15,7 @@
 
 import Foundation
 import Observation
+import os
 
 /// Save/submit lifecycle for the combination-feedback flow. Moved here
 /// 2026-07-27 from the now-deleted `RateItemViewModel.swift` (the per-item
@@ -38,6 +39,12 @@ final class RateCombinationViewModel {
 
     var sentiment: SwipeSentiment?
     var comment: String = ""
+
+    /// Item-Level Feedback (2026-07-27): per-garment chips the user tapped,
+    /// keyed by `WardrobeItem.id`. Optional by design — the whole-look swipe
+    /// alone is still a complete, submittable rating, and every garment left
+    /// untouched simply writes nothing.
+    var selectedChipIDs: [UUID: Set<String>] = [:]
 
     private(set) var state: RatingSaveState = .idle
 
@@ -70,6 +77,7 @@ final class RateCombinationViewModel {
 
         do {
             try repository.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: commentText, chemistry: nil)
+            persistItemChips(outfitSentiment: sentiment)
             state = .saved
         } catch {
             AppLog.error(.viewModel, "RateCombinationViewModel.submit: failed outfitID=\(outfitID) — \(String(describing: error))")
@@ -85,11 +93,79 @@ final class RateCombinationViewModel {
         let chemistryService = self.chemistryService
         Task {
             let catalogEntries = WardrobeCatalogBuilder.build(from: items).entries
-            guard let chemistry = try? await chemistryService.inferChemistry(items: catalogEntries, sentiment: sentiment, comment: commentText) else {
+            guard let result = try? await chemistryService.inferChemistry(items: catalogEntries, sentiment: sentiment, comment: commentText) else {
                 AppLog.error(.viewModel, "RateCombinationViewModel.submit: chemistry inference failed outfitID=\(outfitID) — sentiment/comment already saved")
                 return
             }
-            try? repository.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: commentText, chemistry: chemistry)
+            try? repository.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: commentText, chemistry: result.metadata)
+
+            // Closing the loop on free text (2026-07-27): "great outfit but the
+            // shirt is loose" becomes a note on that shirt, from the same call
+            // that was already reading the comment — no extra request, no extra
+            // cost. Written as `.inferred` so `Features/Closet` shows it as a
+            // machine reading of the comment and one tap from correction,
+            // which is the mitigation for the model attributing a complaint to
+            // the wrong garment.
+            for note in result.itemNotes {
+                try? repository.addItemNote(
+                    itemID: note.itemID,
+                    text: note.text,
+                    severity: note.severity,
+                    source: .inferred,
+                    context: note.context
+                )
+            }
+            if !result.itemNotes.isEmpty {
+                MLLog.logger.notice(
+                    "[AI-Stylist-ML] inferred item notes: outfit=\(outfitID, privacy: .public) count=\(result.itemNotes.count, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    /// Writes the tapped chips to their two destinations — taste to
+    /// `ItemRating` (generalizes, decays), defects to `ItemNote` (attaches to
+    /// this garment). Best-effort per item: one garment's write failing must
+    /// not lose the others or the whole-look sentiment already committed
+    /// above, which is the signal that matters most.
+    private func persistItemChips(outfitSentiment: SwipeSentiment) {
+        guard !selectedChipIDs.isEmpty else { return }
+
+        for item in items {
+            guard let chipIDs = selectedChipIDs[item.id], !chipIDs.isEmpty else { continue }
+            let chips = ItemFeedbackChipCatalog.chips(for: item.slot).filter { chipIDs.contains($0.id) }
+            guard !chips.isEmpty else { continue }
+
+            let resolution = ItemFeedbackChipCatalog.resolve(
+                chips: chips,
+                outfitSentiment: outfitSentiment,
+                itemPattern: item.pattern
+            )
+
+            if let rating = resolution.rating {
+                try? repository.recordItemRating(
+                    itemID: item.id,
+                    fit: rating.fit,
+                    comfort: rating.comfort,
+                    colorLike: rating.colorLike,
+                    patternLike: rating.patternLike,
+                    formalityFit: rating.formalityFit,
+                    styleIdentity: rating.styleIdentity,
+                    wearAgain: rating.wearAgain
+                )
+            }
+            for note in resolution.notes {
+                try? repository.addItemNote(
+                    itemID: item.id,
+                    text: note.text,
+                    severity: note.severity,
+                    source: .chip,
+                    context: note.context
+                )
+            }
+            MLLog.logger.notice(
+                "[AI-Stylist-ML] item chips: outfit=\(self.outfitID, privacy: .public) item=\(item.id, privacy: .public) slot=\(item.slot.rawValue, privacy: .public) chips=\(chips.count, privacy: .public) rating=\(resolution.rating != nil, privacy: .public) notes=\(resolution.notes.count, privacy: .public)"
+            )
         }
     }
 }

@@ -173,7 +173,10 @@ final class CombinationsViewModel {
 
     // `itemIDsBySlot` is an unordered Dictionary — iterate `Slot.allCases`
     // for a deterministic order, same pattern as `SavedCombination.displayTitle`.
-    private static func resolveItems(for combination: SavedCombination, itemsByID: [UUID: WardrobeItem]) -> [WardrobeItem] {
+    /// Also used by `Features/Insights/OutfitChemistryView.swift`, whose
+    /// "rate these outfits" prompt needs the same slot-ordered item list to
+    /// hand to `RateCombinationView` — same resolution, no second copy.
+    static func resolveItems(for combination: SavedCombination, itemsByID: [UUID: WardrobeItem]) -> [WardrobeItem] {
         let slotItems = Slot.allCases.compactMap { combination.itemIDsBySlot[$0] }.compactMap { itemsByID[$0] }
         let supplementaryAccessories = combination.supplementaryAccessoryItemIDs.compactMap { itemsByID[$0] }
         return slotItems + supplementaryAccessories

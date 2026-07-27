@@ -68,7 +68,7 @@ enum AnalyticsAggregator {
         /// Up to 3 short natural-language highlights, most relevant first —
         /// empty when there isn't enough real data yet to say anything.
         let discoveries: [Discovery]
-        /// `itemRatings.count + detailedOutfitFeedbacks.count` — the sample
+        /// `itemRatings.count + deliberateOutfitFeedbacks.count` — the sample
         /// size backing `ratingActivity`/rating-derived discoveries, for
         /// `Domain/AnalyticsConfidence.swift` banding.
         let ratingSampleSize: Int
@@ -104,17 +104,24 @@ enum AnalyticsAggregator {
         let currentInterval = timeRange.currentInterval(now: now)
         let previousInterval = timeRange.previousInterval(now: now)
 
-        // Detailed outfit ratings only — a bare auto-recorded "liked" save
-        // isn't a deliberate rating action, same distinction
-        // `Data/WardrobeRepository.fetchFeedbackHistory()` draws via
-        // `normalizedRating != nil`.
-        let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
+        // Deliberate rating actions only — a bare auto-recorded "liked" save
+        // isn't one. Two shapes qualify: the legacy Level 1/2/3 form (a
+        // non-nil `normalizedRating`) and, since 2026-07-27, the swipe+comment
+        // combination flow that replaced it (a non-nil `swipeSentiment`).
+        //
+        // Counting the swipe flow matters beyond the Overview card: this
+        // number is `styleDNAMinRatings`' input, and Style DNA is the only
+        // taste-derived content in `Domain/InsightsSummaryBuilder.swift`. While
+        // it counted the retired form alone, a user could rate outfits (and
+        // swipe the Discover deck) indefinitely and still be told there wasn't
+        // enough data — both in the Style tab and by the assistant.
+        let deliberateOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil || $0.swipeSentiment != nil }
 
         let ratingDatesCurrent = itemRatings.filter { currentInterval.contains($0.recordedAt) }.count
-            + detailedOutfitFeedbacks.filter { currentInterval.contains($0.recordedAt) }.count
+            + deliberateOutfitFeedbacks.filter { currentInterval.contains($0.recordedAt) }.count
         let ratingDatesPrevious = previousInterval.map { interval in
             itemRatings.filter { interval.contains($0.recordedAt) }.count
-                + detailedOutfitFeedbacks.filter { interval.contains($0.recordedAt) }.count
+                + deliberateOutfitFeedbacks.filter { interval.contains($0.recordedAt) }.count
         } ?? 0
         let ratingActivity = ActivityDelta(currentCount: ratingDatesCurrent, previousCount: ratingDatesPrevious)
 
@@ -139,7 +146,7 @@ enum AnalyticsAggregator {
             wearLogActivity: wearLogActivity,
             styleSummary: styleSummary,
             discoveries: discoveries,
-            ratingSampleSize: itemRatings.count + detailedOutfitFeedbacks.count,
+            ratingSampleSize: itemRatings.count + deliberateOutfitFeedbacks.count,
             wearLogSampleSize: wornLogEntries.count
         )
 

@@ -72,44 +72,6 @@ struct CalibrationProgressBadge: View {
     }
 }
 
-/// Transient "the model just moved" toast — shows the actual centroid drift
-/// (`SwipeDiscoveryViewModel.lastDriftAmount`, a fraction from
-/// `VisualClusterUpdater.update`'s return value) after a swipe, so the
-/// feedback is honest, per-swipe evidence that learning happened rather than
-/// an inferred milestone. Mounted as an overlay by `SwipeDiscoveryView`,
-/// distinct from `CalibrationProgressBadge`'s longer-lived progress meter.
-struct DriftFeedbackPill: View {
-    var amount: Double
-    var isVisible: Bool
-
-    var body: some View {
-        Group {
-            if isVisible {
-                Text("Taste shifted \(formattedAmount)")
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, VCSpacing.md)
-                    .padding(.vertical, VCSpacing.xs)
-                    .background(.black.opacity(0.75), in: Capsule())
-                    .transition(VCTransition.pop)
-            }
-        }
-        .vcAnimation(VCMotion.standard, value: isVisible)
-    }
-
-    private var formattedAmount: String {
-        let percent = amount * 100
-        return String(format: "%+.1f%%", percent)
-    }
-}
-
-#Preview("Drift pill") {
-    VStack(spacing: VCSpacing.lg) {
-        DriftFeedbackPill(amount: 0.034, isVisible: true)
-        DriftFeedbackPill(amount: 0.128, isVisible: true)
-    }
-    .padding()
-}
 
 #Preview {
     VStack(spacing: VCSpacing.lg) {

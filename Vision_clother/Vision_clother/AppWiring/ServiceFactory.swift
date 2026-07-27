@@ -117,13 +117,6 @@ enum ServiceFactory {
         UNUserNotificationJobService()
     }
 
-    /// On-device Vision framework (`VNGenerateImageFeaturePrintRequest`),
-    /// same posture as `makeBackgroundIsolationService` — no API key gate,
-    /// runs everywhere. Powers Swipe-to-Learn Visual Taste.
-    static func makeImageEmbeddingService() -> ImageEmbeddingService {
-        VisionFeaturePrintEmbeddingService()
-    }
-
     /// Swipe-to-Learn Visual Taste's photo deck — `AuthGatedStockImageFeedService`
     /// re-checks `isSignedIn` on every call rather than baking in a one-time
     /// snapshot, so the swipe deck stays interactive in Simulator with no

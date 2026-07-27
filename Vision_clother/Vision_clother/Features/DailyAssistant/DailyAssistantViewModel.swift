@@ -556,10 +556,15 @@ final class DailyAssistantViewModel {
     /// first-call-pays / every-later-call-is-cached behavior this used to
     /// implement locally, and any other long-lived repository holder gets it
     /// for free too instead of reimplementing this cache per call site.
-    private func wardrobeSnapshot() async throws -> (inventory: [WardrobeItem], history: FeedbackHistory) {
+    private func wardrobeSnapshot() async throws -> (inventory: [WardrobeItem], history: FeedbackHistory, itemNotes: [UUID: [ItemNote]]) {
         let inventory = try repository.fetchInventory()
         let history = try await repository.fetchFeedbackHistory()
-        return (inventory, history)
+        // Item-Level Feedback: fetched alongside the other two rather than
+        // per-item inside the catalog build — `WardrobeCatalogBuilder` must
+        // never issue a query per garment. Best-effort: a notes read failing
+        // should degrade to "no notes this turn", not fail the whole request.
+        let itemNotes = (try? repository.fetchAllItemNotes()) ?? [:]
+        return (inventory, history, itemNotes)
     }
 
     /// Anti-Repetition: the rotation-novelty + permanent-veto context fed to
@@ -610,15 +615,15 @@ final class DailyAssistantViewModel {
         }
         guard !Task.isCancelled else { return .timedOut }
         do {
-            let (inventory, history) = try await wardrobeSnapshot()
+            let (inventory, history, itemNotes) = try await wardrobeSnapshot()
             guard !inventory.filter({ !$0.isGhostElement }).isEmpty else {
                 return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
-            let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history)
+            let (catalog, _) = WardrobeCatalogBuilder.build(from: inventory, history: history, itemNotes: itemNotes)
             guard !catalog.isEmpty else {
                 return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
-            let context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog)
+            let context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog, itemNotes: itemNotes)
             if let answer = await resolveWardrobeQuestion(conversationHistory: conversationHistory, context: context, mentionedItemIDs: mentionedItemIDs) {
                 return .answer(answer)
             }
@@ -637,12 +642,12 @@ final class DailyAssistantViewModel {
     /// `WardrobeCatalogBuilder` so the block's shape matches the main catalog
     /// exactly. Empty string when nothing was referenced (or the ids no longer
     /// resolve), in which case the prompt is byte-identical to before.
-    private func referencedItemsText(for mentionedItemIDs: [UUID], inventory: [WardrobeItem], history: FeedbackHistory) -> String {
+    private func referencedItemsText(for mentionedItemIDs: [UUID], inventory: [WardrobeItem], history: FeedbackHistory, itemNotes: [UUID: [ItemNote]]) -> String {
         guard !mentionedItemIDs.isEmpty else { return "" }
         let idSet = Set(mentionedItemIDs)
         let mentioned = inventory.filter { idSet.contains($0.id) && !$0.isGhostElement }
         guard !mentioned.isEmpty else { return "" }
-        let (entries, _) = WardrobeCatalogBuilder.build(from: mentioned, history: history)
+        let (entries, _) = WardrobeCatalogBuilder.build(from: mentioned, history: history, itemNotes: itemNotes)
         guard let data = try? JSONEncoder().encode(entries) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
@@ -658,6 +663,11 @@ final class DailyAssistantViewModel {
         let inventory: [WardrobeItem]
         let history: FeedbackHistory
         let catalog: [CatalogEntry]
+        /// Item-Level Feedback — carried alongside the catalog so the
+        /// @-mention re-build (`referencedItemsText`) produces entries whose
+        /// `user_note` matches the main catalog's, rather than silently
+        /// omitting notes for exactly the items the user asked about.
+        let itemNotes: [UUID: [ItemNote]]
     }
 
     /// Returns the answer text when this turn really is a wardrobe/Insights
@@ -671,7 +681,7 @@ final class DailyAssistantViewModel {
         do {
             let catalogData = try JSONEncoder().encode(context.catalog)
             let catalogText = String(decoding: catalogData, as: UTF8.self)
-            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: context.inventory, history: context.history)
+            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: context.inventory, history: context.history, itemNotes: context.itemNotes)
 
             let insightsSummary = InsightsSummaryBuilder.buildSummaryText(
                 inventory: context.inventory,
@@ -724,10 +734,10 @@ final class DailyAssistantViewModel {
             if let prefetched {
                 context = prefetched
             } else {
-                let (inventory, history) = try await wardrobeSnapshot()
+                let (inventory, history, itemNotes) = try await wardrobeSnapshot()
                 loadingStage = .buildingCatalog
-                let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history) }
-                context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog)
+                let (catalog, _) = await PerfLog.time("catalogBuild") { WardrobeCatalogBuilder.build(from: inventory, history: history, itemNotes: itemNotes) }
+                context = PrefetchedWardrobeContext(inventory: inventory, history: history, catalog: catalog, itemNotes: itemNotes)
             }
             let (inventory, history, catalog) = (context.inventory, context.history, context.catalog)
             guard !catalog.isEmpty else {
@@ -737,7 +747,7 @@ final class DailyAssistantViewModel {
             let profile = await profileResult
 
             let (recentWornHistory, pairBans) = try fetchRecentOutfitHistory()
-            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: inventory, history: history)
+            let referencedText = referencedItemsText(for: mentionedItemIDs, inventory: inventory, history: history, itemNotes: context.itemNotes)
             // Compressed cross-session memory (Hermes-inspired session-summary
             // feature, see docs/decisions/resolved-v1.md) — last 2-3 prior
             // conversations' recaps, newest first.
@@ -814,7 +824,8 @@ final class DailyAssistantViewModel {
                     weather: weather,
                     history: history,
                     bannedPairs: Set(pairBans.map { PairKey($0.itemAID, $0.itemBID) }),
-                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs))
+                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs)),
+                    itemNotes: context.itemNotes
                 )
             }
             Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)
@@ -950,14 +961,15 @@ final class DailyAssistantViewModel {
             // resolves its embedding cache without a re-read/re-hash.
             prospectiveItem.imageFingerprint = ImageStorage.fingerprint(imageData)
 
-            let (inventory, history) = try await snapshotResult
+            let (inventory, history, itemNotes) = try await snapshotResult
             let weather = await weatherResult
             let profile = await profileResult
 
             loadingStage = .buildingCatalog
             let (catalog, _) = await PerfLog.time("catalogBuild") {
                 WardrobeCatalogBuilder.build(
-                    from: inventory + [prospectiveItem], history: history, prospectiveItemID: prospectiveItem.id
+                    from: inventory + [prospectiveItem], history: history,
+                    prospectiveItemID: prospectiveItem.id, itemNotes: itemNotes
                 )
             }
 
@@ -998,7 +1010,8 @@ final class DailyAssistantViewModel {
                     profile: profile, weather: weather, history: history,
                     mustIncludeItemID: prospectiveItem.id,
                     bannedPairs: Set(pairBans.map { PairKey($0.itemAID, $0.itemBID) }),
-                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs))
+                    recentlyWornItemSets: Set(recentWornHistory.hardAvoid.map(\.itemIDs)),
+                    itemNotes: itemNotes
                 )
             }
             Self.logValidationOutcome(offered: response.outfits.count, kept: validated.count, rejections: rejections)

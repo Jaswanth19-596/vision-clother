@@ -121,7 +121,7 @@ Does two things per original upload, both via `sharp`:
 
 ### Shared architecture
 
-This is intentionally **not** one Cloud Function per iOS service — the 3-way split above is grouped by cost/latency profile, not by service. All prompt/schema construction (`Config/ModelConfig.swift`'s `Prompts` enum, each service's JSON Schema) stays client-side, exactly as before — the passthrough proxy routes do no business logic (see `docs/backend/conventions.md`). Six iOS services all point at the same `/openrouter/chat`, `/openrouter/recommend`, `/openrouter/tryon`, or `/openrouter/images` routes (now split across `proxyApi`/`heavyApi` per the table above):
+This is intentionally **not** one Cloud Function per iOS service — the 3-way split above is grouped by cost/latency profile, not by service. All prompt/schema construction (`Config/ModelConfig.swift`'s `Prompts` enum, each service's JSON Schema) stays client-side, exactly as before — the passthrough proxy routes do no business logic (see `docs/backend/conventions.md`). Every LLM-facing iOS service points at the same `/openrouter/chat`, `/openrouter/recommend`, `/openrouter/tryon`, or `/openrouter/images` routes (now split across `proxyApi`/`heavyApi` per the table above):
 
 | Service | File | Route |
 |---|---|---|
@@ -131,6 +131,9 @@ This is intentionally **not** one Cloud Function per iOS service — the 3-way s
 | `OpenRouterUserProfileDerivationService` | `Vision_clother/Services/UserProfileDerivationService.swift` | `/openrouter/chat` |
 | `OpenRouterTryOnRenderService` | `Vision_clother/Vision_clother/AppWiring/OpenRouterTryOnRenderService.swift` | `/openrouter/chat` or `/openrouter/images` (branches on model, `ModelConfig.isChatCompletionImageModel`) |
 | `OpenRouterBackgroundIsolationService` | `Vision_clother/Services/BackgroundIsolationService.swift` | `/openrouter/chat` or `/openrouter/images` |
+| `OpenRouterStylistQAService` | `Vision_clother/Services/StylistQAService.swift` | `/openrouter/recommend` (metered — same bucket as recommendations, since the proxy gates by path, not payload) |
+| `OpenRouterIntentRoutingService` | `Vision_clother/Services/IntentRoutingService.swift` | `/openrouter/chat` (deliberately the uncapped route — see `Services/CLAUDE.md`) |
+| `OpenRouterCombinationChemistryInferenceService` | `Vision_clother/Services/CombinationChemistryInferenceService.swift` | `/openrouter/chat` (a text-only tagging/extraction utility, not a recommendation) |
 | `PexelsImageFeedService` | `Vision_clother/Services/StockImageFeedService.swift` | `/pexels/search` |
 
 ## Auth

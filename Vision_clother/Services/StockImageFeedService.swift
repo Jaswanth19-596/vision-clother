@@ -15,8 +15,8 @@ import Foundation
 
 /// One stock photo offered in the swipe deck — deliberately thin (no raw
 /// image bytes): the view downloads/displays `imageURLString` itself
-/// (`AsyncImage`), and the downloaded bytes are only ever embedded
-/// (`Services/ImageEmbeddingService.swift`) once the user actually swipes.
+/// (`AsyncImage`), and a swipe is only ever tagged by attribute extraction
+/// (`Services/VisionMetadataExtractionService.swift`), never stored as pixels.
 struct StockPhoto: Identifiable, Equatable {
     var id: String
     var imageURLString: String
@@ -62,10 +62,10 @@ final class PexelsImageFeedService: StockImageFeedService {
     ///
     /// Deliberately biased toward flatlay/product-style shots and away from
     /// "street style"/lifestyle queries: those return photos with multiple
-    /// people, crowds, and busy backgrounds, which confounds the swipe
-    /// embedding (`Services/ImageEmbeddingService.swift`) — a like on the
-    /// whole scene doesn't isolate the garment itself. Flatlay/plain-background
-    /// queries keep the frame to just the clothing.
+    /// people, crowds, and busy backgrounds, which confounds the swipe's
+    /// attribute extraction (`Services/VisionMetadataExtractionService.swift`)
+    /// — a like on the whole scene doesn't isolate the garment itself.
+    /// Flatlay/plain-background queries keep the frame to just the clothing.
     private let queryPool: [String]
 
     init(session: URLSession = .shared, queryPool: [String] = PexelsImageFeedService.defaultQueryPool) {

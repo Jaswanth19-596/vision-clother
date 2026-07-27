@@ -28,12 +28,38 @@
 
 import Foundation
 
+/// One garment-specific note the model pulled out of the user's free-text
+/// comment. Pure value type — the caller (`RateCombinationViewModel`) turns it
+/// into an `ItemNote` row.
+///
+/// Only *facts about the garment* are extracted, never taste opinions, even
+/// though the comment may contain both. A taste claim would have to move the
+/// global affinity maps on the strength of an LLM's reading of one sentence,
+/// with no confirmation step; the per-slot chips already capture taste
+/// deterministically and with the user's own finger on the button. Notes, by
+/// contrast, are per-item, visible in Closet, and one tap from being deleted.
+struct InferredItemNote: Equatable {
+    let itemID: UUID
+    let text: String
+    let severity: ItemNoteSeverity
+    let context: ItemNoteContext
+}
+
+/// What one chemistry-inference call returns: the whole-look structure plus
+/// any per-garment notes. `itemNotes` is empty for the overwhelming majority
+/// of calls (no comment, a purely positive comment, or a comment about the
+/// look as a whole).
+struct CombinationChemistryResult: Equatable {
+    let metadata: CombinationMetadata
+    let itemNotes: [InferredItemNote]
+}
+
 protocol CombinationChemistryInferenceService {
     /// `items` is the same text-only `CatalogEntry` projection the
     /// recommendation LLM already reads (`Domain/WardrobeCatalogBuilder.swift`)
     /// — no new wire type, no images. `sentiment` is required (the user must
     /// swipe); `comment` is optional free text explaining why.
-    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationMetadata
+    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationChemistryResult
 }
 
 enum CombinationChemistryInferenceError: Error, LocalizedError {
@@ -71,7 +97,7 @@ final class OpenRouterCombinationChemistryInferenceService: CombinationChemistry
         self.model = model
     }
 
-    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationMetadata {
+    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationChemistryResult {
         do {
             return try await performRequest(items: items, sentiment: sentiment, comment: comment, useStructuredOutput: true)
         } catch CombinationChemistryInferenceError.emptyChoices, CombinationChemistryInferenceError.decoding {
@@ -90,7 +116,7 @@ final class OpenRouterCombinationChemistryInferenceService: CombinationChemistry
         sentiment: SwipeSentiment,
         comment: String?,
         useStructuredOutput: Bool
-    ) async throws -> CombinationMetadata {
+    ) async throws -> CombinationChemistryResult {
         let requestID = AppLog.newRequestID()
         AppLog.info(.network, "[\(requestID)] combinationChemistry: POST \(endpoint.path) structured=\(useStructuredOutput) items=\(items.count)")
 
@@ -146,11 +172,29 @@ final class OpenRouterCombinationChemistryInferenceService: CombinationChemistry
 
         let payload = useStructuredOutput ? Data(content.utf8) : OpenRouterResponseParsing.extractJSONObject(from: content)
         do {
-            let metadata = try JSONDecoder().decode(CombinationMetadata.self, from: payload)
-            AppLog.info(.network, "[\(requestID)] combinationChemistry: ok")
-            return metadata
+            let wire = try JSONDecoder().decode(ChemistryWithItemNotesWire.self, from: payload)
+            let validIDs = Set(items.map(\.id))
+            // An id the model invented, or one that isn't in the combination
+            // it was shown, is dropped rather than trusted — the whole point
+            // of a note is that it belongs to a specific real garment.
+            let notes: [InferredItemNote] = wire.itemNotes.compactMap { note in
+                guard validIDs.contains(note.itemID), let uuid = UUID(uuidString: note.itemID) else {
+                    AppLog.error(.network, "[\(requestID)] combinationChemistry: dropped item note for unknown id=\(note.itemID)")
+                    return nil
+                }
+                let text = ItemNote.normalizedText(note.text)
+                guard !text.isEmpty else { return nil }
+                return InferredItemNote(
+                    itemID: uuid,
+                    text: text,
+                    severity: ItemNoteSeverity(rawValue: note.severity) ?? .conditional,
+                    context: ItemNoteContext(rawValue: note.context) ?? .none
+                )
+            }
+            AppLog.info(.network, "[\(requestID)] combinationChemistry: ok itemNotes=\(notes.count)")
+            return CombinationChemistryResult(metadata: wire.chemistry, itemNotes: notes)
         } catch {
-            AppLog.error(.network, "[\(requestID)] combinationChemistry: CombinationMetadata decode failed — \(String(describing: error))")
+            AppLog.error(.network, "[\(requestID)] combinationChemistry: decode failed — \(String(describing: error))")
             throw CombinationChemistryInferenceError.decoding(error)
         }
     }
@@ -189,14 +233,14 @@ final class OpenRouterCombinationChemistryInferenceService: CombinationChemistry
             body["response_format"] = [
                 "type": "json_schema",
                 "json_schema": [
-                    "name": "CombinationMetadata",
+                    "name": "CombinationChemistryWithItemNotes",
                     "strict": true,
-                    "schema": CombinationMetadataSchema.objectSchema,
+                    "schema": CombinationMetadataSchema.chemistryWithItemNotesSchema,
                 ],
             ]
         } else {
             let schemaData = try JSONSerialization.data(
-                withJSONObject: CombinationMetadataSchema.objectSchema,
+                withJSONObject: CombinationMetadataSchema.chemistryWithItemNotesSchema,
                 options: [.sortedKeys]
             )
             let schemaText = String(decoding: schemaData, as: UTF8.self)
@@ -215,6 +259,43 @@ final class OpenRouterCombinationChemistryInferenceService: CombinationChemistry
     }
 }
 
+// MARK: - Wire shape
+
+/// Mirrors `CombinationMetadataSchema.chemistryWithItemNotesSchema`. Explicit
+/// `CodingKeys` per `Models/CLAUDE.md` — no global snake-case strategy.
+private struct ChemistryWithItemNotesWire: Decodable {
+    struct ItemNoteWire: Decodable {
+        let itemID: String
+        let text: String
+        let severity: String
+        let context: String
+
+        enum CodingKeys: String, CodingKey {
+            case itemID = "item_id"
+            case text
+            case severity
+            case context
+        }
+    }
+
+    let chemistry: CombinationMetadata
+    let itemNotes: [ItemNoteWire]
+
+    enum CodingKeys: String, CodingKey {
+        case chemistry
+        case itemNotes = "item_notes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        chemistry = try container.decode(CombinationMetadata.self, forKey: .chemistry)
+        // Tolerated as absent, not just empty: a model that drops the key
+        // entirely on the unstructured fallback path should still yield usable
+        // chemistry rather than failing the whole decode over the optional half.
+        itemNotes = try container.decodeIfPresent([ItemNoteWire].self, forKey: .itemNotes) ?? []
+    }
+}
+
 // MARK: - OpenAI-compatible chat completions response shape
 
 private struct OpenRouterChatResponseEnvelope: Decodable {
@@ -230,7 +311,7 @@ private struct OpenRouterChatResponseEnvelope: Decodable {
 // MARK: - Mock for previews/tests — never touches the network.
 
 struct MockCombinationChemistryInferenceService: CombinationChemistryInferenceService {
-    var result = CombinationMetadata(
+    var metadata = CombinationMetadata(
         colorHarmony: .monochrome,
         styleCoherenceTags: ["minimalist", "tailored"],
         formalityConsistency: .consistent,
@@ -246,9 +327,10 @@ struct MockCombinationChemistryInferenceService: CombinationChemistryInferenceSe
         overallAestheticVibe: "Minimalist tonal ease",
         complexityScore: 3
     )
+    var itemNotes: [InferredItemNote] = []
 
-    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationMetadata {
-        result
+    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationChemistryResult {
+        CombinationChemistryResult(metadata: metadata, itemNotes: itemNotes)
     }
 }
 
@@ -261,7 +343,7 @@ final class AuthGatedCombinationChemistryInferenceService: CombinationChemistryI
     private lazy var mock = MockCombinationChemistryInferenceService()
     private var current: CombinationChemistryInferenceService { AuthService.shared.isSignedIn ? real : mock }
 
-    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationMetadata {
+    func inferChemistry(items: [CatalogEntry], sentiment: SwipeSentiment, comment: String?) async throws -> CombinationChemistryResult {
         try await current.inferChemistry(items: items, sentiment: sentiment, comment: comment)
     }
 }

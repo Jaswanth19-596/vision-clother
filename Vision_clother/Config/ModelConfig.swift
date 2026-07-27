@@ -171,7 +171,25 @@ enum ModelConfig {
         "intentional_high_low", or "mismatched_clash"; "overall_aesthetic_vibe" — a short phrase \
         capturing the outfit's overall vibe (e.g. "quiet luxury", "off-duty model", "power dressing"); \
         "complexity_score" — an integer 1-8 judging the outfit's visual interest/layering, where 1 is \
-        a single simple piece and 8 is heavily layered and detailed.
+        a single simple piece and 8 is heavily layered and detailed. \
+        \
+        "item_notes" — Item-Level Feedback. When the user's comment says something about ONE specific \
+        garment rather than the outfit as a whole ("the shirt is loose", "those shoes kill my feet", \
+        "this jacket isn't warm enough"), record it here against that garment's own catalog "id". \
+        Return an EMPTY ARRAY when the comment is about the look overall, is purely positive, or \
+        wasn't given — this is the normal case, and inventing notes is worse than returning none. \
+        Only record a durable fact about the garment itself (how it fits, feels, wears, or performs) \
+        — never a taste opinion like "not my style" or "wrong colour", which belong to the whole-look \
+        fields above. Never attribute a complaint to a garment you are not confident it refers to; if \
+        two pieces could match the description, omit it. Each note has: "item_id" — the exact "id" \
+        string from the garment list, copied verbatim; "text" — the complaint as a short clause in \
+        the user's own sense, lowercase, 60 characters or fewer ("runs loose", "rubs after a while"), \
+        never a full sentence; "severity" — "blocking" ONLY if the user clearly means they can't or \
+        won't wear the item at all anymore ("doesn't fit me anymore", "it's torn", "I gave it away"), \
+        otherwise "conditional"; "context" — when the problem matters: "formal_occasions" for fit, \
+        length, or appearance flaws that show when dressed up, "cold_weather" for not warm enough, \
+        "hot_weather" for too warm, "extended_wear" for comfort problems that appear over a long day \
+        (rubbing, heaviness, hard to walk in), or "none" if it doesn't map to any of these.
         """
 
         // MARK: Garment tagging (imageToText)

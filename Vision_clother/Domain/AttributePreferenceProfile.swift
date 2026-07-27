@@ -95,6 +95,19 @@ struct RatedAttributes {
     /// right") for owned items, or the swipe like/dislike signal for swipes.
     /// `nil` whenever `fit` is `nil`, so it never contributes alone.
     let fitLike: Double?
+    // Expanded per-garment attributes (added 2026-07-27, surfaced 2026-07-27b)
+    // — the five richer fields the vision extraction now returns
+    // (`Models/WardrobeItem.swift`). Each reuses the closest existing rating
+    // signal rather than asking the user a new question: pattern scale <-
+    // `patternLike`, texture finish / fabric-weight detail <- `fabricComfort`,
+    // silhouette cut / neckline-or-rise <- `fitLike`. `nil` for any item whose
+    // ingestion predates these fields, so it simply doesn't contribute.
+    let patternScale: PatternScale?
+    let textureFinish: TextureFinish?
+    let silhouetteCut: SilhouetteCut?
+    let necklineOrRise: String?
+    let fabricWeightDetail: FabricWeightDetail?
+
     /// Credit-assignment weight, `[0,1]`, composed multiplicatively with
     /// `build(from:)`'s exponential time-decay weight (added 2026-07-27) —
     /// `SwipeAttributeEvent.weight` (`1.0 / N` for an N-garment swiped photo)
@@ -115,7 +128,11 @@ struct RatedAttributes {
         silhouetteTag: String? = nil, silhouetteFit: Double? = nil,
         fabricWeight: FabricWeight = .medium, fabricComfort: Double = 0.5,
         undertone: Undertone? = nil, material: String? = nil, texture: String? = nil,
-        fit: String? = nil, fitLike: Double? = nil, weight: Double = 1.0
+        fit: String? = nil, fitLike: Double? = nil,
+        patternScale: PatternScale? = nil, textureFinish: TextureFinish? = nil,
+        silhouetteCut: SilhouetteCut? = nil, necklineOrRise: String? = nil,
+        fabricWeightDetail: FabricWeightDetail? = nil,
+        weight: Double = 1.0
     ) {
         self.colorLike = colorLike
         self.patternLike = patternLike
@@ -136,6 +153,11 @@ struct RatedAttributes {
         self.texture = texture
         self.fit = fit
         self.fitLike = fitLike
+        self.patternScale = patternScale
+        self.textureFinish = textureFinish
+        self.silhouetteCut = silhouetteCut
+        self.necklineOrRise = necklineOrRise
+        self.fabricWeightDetail = fabricWeightDetail
         self.weight = weight
     }
 }
@@ -191,14 +213,38 @@ struct OutfitDimensionRatedAttributes {
     let material: String?
     let texture: String?
     let fit: String?
+    /// The five expanded per-garment attributes — same signal mapping as
+    /// `RatedAttributes`, re-expressed against this struct's outfit-level
+    /// dimensions: pattern scale <- `patternDissatisfaction` (the only
+    /// outfit-level pattern signal), texture finish / fabric-weight detail <-
+    /// `weatherFit`, silhouette cut / neckline-or-rise <- `silhouette`.
+    let patternScale: PatternScale?
+    let textureFinish: TextureFinish?
+    let silhouetteCut: SilhouetteCut?
+    let necklineOrRise: String?
+    let fabricWeightDetail: FabricWeightDetail?
+    /// Credit-assignment weight, mirroring `RatedAttributes.weight` and
+    /// composed with time-decay the same way (multiplied, not substituted).
+    /// `1.0` for the detailed-form path, where the user answered per-dimension
+    /// questions about the outfit as a whole and every item genuinely carries
+    /// the full signal. Below `1.0` for the combination-swipe fan-out added
+    /// 2026-07-27, where one whole-look sentiment is split `1/N` across the
+    /// garments in the look — the same reasoning that gives a multi-garment
+    /// stock swipe `1/N` per detected garment.
+    let weight: Double
 
     init(
         colorHarmony: Double, occasionMatch: Double, styleMatch: Double, silhouette: Double, weatherFit: Double,
         colorVibe: ColorVibe, styleTags: [String], silhouetteTag: String?, formalityBand: Int,
         fabricWeight: FabricWeight, pattern: GarmentPattern = .solid, patternDissatisfaction: Double? = nil,
         recordedAt: Date = .now, slot: Slot? = nil,
-        undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil
+        undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil,
+        patternScale: PatternScale? = nil, textureFinish: TextureFinish? = nil,
+        silhouetteCut: SilhouetteCut? = nil, necklineOrRise: String? = nil,
+        fabricWeightDetail: FabricWeightDetail? = nil,
+        weight: Double = 1.0
     ) {
+        self.weight = weight
         self.colorHarmony = colorHarmony
         self.occasionMatch = occasionMatch
         self.styleMatch = styleMatch
@@ -217,6 +263,11 @@ struct OutfitDimensionRatedAttributes {
         self.material = material
         self.texture = texture
         self.fit = fit
+        self.patternScale = patternScale
+        self.textureFinish = textureFinish
+        self.silhouetteCut = silhouetteCut
+        self.necklineOrRise = necklineOrRise
+        self.fabricWeightDetail = fabricWeightDetail
     }
 }
 
@@ -297,8 +348,16 @@ struct ItemAttributeSnapshot: Sendable {
     let material: String?
     let texture: String?
     let fit: String?
+    /// The five expanded per-garment attributes — used purely as the
+    /// closet-composition *baseline* for their affinity maps' dynamic
+    /// shrinkage prior, exactly like every field above.
+    let patternScale: PatternScale?
+    let textureFinish: TextureFinish?
+    let silhouetteCut: SilhouetteCut?
+    let necklineOrRise: String?
+    let fabricWeightDetail: FabricWeightDetail?
 
-    init(colorCategory: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleTags: [String], silhouette: String?, fabricWeight: FabricWeight, slot: Slot, undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil) {
+    init(colorCategory: ColorVibe, pattern: GarmentPattern, formalityBand: Int, styleTags: [String], silhouette: String?, fabricWeight: FabricWeight, slot: Slot, undertone: Undertone? = nil, material: String? = nil, texture: String? = nil, fit: String? = nil, patternScale: PatternScale? = nil, textureFinish: TextureFinish? = nil, silhouetteCut: SilhouetteCut? = nil, necklineOrRise: String? = nil, fabricWeightDetail: FabricWeightDetail? = nil) {
         self.colorCategory = colorCategory
         self.pattern = pattern
         self.formalityBand = formalityBand
@@ -310,6 +369,11 @@ struct ItemAttributeSnapshot: Sendable {
         self.material = material
         self.texture = texture
         self.fit = fit
+        self.patternScale = patternScale
+        self.textureFinish = textureFinish
+        self.silhouetteCut = silhouetteCut
+        self.necklineOrRise = necklineOrRise
+        self.fabricWeightDetail = fabricWeightDetail
     }
 }
 
@@ -365,6 +429,26 @@ struct AttributePreferenceProfile {
     /// (its shape).
     var fitAffinity: [String: Double] = [:]
     var fitAffinityBySlot: [Slot: [String: Double]] = [:]
+
+    // Expanded per-garment attributes (surfaced 2026-07-27b) — the five
+    // richer fields the vision extraction added earlier the same day, which
+    // until now were stored on `WardrobeItem` and sent to the LLM catalog but
+    // never *learned*. Same flat + per-slot pairing as every dimension above.
+    // Only items ingested since the expanded extraction carry these, so for a
+    // closet added before that these maps stay empty and every consumer below
+    // behaves exactly as it did before they existed.
+    var patternScaleAffinity: [PatternScale: Double] = [:]
+    var patternScaleAffinityBySlot: [Slot: [PatternScale: Double]] = [:]
+    var textureFinishAffinity: [TextureFinish: Double] = [:]
+    var textureFinishAffinityBySlot: [Slot: [TextureFinish: Double]] = [:]
+    var silhouetteCutAffinity: [SilhouetteCut: Double] = [:]
+    var silhouetteCutAffinityBySlot: [Slot: [SilhouetteCut: Double]] = [:]
+    /// Free-text (e.g. "Crew Neck", "High Rise"), so case-folded by the
+    /// consumers the same way `materialAffinity`/`fitAffinity` are.
+    var necklineOrRiseAffinity: [String: Double] = [:]
+    var necklineOrRiseAffinityBySlot: [Slot: [String: Double]] = [:]
+    var fabricWeightDetailAffinity: [FabricWeightDetail: Double] = [:]
+    var fabricWeightDetailAffinityBySlot: [Slot: [FabricWeightDetail: Double]] = [:]
     /// Whole-look color-harmony taste (e.g. "monochrome" vs. "high contrast"),
     /// keyed by `ColorHarmonyDescriptor` — learned only from
     /// `RatedCombination` (Swipe-to-Learn multi-garment scenes), since a
@@ -465,7 +549,12 @@ struct AttributePreferenceProfile {
                 undertone: item.colorProfile.undertone,
                 material: item.material,
                 texture: item.texture,
-                fit: item.fit
+                fit: item.fit,
+                patternScale: item.patternScale,
+                textureFinish: item.textureFinish,
+                silhouetteCut: item.silhouetteCut,
+                necklineOrRise: item.necklineOrRise,
+                fabricWeightDetail: item.fabricWeightDetail
             )
         }
         return build(
@@ -504,6 +593,16 @@ struct AttributePreferenceProfile {
         var textureSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
         var fitSums: [String: (sum: Double, count: Double)] = [:]
         var fitSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
+        var patternScaleSums: [PatternScale: (sum: Double, count: Double)] = [:]
+        var patternScaleSumsBySlot: [Slot: [PatternScale: (sum: Double, count: Double)]] = [:]
+        var textureFinishSums: [TextureFinish: (sum: Double, count: Double)] = [:]
+        var textureFinishSumsBySlot: [Slot: [TextureFinish: (sum: Double, count: Double)]] = [:]
+        var silhouetteCutSums: [SilhouetteCut: (sum: Double, count: Double)] = [:]
+        var silhouetteCutSumsBySlot: [Slot: [SilhouetteCut: (sum: Double, count: Double)]] = [:]
+        var necklineOrRiseSums: [String: (sum: Double, count: Double)] = [:]
+        var necklineOrRiseSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
+        var fabricWeightDetailSums: [FabricWeightDetail: (sum: Double, count: Double)] = [:]
+        var fabricWeightDetailSumsBySlot: [Slot: [FabricWeightDetail: (sum: Double, count: Double)]] = [:]
         var colorHarmonySums: [ColorHarmonyDescriptor: (sum: Double, count: Double)] = [:]
         var paletteArchetypeSums: [PaletteArchetype: (sum: Double, count: Double)] = [:]
         var contrastLevelSums: [ContrastLevel: (sum: Double, count: Double)] = [:]
@@ -575,10 +674,38 @@ struct AttributePreferenceProfile {
                 fitSums[fit, default: (0, 0)].count += weight
                 accumulateSlot(rating.slot, key: fit, value: fitLike, weight: weight, into: &fitSumsBySlot)
             }
+
+            // Expanded per-garment attributes — each keyed off the closest
+            // existing question rather than a new one (see `RatedAttributes`).
+            if let patternScale = rating.patternScale, let patternLike = rating.patternLike {
+                patternScaleSums[patternScale, default: (0, 0)].sum += patternLike * weight
+                patternScaleSums[patternScale, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: patternScale, value: patternLike, weight: weight, into: &patternScaleSumsBySlot)
+            }
+            if let textureFinish = rating.textureFinish {
+                textureFinishSums[textureFinish, default: (0, 0)].sum += rating.fabricComfort * weight
+                textureFinishSums[textureFinish, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: textureFinish, value: rating.fabricComfort, weight: weight, into: &textureFinishSumsBySlot)
+            }
+            if let silhouetteCut = rating.silhouetteCut, let fitLike = rating.fitLike {
+                silhouetteCutSums[silhouetteCut, default: (0, 0)].sum += fitLike * weight
+                silhouetteCutSums[silhouetteCut, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: silhouetteCut, value: fitLike, weight: weight, into: &silhouetteCutSumsBySlot)
+            }
+            if let necklineOrRise = rating.necklineOrRise, let fitLike = rating.fitLike {
+                necklineOrRiseSums[necklineOrRise, default: (0, 0)].sum += fitLike * weight
+                necklineOrRiseSums[necklineOrRise, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: necklineOrRise, value: fitLike, weight: weight, into: &necklineOrRiseSumsBySlot)
+            }
+            if let fabricWeightDetail = rating.fabricWeightDetail {
+                fabricWeightDetailSums[fabricWeightDetail, default: (0, 0)].sum += rating.fabricComfort * weight
+                fabricWeightDetailSums[fabricWeightDetail, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: fabricWeightDetail, value: rating.fabricComfort, weight: weight, into: &fabricWeightDetailSumsBySlot)
+            }
         }
 
         for rating in outfitDimensionRatings {
-            let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
+            let weight = decayWeight(recordedAt: rating.recordedAt, now: now) * rating.weight
 
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
@@ -629,6 +756,34 @@ struct AttributePreferenceProfile {
                 fitSums[fit, default: (0, 0)].sum += rating.silhouette * weight
                 fitSums[fit, default: (0, 0)].count += weight
                 accumulateSlot(rating.slot, key: fit, value: rating.silhouette, weight: weight, into: &fitSumsBySlot)
+            }
+
+            // Expanded per-garment attributes, outfit-level mapping — see the
+            // doc comment on `OutfitDimensionRatedAttributes`.
+            if let patternScale = rating.patternScale, let patternDissatisfaction = rating.patternDissatisfaction {
+                patternScaleSums[patternScale, default: (0, 0)].sum += patternDissatisfaction * weight
+                patternScaleSums[patternScale, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: patternScale, value: patternDissatisfaction, weight: weight, into: &patternScaleSumsBySlot)
+            }
+            if let textureFinish = rating.textureFinish {
+                textureFinishSums[textureFinish, default: (0, 0)].sum += rating.weatherFit * weight
+                textureFinishSums[textureFinish, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: textureFinish, value: rating.weatherFit, weight: weight, into: &textureFinishSumsBySlot)
+            }
+            if let silhouetteCut = rating.silhouetteCut {
+                silhouetteCutSums[silhouetteCut, default: (0, 0)].sum += rating.silhouette * weight
+                silhouetteCutSums[silhouetteCut, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: silhouetteCut, value: rating.silhouette, weight: weight, into: &silhouetteCutSumsBySlot)
+            }
+            if let necklineOrRise = rating.necklineOrRise {
+                necklineOrRiseSums[necklineOrRise, default: (0, 0)].sum += rating.silhouette * weight
+                necklineOrRiseSums[necklineOrRise, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: necklineOrRise, value: rating.silhouette, weight: weight, into: &necklineOrRiseSumsBySlot)
+            }
+            if let fabricWeightDetail = rating.fabricWeightDetail {
+                fabricWeightDetailSums[fabricWeightDetail, default: (0, 0)].sum += rating.weatherFit * weight
+                fabricWeightDetailSums[fabricWeightDetail, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: fabricWeightDetail, value: rating.weatherFit, weight: weight, into: &fabricWeightDetailSumsBySlot)
             }
         }
 
@@ -702,6 +857,16 @@ struct AttributePreferenceProfile {
         var textureBaselineBySlot: [Slot: [String: Int]] = [:]
         var fitBaseline: [String: Int] = [:]
         var fitBaselineBySlot: [Slot: [String: Int]] = [:]
+        var patternScaleBaseline: [PatternScale: Int] = [:]
+        var patternScaleBaselineBySlot: [Slot: [PatternScale: Int]] = [:]
+        var textureFinishBaseline: [TextureFinish: Int] = [:]
+        var textureFinishBaselineBySlot: [Slot: [TextureFinish: Int]] = [:]
+        var silhouetteCutBaseline: [SilhouetteCut: Int] = [:]
+        var silhouetteCutBaselineBySlot: [Slot: [SilhouetteCut: Int]] = [:]
+        var necklineOrRiseBaseline: [String: Int] = [:]
+        var necklineOrRiseBaselineBySlot: [Slot: [String: Int]] = [:]
+        var fabricWeightDetailBaseline: [FabricWeightDetail: Int] = [:]
+        var fabricWeightDetailBaselineBySlot: [Slot: [FabricWeightDetail: Int]] = [:]
 
         func bump<Key: Hashable>(_ key: Key, slot: Slot, in bySlot: inout [Slot: [Key: Int]]) {
             var slotMap = bySlot[slot] ?? [:]
@@ -741,6 +906,26 @@ struct AttributePreferenceProfile {
             if let fit = item.fit {
                 fitBaseline[fit, default: 0] += 1
                 bump(fit, slot: item.slot, in: &fitBaselineBySlot)
+            }
+            if let patternScale = item.patternScale {
+                patternScaleBaseline[patternScale, default: 0] += 1
+                bump(patternScale, slot: item.slot, in: &patternScaleBaselineBySlot)
+            }
+            if let textureFinish = item.textureFinish {
+                textureFinishBaseline[textureFinish, default: 0] += 1
+                bump(textureFinish, slot: item.slot, in: &textureFinishBaselineBySlot)
+            }
+            if let silhouetteCut = item.silhouetteCut {
+                silhouetteCutBaseline[silhouetteCut, default: 0] += 1
+                bump(silhouetteCut, slot: item.slot, in: &silhouetteCutBaselineBySlot)
+            }
+            if let necklineOrRise = item.necklineOrRise {
+                necklineOrRiseBaseline[necklineOrRise, default: 0] += 1
+                bump(necklineOrRise, slot: item.slot, in: &necklineOrRiseBaselineBySlot)
+            }
+            if let fabricWeightDetail = item.fabricWeightDetail {
+                fabricWeightDetailBaseline[fabricWeightDetail, default: 0] += 1
+                bump(fabricWeightDetail, slot: item.slot, in: &fabricWeightDetailBaselineBySlot)
             }
         }
 
@@ -786,6 +971,16 @@ struct AttributePreferenceProfile {
         profile.textureAffinityBySlot = affinityMapBySlot(sumsBySlot: textureSumsBySlot, baselineBySlot: textureBaselineBySlot)
         profile.fitAffinity = affinityMap(sums: fitSums, baseline: fitBaseline)
         profile.fitAffinityBySlot = affinityMapBySlot(sumsBySlot: fitSumsBySlot, baselineBySlot: fitBaselineBySlot)
+        profile.patternScaleAffinity = affinityMap(sums: patternScaleSums, baseline: patternScaleBaseline)
+        profile.patternScaleAffinityBySlot = affinityMapBySlot(sumsBySlot: patternScaleSumsBySlot, baselineBySlot: patternScaleBaselineBySlot)
+        profile.textureFinishAffinity = affinityMap(sums: textureFinishSums, baseline: textureFinishBaseline)
+        profile.textureFinishAffinityBySlot = affinityMapBySlot(sumsBySlot: textureFinishSumsBySlot, baselineBySlot: textureFinishBaselineBySlot)
+        profile.silhouetteCutAffinity = affinityMap(sums: silhouetteCutSums, baseline: silhouetteCutBaseline)
+        profile.silhouetteCutAffinityBySlot = affinityMapBySlot(sumsBySlot: silhouetteCutSumsBySlot, baselineBySlot: silhouetteCutBaselineBySlot)
+        profile.necklineOrRiseAffinity = affinityMap(sums: necklineOrRiseSums, baseline: necklineOrRiseBaseline)
+        profile.necklineOrRiseAffinityBySlot = affinityMapBySlot(sumsBySlot: necklineOrRiseSumsBySlot, baselineBySlot: necklineOrRiseBaselineBySlot)
+        profile.fabricWeightDetailAffinity = affinityMap(sums: fabricWeightDetailSums, baseline: fabricWeightDetailBaseline)
+        profile.fabricWeightDetailAffinityBySlot = affinityMapBySlot(sumsBySlot: fabricWeightDetailSumsBySlot, baselineBySlot: fabricWeightDetailBaselineBySlot)
         // No owned-item baseline exists for a whole-look descriptor like
         // "monochrome" or "high contrast" — floors at the flat
         // `defaultPriorWeight`, same as every other dimension's fallback when
@@ -916,6 +1111,31 @@ struct AttributePreferenceProfile {
         return fitAffinity[fit] ?? 0.5
     }
 
+    func patternScaleAffinity(_ scale: PatternScale, slot: Slot?) -> Double {
+        if let slot, let value = patternScaleAffinityBySlot[slot]?[scale] { return value }
+        return patternScaleAffinity[scale] ?? 0.5
+    }
+
+    func textureFinishAffinity(_ finish: TextureFinish, slot: Slot?) -> Double {
+        if let slot, let value = textureFinishAffinityBySlot[slot]?[finish] { return value }
+        return textureFinishAffinity[finish] ?? 0.5
+    }
+
+    func silhouetteCutAffinity(_ cut: SilhouetteCut, slot: Slot?) -> Double {
+        if let slot, let value = silhouetteCutAffinityBySlot[slot]?[cut] { return value }
+        return silhouetteCutAffinity[cut] ?? 0.5
+    }
+
+    func necklineOrRiseAffinity(_ value: String, slot: Slot?) -> Double {
+        if let slot, let match = necklineOrRiseAffinityBySlot[slot]?[value] { return match }
+        return necklineOrRiseAffinity[value] ?? 0.5
+    }
+
+    func fabricWeightDetailAffinity(_ detail: FabricWeightDetail, slot: Slot?) -> Double {
+        if let slot, let value = fabricWeightDetailAffinityBySlot[slot]?[detail] { return value }
+        return fabricWeightDetailAffinity[detail] ?? 0.5
+    }
+
     /// Learned affinity for one whole-look color-harmony descriptor, `[0,1]`,
     /// 0.5 = neutral/unrated — deliberately not folded into `matchDetail(for:
     /// WardrobeItem)`, since color harmony describes a pairing/whole-look, not
@@ -928,13 +1148,15 @@ struct AttributePreferenceProfile {
     /// Whether the profile has learned anything at all yet — used by the
     /// "Test Your Style" verifier (`Features/Profile/StyleCheckViewModel.swift`)
     /// to distinguish "no signal to compare against" from a genuine neutral
-    /// score, the attribute-space analogue of `VisualPreferenceProfile`'s
-    /// "no centroids yet" check.
+    /// score.
     var hasSignal: Bool {
         !colorVibeAffinity.isEmpty || !patternAffinity.isEmpty || !formalityAffinity.isEmpty
             || !styleTagAffinity.isEmpty || !silhouetteAffinity.isEmpty || !fabricWeightAffinity.isEmpty
             || !undertoneAffinity.isEmpty || !materialAffinity.isEmpty || !textureAffinity.isEmpty
             || !fitAffinity.isEmpty || !colorHarmonyAffinity.isEmpty
+            || !patternScaleAffinity.isEmpty || !textureFinishAffinity.isEmpty
+            || !silhouetteCutAffinity.isEmpty || !necklineOrRiseAffinity.isEmpty
+            || !fabricWeightDetailAffinity.isEmpty
     }
 
     /// Same bounded bias as `affinityBonus`, but also surfaces the per-attribute
@@ -967,12 +1189,38 @@ struct AttributePreferenceProfile {
         let textureAff = item.texture.map { textureAffinity($0, slot: slot) } ?? 0.5
         let fitAff = item.fit.map { fitAffinity($0, slot: slot) } ?? 0.5
 
+        // Expanded per-garment attributes (2026-07-27b). Unlike the ten fixed
+        // terms below, each of these joins the mean *only* if the profile has
+        // learned anything at all for that dimension — for a closet ingested
+        // before these fields existed every map is empty, so the mean stays
+        // exactly the 10-way one it was and scoring is bit-for-bit unchanged.
+        // Once items carrying them are rated, they start pulling their share
+        // rather than diluting the established dimensions from day one.
+        var extraAffinities: [Double] = []
+        if !patternScaleAffinity.isEmpty || !patternScaleAffinityBySlot.isEmpty {
+            extraAffinities.append(item.patternScale.map { patternScaleAffinity($0, slot: slot) } ?? 0.5)
+        }
+        if !textureFinishAffinity.isEmpty || !textureFinishAffinityBySlot.isEmpty {
+            extraAffinities.append(item.textureFinish.map { textureFinishAffinity($0, slot: slot) } ?? 0.5)
+        }
+        if !silhouetteCutAffinity.isEmpty || !silhouetteCutAffinityBySlot.isEmpty {
+            extraAffinities.append(item.silhouetteCut.map { silhouetteCutAffinity($0, slot: slot) } ?? 0.5)
+        }
+        if !necklineOrRiseAffinity.isEmpty || !necklineOrRiseAffinityBySlot.isEmpty {
+            extraAffinities.append(item.necklineOrRise.map { necklineOrRiseAffinity($0, slot: slot) } ?? 0.5)
+        }
+        if !fabricWeightDetailAffinity.isEmpty || !fabricWeightDetailAffinityBySlot.isEmpty {
+            extraAffinities.append(item.fabricWeightDetail.map { fabricWeightDetailAffinity($0, slot: slot) } ?? 0.5)
+        }
+
         // Fixed 10-way mean (was 6-way before undertone/material/texture/fit
         // were learned, 2026-07-24) — an unrated attribute still contributes
         // its neutral 0.5, keeping `bonus` identical to `affinityBonus`; each
         // attribute's individual pull is correspondingly a touch smaller.
-        let mean = (colorAff + patternAff + formalityAff + styleTagAff + silhouetteAff + fabricWeightAff
-            + undertoneAff + materialAff + textureAff + fitAff) / 10.0
+        let fixedAffinities = [colorAff, patternAff, formalityAff, styleTagAff, silhouetteAff, fabricWeightAff,
+                               undertoneAff, materialAff, textureAff, fitAff]
+        let allAffinities = fixedAffinities + extraAffinities
+        let mean = allAffinities.reduce(0, +) / Double(allAffinities.count)
         let bonus = ((mean - 0.5) * 2.0 * Self.maxBonusMagnitude)
             .clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
 
@@ -1006,6 +1254,21 @@ struct AttributePreferenceProfile {
         }
         if let fit = item.fit, fitAffinityBySlot[slot]?[fit] != nil || fitAffinity[fit] != nil {
             components.append(.init(label: "\(fit) fit", affinity: fitAff))
+        }
+        if let scale = item.patternScale, patternScaleAffinityBySlot[slot]?[scale] != nil || patternScaleAffinity[scale] != nil {
+            components.append(.init(label: "\(Self.prettify(scale.rawValue)) scale", affinity: patternScaleAffinity(scale, slot: slot)))
+        }
+        if let finish = item.textureFinish, textureFinishAffinityBySlot[slot]?[finish] != nil || textureFinishAffinity[finish] != nil {
+            components.append(.init(label: "\(Self.prettify(finish.rawValue)) finish", affinity: textureFinishAffinity(finish, slot: slot)))
+        }
+        if let cut = item.silhouetteCut, silhouetteCutAffinityBySlot[slot]?[cut] != nil || silhouetteCutAffinity[cut] != nil {
+            components.append(.init(label: "\(Self.prettify(cut.rawValue)) cut", affinity: silhouetteCutAffinity(cut, slot: slot)))
+        }
+        if let neckline = item.necklineOrRise, necklineOrRiseAffinityBySlot[slot]?[neckline] != nil || necklineOrRiseAffinity[neckline] != nil {
+            components.append(.init(label: neckline, affinity: necklineOrRiseAffinity(neckline, slot: slot)))
+        }
+        if let detail = item.fabricWeightDetail, fabricWeightDetailAffinityBySlot[slot]?[detail] != nil || fabricWeightDetailAffinity[detail] != nil {
+            components.append(.init(label: "\(Self.prettify(detail.rawValue)) drape", affinity: fabricWeightDetailAffinity(detail, slot: slot)))
         }
 
         return AttributeMatchDetail(components: components, bonus: bonus)

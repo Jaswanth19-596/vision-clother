@@ -332,7 +332,7 @@ final class WardrobeSyncCoordinator {
             SwipeAttributeEvent.self, SwipeCombinationEvent.self,
             VisualPreferenceState.self, WardrobeItemEmbedding.self, RecommendationImpressionEvent.self,
             AnalyticsSnapshot.self, RecommendationAnalyticsSnapshot.self, WornLogEntry.self,
-            ItemPairBan.self, SessionSummary.self, SyncMetadata.self,
+            ItemPairBan.self, SessionSummary.self, ItemNote.self, SyncMetadata.self,
         ]
         for type in syncedAndLocalOnlyTypes {
             try? modelContext.delete(model: type)
@@ -434,6 +434,11 @@ final class WardrobeSyncCoordinator {
         }
         for summary in (try? repository.fetchAllSessionSummaries()) ?? [] {
             markDirtyForBootstrap(.sessionSummary, entityID: summary.id, dto: SessionSummaryDTO.from(summary))
+        }
+        for notes in ((try? repository.fetchAllItemNotes()) ?? [:]).values {
+            for note in notes {
+                markDirtyForBootstrap(.itemNote, entityID: note.id, dto: ItemNoteDTO.from(note))
+            }
         }
         try? modelContext.save()
 
@@ -567,6 +572,7 @@ final class WardrobeSyncCoordinator {
         await applyBatched(delta.wornLogEntries) { applyWornLogEntryChange($0) }
         await applyBatched(delta.itemPairBans) { applyItemPairBanChange($0) }
         await applyBatched(delta.sessionSummaries) { applySessionSummaryChange($0) }
+        await applyBatched(delta.itemNotes) { applyItemNoteChange($0) }
 
         if let update = delta.userStyleProfile { applyUserStyleProfileUpdate(update) }
         if let update = delta.visualPreferenceState { applyVisualPreferenceStateUpdate(update) }
@@ -818,6 +824,22 @@ final class WardrobeSyncCoordinator {
         upsertCleanSyncMetadata(entityType: .sessionSummary, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
     }
 
+    /// Item-Level Feedback — see `Models/ItemNote.swift`. Unlike every other
+    /// apply method here, this one merges a genuinely *mutable* row, so the
+    /// `shouldSkipDueToLocalDirty` guard is doing real work rather than being
+    /// kept for consistency: a note edited locally but not yet pushed must
+    /// not be clobbered by the older remote copy.
+    private func applyItemNoteChange(_ change: PulledChange<ItemNoteDTO>) {
+        let (idString, remoteUpdatedAt, dto) = unpack(change)
+        guard let entityID = UUID(uuidString: idString) else { return }
+        guard !shouldSkipDueToLocalDirty(.itemNote, entityID: entityID, remoteUpdatedAt: remoteUpdatedAt) else { return }
+
+        let descriptor = FetchDescriptor<ItemNote>(predicate: #Predicate { $0.id == entityID })
+        if let existing = try? modelContext.fetch(descriptor).first { modelContext.delete(existing) }
+        if let dto, let model = dto.toModel() { modelContext.insert(model) }
+        upsertCleanSyncMetadata(entityType: .itemNote, entityID: entityID, localUpdatedAt: remoteUpdatedAt)
+    }
+
     /// Splits a `PulledChange` into its common parts — `dto` is `nil` for
     /// `.deleted`, since a tombstone has nothing to materialize.
     private func unpack<DTO>(_ change: PulledChange<DTO>) -> (id: String, updatedAt: Date, dto: DTO?) {
@@ -962,13 +984,11 @@ final class WardrobeSyncCoordinator {
                     // Backward compat: no thumbnail object yet (pre-feature
                     // item, or this upload's trigger hasn't finished —
                     // eventual consistency). Fall back to the full asset.
-                    // Only this branch produces a fingerprint —
-                    // `WardrobeRepository`'s embedding-cache check and
-                    // `WardrobeEmbeddingWorker` both hash the full-res file,
-                    // so a thumbnail-only fingerprint would desync from what
-                    // the embedding pipeline actually hashes later; it's
-                    // naturally backfilled once the full-res file exists via
-                    // the repository's existing fallback path.
+                    // Only this branch produces a fingerprint, which is
+                    // defined over the full-res file — a thumbnail-only
+                    // fingerprint would desync from every other producer of
+                    // it; it's naturally backfilled once the full-res file
+                    // exists via the repository's existing fallback path.
                     guard let data = try? await syncService.downloadImage(filename: filename, uid: uid) else {
                         return PhotoDownloadOutcome(filename: filename, wroteAnything: false, fullImageFingerprint: nil)
                     }
@@ -1054,3 +1074,4 @@ extension RecommendationAnalyticsSnapshotDTO: IdentifiableDTOField { var idValue
 extension WornLogEntryDTO: IdentifiableDTOField { var idValue: String { id } }
 extension ItemPairBanDTO: IdentifiableDTOField { var idValue: String { id } }
 extension SessionSummaryDTO: IdentifiableDTOField { var idValue: String { id } }
+extension ItemNoteDTO: IdentifiableDTOField { var idValue: String { id } }

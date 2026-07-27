@@ -64,7 +64,8 @@ struct FeedbackHistory {
 enum OutfitRecommendationEngine {
     /// `Score_Total = mean(pairwise P(Pair|History)) + mean(Preference(Item))
     /// + mean(AttributeAffinityBonus(Item))
-    /// + FormalityPenalty + WeatherPenalty + ProfileColorsBonus + NegativeFeedbackPenalty`
+    /// + FormalityPenalty + WeatherPenalty + ProfileColorsBonus
+    /// + NegativeFeedbackPenalty + ItemSuitabilityPenalty`
     /// across every item in the combination — applying the Decision Rubric (added 2026-07-10).
     /// The former pixel-embedding `VisualAffinityBonus` term was removed
     /// 2026-07-24 when swipe taste was unified into `AttributeAffinityBonus`
@@ -75,7 +76,8 @@ enum OutfitRecommendationEngine {
         constraints: StyleConstraints? = nil,
         profile: UserStyleProfile? = nil,
         weather: WeatherContext? = nil,
-        history: FeedbackHistory
+        history: FeedbackHistory,
+        itemNotes: [UUID: [ItemNote]] = [:]
     ) -> Double {
         let pairs = PairCompatibilityScoring.pairwiseCombinations(items)
         let pairScores: [Double] = pairs.map { a, b in
@@ -124,6 +126,41 @@ enum OutfitRecommendationEngine {
         for item in items {
             if let itemNegativity = history.itemNegativeSignal[item.id], itemNegativity > 0 {
                 negativeFeedbackPenalty -= 0.08
+            }
+        }
+
+        // Item Suitability (added 2026-07-27) — the deterministic projection
+        // of `StylistBrain.DecisionHierarchy.itemSuitability`, which the tier
+        // contract requires of every `.penalize` tier. A `conditional`
+        // `ItemNote` only costs the outfit anything when the request is the
+        // situation the note actually warns about, so a garment noted "runs
+        // loose" ranks unchanged for a casual scenario and drops for an
+        // interview. `blocking` notes never reach here — those items are
+        // excluded from the catalog entirely (`WardrobeCatalogBuilder`), so
+        // the LLM can't have picked them.
+        var itemSuitabilityPenalty: Double = 0.0
+        if !itemNotes.isEmpty {
+            let isFormalRequest = (constraints?.formalityRange.lowerBound ?? 0)
+                >= FashionKnowledgeConstants.ItemSuitability.formalOccasionFormalityFloor
+            let isCold = weather.map { $0.temperatureFahrenheit < FashionKnowledgeConstants.ItemSuitability.coldTemperatureFahrenheit } ?? false
+            let isHot = weather.map { $0.temperatureFahrenheit > FashionKnowledgeConstants.ItemSuitability.hotTemperatureFahrenheit } ?? false
+
+            for item in items {
+                guard let notes = itemNotes[item.id] else { continue }
+                for note in notes where note.severity == .conditional {
+                    switch note.context {
+                    case .formalOccasions:
+                        if isFormalRequest { itemSuitabilityPenalty -= FashionKnowledgeConstants.ItemSuitability.contextMatchPenalty }
+                    case .coldWeather:
+                        if isCold { itemSuitabilityPenalty -= FashionKnowledgeConstants.ItemSuitability.contextMatchPenalty }
+                    case .hotWeather:
+                        if isHot { itemSuitabilityPenalty -= FashionKnowledgeConstants.ItemSuitability.contextMatchPenalty }
+                    case .extendedWear:
+                        itemSuitabilityPenalty -= FashionKnowledgeConstants.ItemSuitability.extendedWearPenalty
+                    case .none:
+                        break
+                    }
+                }
             }
         }
 
@@ -194,7 +231,7 @@ enum OutfitRecommendationEngine {
             }
         }
 
-        return (meanPairScore + meanPreference + meanAffinityBonus + combinationBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
+        return (meanPairScore + meanPreference + meanAffinityBonus + combinationBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty + itemSuitabilityPenalty)
             .clamped(to: 0...1)
     }
 }

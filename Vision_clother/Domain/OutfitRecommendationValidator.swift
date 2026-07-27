@@ -75,11 +75,13 @@ enum OutfitRecommendationValidator {
         history: FeedbackHistory = FeedbackHistory(),
         mustIncludeItemID: UUID? = nil,
         bannedPairs: Set<PairKey> = [],
-        recentlyWornItemSets: Set<Set<UUID>> = []
+        recentlyWornItemSets: Set<Set<UUID>> = [],
+        itemNotes: [UUID: [ItemNote]] = [:]
     ) -> [OutfitCombination] {
         validateVerbose(
             response, index: index, constraints: constraints, profile: profile, weather: weather, history: history,
-            mustIncludeItemID: mustIncludeItemID, bannedPairs: bannedPairs, recentlyWornItemSets: recentlyWornItemSets
+            mustIncludeItemID: mustIncludeItemID, bannedPairs: bannedPairs, recentlyWornItemSets: recentlyWornItemSets,
+            itemNotes: itemNotes
         ).valid
     }
 
@@ -94,7 +96,8 @@ enum OutfitRecommendationValidator {
         history: FeedbackHistory = FeedbackHistory(),
         mustIncludeItemID: UUID? = nil,
         bannedPairs: Set<PairKey> = [],
-        recentlyWornItemSets: Set<Set<UUID>> = []
+        recentlyWornItemSets: Set<Set<UUID>> = [],
+        itemNotes: [UUID: [ItemNote]] = [:]
     ) -> (valid: [OutfitCombination], rejections: [RejectionReason]) {
         var combinations: [OutfitCombination] = []
         var rejections: [RejectionReason] = []
@@ -135,7 +138,8 @@ enum OutfitRecommendationValidator {
                 constraints: constraints,
                 profile: profile,
                 weather: weather,
-                history: history
+                history: history,
+                itemNotes: itemNotes
             )
             return combo
         }

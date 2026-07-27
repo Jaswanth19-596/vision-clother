@@ -65,6 +65,10 @@ enum SyncEntityType: String, Codable {
     case itemPairBan
     /// Compressed cross-session memory — see `Models/SessionSummary.swift`.
     case sessionSummary
+    /// Item-Level Feedback — see `Models/ItemNote.swift`. The only synced
+    /// entity that is mutable rather than append-only, so conflict resolution
+    /// compares `updatedAt` and last write wins, same as `WardrobeItem`.
+    case itemNote
 }
 
 @Model

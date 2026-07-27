@@ -37,6 +37,12 @@ struct RateCombinationView: View {
     @State private var viewModel: RateCombinationViewModel?
     @State private var dragOffset: CGSize = .zero
     @State private var savedTick = 0
+    /// Item-Level Feedback: which garments' chip sets are open. Collapsed by
+    /// default — see `itemChipRow`.
+    @State private var expandedItemIDs: Set<UUID> = []
+    /// Ticks on every chip toggle so the selection haptic fires on the tap
+    /// itself rather than on unrelated state changes.
+    @State private var chipTick = 0
 
     var body: some View {
         NavigationStack {
@@ -97,6 +103,16 @@ struct RateCombinationView: View {
                 }
             }
 
+            Section {
+                ForEach(items) { item in
+                    itemChipRow(item: item, viewModel: viewModel)
+                }
+            } header: {
+                Text("Any piece in particular? (Optional)")
+            } footer: {
+                Text("Tap a garment to flag something about it. Fit and comfort notes stay with that item; taste answers teach your style profile.")
+            }
+
             Section("Why? (Optional)") {
                 TextEditor(text: Binding(
                     get: { viewModel.comment },
@@ -129,6 +145,82 @@ struct RateCombinationView: View {
             .listRowBackground(Color.clear)
         }
         .sensoryFeedback(.success, trigger: savedTick)
+        .sensoryFeedback(.selection, trigger: chipTick)
+    }
+
+    // MARK: - Per-item chips (Item-Level Feedback)
+
+    /// One garment's row: always-visible thumbnail + label, expanding to its
+    /// per-slot chip set on tap. Collapsed by default so the whole-look swipe
+    /// stays the primary (and sufficient) action — this is an opt-in refinement,
+    /// not a second form standing between the user and submitting.
+    @ViewBuilder
+    private func itemChipRow(item: WardrobeItem, viewModel: RateCombinationViewModel) -> some View {
+        let selected = viewModel.selectedChipIDs[item.id] ?? []
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { expandedItemIDs.contains(item.id) },
+                set: { isExpanded in
+                    withAnimation(vcMotion(VCMotion.standard, reduceMotion: reduceMotion)) {
+                        if isExpanded { expandedItemIDs.insert(item.id) } else { expandedItemIDs.remove(item.id) }
+                    }
+                }
+            )
+        ) {
+            chipCloud(item: item, selected: selected, viewModel: viewModel)
+                .padding(.top, VCSpacing.xs)
+        } label: {
+            HStack(spacing: VCSpacing.md) {
+                thumbnail(for: item)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.displayLabel)
+                        .font(.subheadline)
+                    Text(selected.isEmpty ? item.slot.rawValue.capitalized : "\(selected.count) selected")
+                        .font(.caption)
+                        .foregroundStyle(selected.isEmpty ? .secondary : VCAccentColor.brand)
+                }
+            }
+        }
+    }
+
+    private func chipCloud(item: WardrobeItem, selected: Set<String>, viewModel: RateCombinationViewModel) -> some View {
+        // `WrappingHStack` doesn't exist in this codebase and a `Flow` layout
+        // would be a new primitive for one screen — a lazy grid with adaptive
+        // columns wraps the same way with nothing new to maintain.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: VCSpacing.sm)], alignment: .leading, spacing: VCSpacing.sm) {
+            ForEach(ItemFeedbackChipCatalog.chips(for: item.slot)) { chip in
+                chipButton(chip: chip, item: item, isSelected: selected.contains(chip.id), viewModel: viewModel)
+            }
+        }
+    }
+
+    private func chipButton(chip: ItemFeedbackChip, item: WardrobeItem, isSelected: Bool, viewModel: RateCombinationViewModel) -> some View {
+        Button {
+            withAnimation(vcMotion(VCMotion.gesture, reduceMotion: reduceMotion)) {
+                var current = viewModel.selectedChipIDs[item.id] ?? []
+                if current.contains(chip.id) { current.remove(chip.id) } else { current.insert(chip.id) }
+                viewModel.selectedChipIDs[item.id] = current
+                chipTick += 1
+            }
+        } label: {
+            Text(chip.label)
+                .font(.caption)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, VCSpacing.md)
+                .padding(.vertical, VCSpacing.sm)
+                .background(chipBackground(isSelected: isSelected, isPositive: chip.isPositive))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .clipShape(VCRadius.shape(VCRadius.control))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private func chipBackground(isSelected: Bool, isPositive: Bool) -> Color {
+        guard isSelected else { return Color.secondary.opacity(0.12) }
+        return isPositive ? .green : VCAccentColor.brand
     }
 
     // MARK: - Swipe

@@ -61,9 +61,9 @@ protocol WardrobeRepository {
     /// Item Rating & Preference Learning: persists one multi-question rating
     /// (`Models/ItemRating.swift`) from `Features/Rating/RateItemView.swift`
     /// — Fit, Comfort, Color, Pattern (`nil` for solid-pattern items), Formality
-    /// Fit, Style Identity, Wear Again — and, via `applyImplicitSwipe`, folds
-    /// the rating's derived liked/disliked signal into the same Swipe-to-Learn
-    /// visual centroids `recordSwipe` maintains (an implicit swipe).
+    /// Fit, Style Identity, Wear Again. The rating's taste signal reaches
+    /// recommendations via `fetchFeedbackHistory()`'s `AttributePreferenceProfile`
+    /// rebuild, not through any separate write here.
     func recordItemRating(
         itemID: UUID,
         fit: FitRating,
@@ -134,33 +134,15 @@ protocol WardrobeRepository {
     /// Services/UserPortraitStorage.swift's "one portrait" posture.
     func saveUserProfile(_ wire: UserStyleProfileWire) throws
 
-    /// Swipe-to-Learn Visual Taste (`Features/SwipeDiscovery/`): records one
-    /// like/dislike swipe and folds its embedding into the persisted
-    /// `VisualPreferenceState` centroids in the same call — the "hot" path a
-    /// swipe gesture triggers on every card. See `Domain/VisualPreferenceProfile.swift`.
-    /// Returns the centroid drift percentage from `VisualClusterUpdater.update`
-    /// (`nil` when this swipe seeded a fresh centroid rather than nudging an
-    /// existing one — there's no prior vector to diff against) so the caller
-    /// can surface real, per-swipe learning feedback instead of inferring it
-    /// from a swipe count.
-    @discardableResult
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double?
-    /// Current learned visual-taste state, `nil` before the first swipe.
+    /// Current swipe-deck calibration state, `nil` before the first swipe.
+    /// Only `totalSwipes`/`calibrationProgress`/`isTrained` are meaningful —
+    /// the learned taste itself lives in `AttributePreferenceProfile`.
     func fetchVisualPreferenceState() throws -> VisualPreferenceState?
-    /// Direct upsert of the visual-taste centroids — used by
-    /// `Domain/VisualPreferenceProfile.build(from:dislikedEmbeddings:)`'s
-    /// recovery path (rebuilding from `SwipeEvent` history) rather than
-    /// replaying swipes one at a time through `recordSwipe`.
-    func updateVisualPreferenceState(
-        likedCentroids: [VisualCentroid],
-        dislikedCentroids: [VisualCentroid],
-        embeddingDimension: Int
-    ) throws
     /// Persists one swipe's scene attributes (extracted by
     /// `Services/VisionMetadataExtractionService.swift`'s `extractSceneMetadata`)
     /// so the swipe teaches `Domain/AttributePreferenceProfile.swift`
-    /// affinities — the primary Swipe-to-Learn signal, alongside
-    /// `recordSwipe`'s pixel embedding. Upserts one `SwipeAttributeEvent` per
+    /// affinities — the sole Swipe-to-Learn signal since the pixel-embedding
+    /// engine was retired (2026-07-24). Upserts one `SwipeAttributeEvent` per
     /// `(sourcePhotoID, slot)` pair (a re-shown photo, or one already tagged
     /// at this slot, is updated in place rather than duplicated) and, when
     /// `sceneMetadata.combination` is non-`nil` (2+ garments detected), one
@@ -170,18 +152,11 @@ protocol WardrobeRepository {
     /// Whether a swipe-attribute event already exists for this photo id — lets
     /// the deck skip a redundant (paid) LLM tagging call on a re-shown card.
     func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool
-    /// Increments the swipe deck's calibration counter only (no pixel work) —
-    /// the taste signal itself is learned via `recordSwipeAttributes`. The
-    /// single surviving use of `VisualPreferenceState` after the pixel engine
-    /// was retired (2026-07-24).
+    /// Increments the swipe deck's calibration counter — the taste signal
+    /// itself is learned via `recordSwipeAttributes`. The single surviving
+    /// use of `VisualPreferenceState` after the pixel engine was retired
+    /// (2026-07-24).
     func noteSwipeForCalibration() throws
-    /// Cached embedding for one wardrobe item's current photo, `nil` if never
-    /// computed (or the item has no photo). `fetchFeedbackHistory()` is the
-    /// only caller that needs this in bulk; exposed individually for tests
-    /// and recovery tooling.
-    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding?
-    /// Upserts one item's cached embedding, keyed by `itemID`.
-    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws
 
     /// Impression/Selection Event Capture: inserts one `RecommendationImpressionEvent`
     /// per candidate outfit shown in a round, rank = position in `outfits`
@@ -264,6 +239,30 @@ protocol WardrobeRepository {
     func fetchAllItemRatings() throws -> [ItemRating]
     /// See `fetchAllItemRatings()`'s doc comment.
     func fetchAllOutfitFeedback() throws -> [OutfitFeedback]
+
+    // MARK: - Item-Level Feedback (Models/ItemNote.swift)
+
+    /// Every note on one garment, newest first. Unlike the append-only
+    /// feedback tables, these are mutable rows the user can edit or delete —
+    /// see `Models/ItemNote.swift` for why this one table breaks that
+    /// convention.
+    func fetchItemNotes(for itemID: UUID) throws -> [ItemNote]
+    /// All notes, keyed by item — one fetch for
+    /// `Domain/WardrobeCatalogBuilder.swift`, which needs every item's notes
+    /// at once and must not issue a query per garment.
+    func fetchAllItemNotes() throws -> [UUID: [ItemNote]]
+    /// Appends a note. Deliberately not an upsert on `text` — the same
+    /// complaint made twice about the same garment is one note, so callers
+    /// dedupe on `(itemID, text)` via this method's own check rather than
+    /// accumulating duplicates from repeated chip taps.
+    @discardableResult
+    func addItemNote(itemID: UUID, text: String, severity: ItemNoteSeverity, source: ItemNoteSource, context: ItemNoteContext) throws -> ItemNote?
+    /// Edits a note's text and/or severity in place, bumping `updatedAt`.
+    /// Re-authoring a note always re-stamps `source` as `.user` — once a
+    /// person has corrected it, it is no longer an inferred or chip-derived
+    /// claim.
+    func updateItemNote(id: UUID, text: String, severity: ItemNoteSeverity) throws
+    func deleteItemNote(id: UUID) throws
 }
 
 /// Default no-op fallbacks for the two Insights-Q&A bulk-fetch methods above
@@ -278,18 +277,18 @@ extension WardrobeRepository {
     func recordSessionSummary(text: String) throws {}
     func fetchRecentSessionSummaries(limit: Int) throws -> [SessionSummary] { [] }
     func fetchAllSessionSummaries() throws -> [SessionSummary] { [] }
+
+    func fetchItemNotes(for itemID: UUID) throws -> [ItemNote] { [] }
+    func fetchAllItemNotes() throws -> [UUID: [ItemNote]] { [:] }
+    @discardableResult
+    func addItemNote(itemID: UUID, text: String, severity: ItemNoteSeverity, source: ItemNoteSource, context: ItemNoteContext) throws -> ItemNote? { nil }
+    func updateItemNote(id: UUID, text: String, severity: ItemNoteSeverity) throws {}
+    func deleteItemNote(id: UUID) throws {}
 }
 
 @MainActor
 final class SwiftDataWardrobeRepository: WardrobeRepository {
     private let modelContext: ModelContext
-    /// Runs the on-device Vision embedding extractor
-    /// (`Services/ImageEmbeddingService.swift`) off the main actor
-    /// (`Services/WardrobeEmbeddingWorker.swift`) — `fetchFeedbackHistory()`
-    /// is the only caller. Defaulted to the real implementation so every
-    /// pre-existing call site (`SwiftDataWardrobeRepository(modelContext:)`)
-    /// keeps compiling unchanged; tests inject `MockImageEmbeddingService`.
-    private let embeddingWorker: WardrobeEmbeddingWorker
 
     /// HIGH-2 perf fix: `fetchInventory`/`fetchFeedbackHistory` used to be
     /// cached ad hoc per-caller (`DailyAssistantViewModel`'s now-removed
@@ -308,9 +307,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     private var feedbackHistoryCache: FeedbackHistory?
     private var cachedFeedbackHistoryVersion: UUID?
 
-    init(modelContext: ModelContext, embeddingService: ImageEmbeddingService = VisionFeaturePrintEmbeddingService()) {
+    init(modelContext: ModelContext) {
         self.modelContext = modelContext
-        self.embeddingWorker = WardrobeEmbeddingWorker(embeddingService: embeddingService)
     }
 
     func fetchInventory() throws -> [WardrobeItem] {
@@ -333,7 +331,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     /// without bumping the tracker, leaving it serving stale cached data).
     /// Documented exceptions that deliberately keep a bare `modelContext.save()`
     /// instead — `saveCombination`, `updateCombinationImage`,
-    /// `saveWardrobeItemEmbedding`, `logWorn`, and the read-only-to-this-cache
+    /// `logWorn`, and the read-only-to-this-cache
     /// writes below (`recordImpressions`, `recordSelection`, `recordPairBan`,
     /// `removePairBan`, `saveUserProfile`, the Analytics upserts) — each carry
     /// their own doc comment explaining why. When adding a new mutating
@@ -593,7 +591,14 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         let ratedCombinations = stockPhotoRatedCombinations + ownCombinationRatedCombinations
 
         let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
-        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty || !swipeRatedAttributes.isEmpty || !ratedCombinations.isEmpty {
+        // `swipeRatedOutfitFeedbacks` is checked separately from
+        // `ratedCombinations`: a combination swipe whose background chemistry
+        // inference failed produces a sentiment row but no `RatedCombination`,
+        // and its per-item fan-out below is still valid signal that must not
+        // be gated behind the chemistry call having succeeded.
+        let swipeRatedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating == nil && $0.swipeSentiment != nil }
+        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty || !swipeRatedAttributes.isEmpty
+            || !ratedCombinations.isEmpty || !swipeRatedOutfitFeedbacks.isEmpty {
             let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
 
             let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
@@ -617,7 +622,12 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     material: item.material,
                     texture: item.texture,
                     fit: item.fit,
-                    fitLike: item.fit != nil ? rating.fit.centeredness : nil
+                    fitLike: item.fit != nil ? rating.fit.centeredness : nil,
+                    patternScale: item.patternScale,
+                    textureFinish: item.textureFinish,
+                    silhouetteCut: item.silhouetteCut,
+                    necklineOrRise: item.necklineOrRise,
+                    fabricWeightDetail: item.fabricWeightDetail
                 )
             }
 
@@ -669,7 +679,71 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                         undertone: item.colorProfile.undertone,
                         material: item.material,
                         texture: item.texture,
-                        fit: item.fit
+                        fit: item.fit,
+                        patternScale: item.patternScale,
+                        textureFinish: item.textureFinish,
+                        silhouetteCut: item.silhouetteCut,
+                        necklineOrRise: item.necklineOrRise,
+                        fabricWeightDetail: item.fabricWeightDetail
+                    )
+                }
+            }
+
+            // Item-Level Feedback (2026-07-27): the combination-swipe flow
+            // that replaced the Level 1/2/3 form records a whole-look
+            // sentiment and no per-dimension answers, so its rows have a
+            // `nil` `normalizedRating` and were excluded from
+            // `detailedOutfitFeedbacks` above — meaning that since that
+            // refactor, rating your own outfit taught whole-look chemistry
+            // and *nothing per-garment*. `ItemRating` has no writer either,
+            // so per-category taste learned from the user's own closet had
+            // stopped moving entirely.
+            //
+            // Fan the sentiment back out across the garments in the look, at
+            // `1/N` credit — the same credit assignment a multi-garment stock
+            // swipe already uses (`recordSwipeAttributes`), for the same
+            // reason: one judgment about N garments is not N independent
+            // judgments. Every dimension takes the same sentiment because
+            // that's genuinely all the user said; `patternDissatisfaction`
+            // stays `nil` because a disliked outfit is not evidence the
+            // *pattern* was the problem, and inventing that signal would
+            // teach `patternAffinity` something never expressed.
+            let swipeOutfitDimensionRatings: [OutfitDimensionRatedAttributes] = swipeRatedOutfitFeedbacks.flatMap { feedback -> [OutfitDimensionRatedAttributes] in
+                guard let sentiment = feedback.swipeSentiment,
+                      let combination = combinationsByID[feedback.outfitID]
+                else { return [] }
+
+                let items = combination.itemIDsBySlot.values.compactMap { itemsByID[$0] }
+                guard !items.isEmpty else { return [] }
+
+                let signal = sentiment.ratingValue
+                let perItemWeight = 1.0 / Double(items.count)
+                return items.map { item in
+                    OutfitDimensionRatedAttributes(
+                        colorHarmony: signal,
+                        occasionMatch: signal,
+                        styleMatch: signal,
+                        silhouette: signal,
+                        weatherFit: signal,
+                        colorVibe: item.colorProfile.category,
+                        styleTags: item.styleTags,
+                        silhouetteTag: item.silhouette,
+                        formalityBand: Int(item.formalityScore.rounded()),
+                        fabricWeight: item.fabricWeight,
+                        pattern: item.pattern,
+                        patternDissatisfaction: nil,
+                        recordedAt: feedback.recordedAt,
+                        slot: item.slot,
+                        undertone: item.colorProfile.undertone,
+                        material: item.material,
+                        texture: item.texture,
+                        fit: item.fit,
+                        patternScale: item.patternScale,
+                        textureFinish: item.textureFinish,
+                        silhouetteCut: item.silhouetteCut,
+                        necklineOrRise: item.necklineOrRise,
+                        fabricWeightDetail: item.fabricWeightDetail,
+                        weight: perItemWeight
                     )
                 }
             }
@@ -686,14 +760,19 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                     undertone: item.colorProfile.undertone,
                     material: item.material,
                     texture: item.texture,
-                    fit: item.fit
+                    fit: item.fit,
+                    patternScale: item.patternScale,
+                    textureFinish: item.textureFinish,
+                    silhouetteCut: item.silhouetteCut,
+                    necklineOrRise: item.necklineOrRise,
+                    fabricWeightDetail: item.fabricWeightDetail
                 )
             }
 
             let attributeProfile = await Task.detached(priority: .userInitiated) {
                 AttributePreferenceProfile.build(
                     from: ratedAttributes + swipeRatedAttributes,
-                    outfitDimensionRatings: outfitDimensionRatings,
+                    outfitDimensionRatings: outfitDimensionRatings + swipeOutfitDimensionRatings,
                     combinationRatings: ratedCombinations,
                     inventorySnapshots: inventorySnapshots,
                     now: now
@@ -761,23 +840,11 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // pixel-centroid nudge was removed with the rest of the visual engine.
     }
 
-    /// Folds a rating's derived liked/disliked signal into the same
-    /// `VisualPreferenceState` centroids `recordSwipe` maintains, treating a
-    /// highly-rated item as an implicit "swipe right" (and a poorly-rated one
-    /// as an implicit "swipe left") — see `VisualClusterUpdater.implicitLearningRate`
-    /// for why this uses a gentler fixed step than an explicit swipe. Unlike
-    /// `recordSwipe`, this does not write a `SwipeEvent`: a rating isn't a
-    /// discrete stock-photo swipe, so replaying `SwipeEvent` history to
-    /// rebuild `VisualPreferenceState` (`VisualPreferenceProfile.build(from:dislikedEmbeddings:)`)
-    /// should stay scoped to actual swipe gestures. No-ops if this item's
-    /// photo embedding hasn't been computed yet — `WardrobeItemEmbedding` is
-    /// populated lazily by `fetchFeedbackHistory()`, so a rating recorded
-    /// before that happens simply misses this one nudge.
     /// Bumps the swipe deck's calibration counter (`VisualPreferenceState.totalSwipes`)
-    /// without any pixel-embedding work — the only thing the retired visual
-    /// engine still powers is the gamified calibration ring. The garment's
-    /// taste signal itself is learned separately via `recordSwipeAttributes`
-    /// (attribute space). Best-effort; a counter hiccup must never fail a swipe.
+    /// — the only thing the retired visual engine still powers is the gamified
+    /// calibration ring. The garment's taste signal itself is learned
+    /// separately via `recordSwipeAttributes` (attribute space).
+    /// Best-effort; a counter hiccup must never fail a swipe.
     func noteSwipeForCalibration() throws {
         let state = try loadOrCreateVisualPreferenceState()
         let wasTrained = state.isTrained
@@ -790,7 +857,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
     }
 
     /// Shared fetch-or-create for the single-row `VisualPreferenceState` —
-    /// used by `recordSwipe` (legacy/inert) and `noteSwipeForCalibration`.
+    /// `noteSwipeForCalibration` is the only writer.
     private func loadOrCreateVisualPreferenceState() throws -> VisualPreferenceState {
         let existing = try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
         let state = existing ?? VisualPreferenceState()
@@ -996,64 +1063,8 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try modelContext.save()
     }
 
-    @discardableResult
-    func recordSwipe(sourcePhotoID: String, imageURLString: String, liked: Bool, embedding: [Float]) throws -> Double? {
-        modelContext.insert(SwipeEvent(
-            sourcePhotoID: sourcePhotoID,
-            imageURLString: imageURLString,
-            liked: liked,
-            embedding: embedding
-        ))
-
-        let state = try loadOrCreateVisualPreferenceState()
-        let wasTrained = state.isTrained
-
-        // Mutate local copies, then reassign — `VisualClusterUpdater.update`
-        // takes `inout`, which a `@Model`-backed stored property can't be
-        // passed as directly.
-        var likedCentroids = state.likedCentroids
-        var dislikedCentroids = state.dislikedCentroids
-        let drift: Double?
-        if liked {
-            drift = VisualClusterUpdater.update(&likedCentroids, with: embedding)
-        } else {
-            drift = VisualClusterUpdater.update(&dislikedCentroids, with: embedding)
-        }
-        state.likedCentroids = likedCentroids
-        state.dislikedCentroids = dislikedCentroids
-        state.embeddingDimension = embedding.count
-        state.updatedAt = .now
-        // Calibration progress is driven by explicit deck swipes only — see
-        // `VisualPreferenceState.totalSwipes`'s doc comment.
-        state.totalSwipes += 1
-
-        try saveAndMarkMutated()
-
-        if let drift {
-            MLLog.logger.notice("[AI-Stylist-ML] centroid drift: type=explicit side=\(liked ? "liked" : "disliked", privacy: .public) drift=\(drift, format: .fixed(precision: 2), privacy: .public)%")
-        }
-        if !wasTrained && state.isTrained {
-            MLLog.logger.notice("[AI-Stylist-ML] calibration complete: isTrained=true totalSwipes=\(state.totalSwipes, privacy: .public)")
-        }
-
-        return drift
-    }
-
     func fetchVisualPreferenceState() throws -> VisualPreferenceState? {
         try modelContext.fetch(FetchDescriptor<VisualPreferenceState>()).first
-    }
-
-    func updateVisualPreferenceState(
-        likedCentroids: [VisualCentroid],
-        dislikedCentroids: [VisualCentroid],
-        embeddingDimension: Int
-    ) throws {
-        let state = try loadOrCreateVisualPreferenceState()
-        state.likedCentroids = likedCentroids
-        state.dislikedCentroids = dislikedCentroids
-        state.embeddingDimension = embeddingDimension
-        state.updatedAt = .now
-        try saveAndMarkMutated()
     }
 
     func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, sentiment: SwipeSentiment, sceneMetadata: SceneMetadata) throws {
@@ -1168,41 +1179,6 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID }
         )
         return try modelContext.fetch(descriptor).first != nil
-    }
-
-    func fetchWardrobeItemEmbedding(itemID: UUID) throws -> WardrobeItemEmbedding? {
-        let descriptor = FetchDescriptor<WardrobeItemEmbedding>(
-            predicate: #Predicate { $0.itemID == itemID }
-        )
-        return try modelContext.fetch(descriptor).first
-    }
-
-    /// Deliberately a bare `modelContext.save()`, not `saveAndMarkMutated()`,
-    /// even though `WardrobeItemEmbedding` rows feed `fetchFeedbackHistory()`'s
-    /// `itemEmbeddings` map: this method's only current caller is
-    /// `fetchFeedbackHistory()` itself, mid-recompute (line ~610 below),
-    /// persisting an embedding it just lazily computed for the cache entry
-    /// it's about to write. Bumping the tracker here would change
-    /// `WardrobeMutationTracker.shared.version` out from under the
-    /// `currentVersion` that recompute captured at its own start, so the
-    /// freshly-built cache would immediately register as stale against
-    /// itself on the very next call — forcing a full re-embed every time
-    /// there's any new embedding to compute, defeating the cache entirely.
-    /// If a future caller invokes this from outside `fetchFeedbackHistory()`
-    /// (e.g. recovery tooling), it must bump the tracker itself afterward.
-    func saveWardrobeItemEmbedding(itemID: UUID, vector: [Float], sourceFingerprint: String) throws {
-        if let existing = try fetchWardrobeItemEmbedding(itemID: itemID) {
-            existing.vector = vector
-            existing.sourceFingerprint = sourceFingerprint
-            existing.computedAt = .now
-        } else {
-            modelContext.insert(WardrobeItemEmbedding(
-                itemID: itemID,
-                vector: vector,
-                sourceFingerprint: sourceFingerprint
-            ))
-        }
-        try modelContext.save()
     }
 
     func recordImpressions(roundID: UUID, outfits: [OutfitCombination]) throws {
@@ -1378,5 +1354,83 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         }
         try modelContext.save()
         AppLog.info(.recommendation, "[SessionSummary] pruned to \(Self.maxStoredSessionSummaries)")
+    }
+
+    // MARK: - Item-Level Feedback (Models/ItemNote.swift)
+
+    /// Hard cap on notes kept per garment. Notes are joined into
+    /// `CatalogEntry.userNote` for every item that has any, so an uncapped
+    /// list would let one garment consume a meaningful slice of the
+    /// recommendation prompt. Capped by *recency* rather than expiry on a
+    /// timer: a defect doesn't heal with age, but a note the user has since
+    /// contradicted should fall off the end naturally.
+    static let maxNotesPerItem = 4
+
+    func fetchItemNotes(for itemID: UUID) throws -> [ItemNote] {
+        try modelContext.fetch(FetchDescriptor<ItemNote>(
+            predicate: #Predicate { $0.itemID == itemID },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        ))
+    }
+
+    func fetchAllItemNotes() throws -> [UUID: [ItemNote]] {
+        let all = try modelContext.fetch(FetchDescriptor<ItemNote>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        ))
+        return Dictionary(grouping: all, by: \.itemID)
+    }
+
+    @discardableResult
+    func addItemNote(itemID: UUID, text: String, severity: ItemNoteSeverity, source: ItemNoteSource, context: ItemNoteContext) throws -> ItemNote? {
+        let normalized = ItemNote.normalizedText(text)
+        guard !normalized.isEmpty else { return nil }
+
+        // The same complaint tapped twice about the same garment is one note,
+        // not two — refresh the existing row instead of duplicating it, so a
+        // user who re-taps "Too loose" on a second outfit doesn't end up
+        // pushing their other notes off the recency cap below.
+        let existing = try fetchItemNotes(for: itemID)
+        if let duplicate = existing.first(where: { $0.text.caseInsensitiveCompare(normalized) == .orderedSame }) {
+            duplicate.severityRaw = severity.rawValue
+            duplicate.contextRaw = context.rawValue
+            duplicate.updatedAt = .now
+            try modelContext.save()
+            AppLog.info(.viewModel, "[ItemNote] refreshed id=\(duplicate.id) item=\(itemID) severity=\(severity.rawValue)")
+            return duplicate
+        }
+
+        let note = ItemNote(itemID: itemID, text: normalized, severity: severity, source: source, context: context)
+        modelContext.insert(note)
+        for stale in ([note] + existing).dropFirst(Self.maxNotesPerItem) {
+            modelContext.delete(stale)
+        }
+        // `saveAndMarkMutated`, unlike `SessionSummary` above: notes *are*
+        // read on the recommendation path (`WardrobeCatalogBuilder`), so the
+        // caches `WardrobeMutationTracker` guards must be invalidated.
+        try saveAndMarkMutated()
+        AppLog.info(.viewModel, "[ItemNote] added id=\(note.id) item=\(itemID) source=\(source.rawValue) severity=\(severity.rawValue) context=\(context.rawValue)")
+        return note
+    }
+
+    func updateItemNote(id: UUID, text: String, severity: ItemNoteSeverity) throws {
+        let descriptor = FetchDescriptor<ItemNote>(predicate: #Predicate { $0.id == id })
+        guard let note = try modelContext.fetch(descriptor).first else { return }
+        let normalized = ItemNote.normalizedText(text)
+        guard !normalized.isEmpty else { return }
+
+        note.text = normalized
+        note.severityRaw = severity.rawValue
+        note.sourceRaw = ItemNoteSource.user.rawValue
+        note.updatedAt = .now
+        try saveAndMarkMutated()
+        AppLog.info(.viewModel, "[ItemNote] edited id=\(id) severity=\(severity.rawValue)")
+    }
+
+    func deleteItemNote(id: UUID) throws {
+        let descriptor = FetchDescriptor<ItemNote>(predicate: #Predicate { $0.id == id })
+        guard let note = try modelContext.fetch(descriptor).first else { return }
+        modelContext.delete(note)
+        try saveAndMarkMutated()
+        AppLog.info(.viewModel, "[ItemNote] deleted id=\(id)")
     }
 }

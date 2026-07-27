@@ -360,6 +360,48 @@ struct ItemRatingDTO: Codable {
     }
 }
 
+/// Item-Level Feedback — see `Models/ItemNote.swift`. Raw-string enums cross
+/// the wire as-is (not re-encoded), matching `ItemRatingDTO.fitRaw`'s posture,
+/// so an unknown value written by a newer client decodes to the model's own
+/// safe default rather than failing the whole row.
+struct ItemNoteDTO: Codable {
+    var id: String
+    var itemID: String
+    var text: String
+    var severityRaw: String
+    var sourceRaw: String
+    var contextRaw: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    static func from(_ model: ItemNote) -> ItemNoteDTO {
+        ItemNoteDTO(
+            id: model.id.uuidString,
+            itemID: model.itemID.uuidString,
+            text: model.text,
+            severityRaw: model.severityRaw,
+            sourceRaw: model.sourceRaw,
+            contextRaw: model.contextRaw,
+            createdAt: model.createdAt,
+            updatedAt: model.updatedAt
+        )
+    }
+
+    func toModel() -> ItemNote? {
+        guard let uuid = UUID(uuidString: id), let itemUUID = UUID(uuidString: itemID) else { return nil }
+        return ItemNote(
+            id: uuid,
+            itemID: itemUUID,
+            text: text,
+            severity: ItemNoteSeverity(rawValue: severityRaw) ?? .conditional,
+            source: ItemNoteSource(rawValue: sourceRaw) ?? .chip,
+            context: ItemNoteContext(rawValue: contextRaw) ?? .none,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+}
+
 struct SessionSummaryDTO: Codable {
     var id: String
     var summaryText: String
@@ -471,39 +513,27 @@ struct UserStyleProfileDTO: Codable {
     }
 }
 
-struct VisualCentroidDTO: Codable {
-    var vector: [Float]
-    var weight: Double
-
-    static func from(_ model: VisualCentroid) -> VisualCentroidDTO {
-        VisualCentroidDTO(vector: model.vector, weight: model.weight)
-    }
-
-    func toModel() -> VisualCentroid {
-        VisualCentroid(vector: vector, weight: weight)
-    }
-}
-
 /// Single-row upsert (fixed doc `users/{uid}/meta/visualPreferenceState`) —
 /// same posture as `UserStyleProfileDTO`. `stateUpdatedAt` is the model's own
-/// domain `updatedAt` field (last centroid nudge) — named differently here so
-/// it isn't confused with this doc's separate sync-level `updatedAt`
+/// domain `updatedAt` field (last calibration bump) — named differently here
+/// so it isn't confused with this doc's separate sync-level `updatedAt`
 /// (server timestamp, merged in by `Services/WardrobeSyncService.swift`, not
 /// a field on this struct).
+///
+/// The pixel-embedding centroid fields (`likedCentroids`/`dislikedCentroids`/
+/// `embeddingDimension`) were dropped 2026-07-27 with the rest of the retired
+/// visual engine — `totalSwipes` (the swipe-deck calibration ring) is the only
+/// field left worth syncing. Decoding is unaffected for docs written by an
+/// older build: `Codable` ignores keys with no matching property, so those
+/// stale fields are simply skipped and overwritten on the next push.
 struct VisualPreferenceStateDTO: Codable {
     var id: String
-    var likedCentroids: [VisualCentroidDTO]
-    var dislikedCentroids: [VisualCentroidDTO]
-    var embeddingDimension: Int
     var stateUpdatedAt: Date
     var totalSwipes: Int
 
     static func from(_ model: VisualPreferenceState) -> VisualPreferenceStateDTO {
         VisualPreferenceStateDTO(
             id: model.id.uuidString,
-            likedCentroids: model.likedCentroids.map(VisualCentroidDTO.from),
-            dislikedCentroids: model.dislikedCentroids.map(VisualCentroidDTO.from),
-            embeddingDimension: model.embeddingDimension,
             stateUpdatedAt: model.updatedAt,
             totalSwipes: model.totalSwipes
         )
@@ -513,9 +543,6 @@ struct VisualPreferenceStateDTO: Codable {
         guard let uuid = UUID(uuidString: id) else { return nil }
         return VisualPreferenceState(
             id: uuid,
-            likedCentroids: likedCentroids.map { $0.toModel() },
-            dislikedCentroids: dislikedCentroids.map { $0.toModel() },
-            embeddingDimension: embeddingDimension,
             updatedAt: stateUpdatedAt,
             totalSwipes: totalSwipes
         )

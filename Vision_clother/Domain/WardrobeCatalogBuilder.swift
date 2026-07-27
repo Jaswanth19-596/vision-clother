@@ -58,6 +58,19 @@ struct CatalogEntry: Codable, Equatable {
     /// *after* the LLM had already picked it.
     var userRating: Int?
 
+    /// Item-Level Feedback (2026-07-27): the user's own condensed notes about
+    /// this exact garment ("runs loose", "not warm enough"), joined into one
+    /// short clause list. `nil` when the item has no `conditional` notes — the
+    /// overwhelmingly common case, so this costs nothing for most entries.
+    ///
+    /// Deliberately distinct from `userRating` above: a rating says *how much*
+    /// the user likes the item, a note says *what is wrong with it and when*,
+    /// which is what lets `StylistBrain`'s `itemSuitability` tier place the
+    /// garment correctly instead of merely ranking it lower. `blocking` notes
+    /// never appear here — an item carrying one is dropped from the catalog
+    /// entirely (see `build`).
+    var userNote: String? = nil
+
     /// Prospective Purchase Evaluation (2026-07-15): true for the single
     /// catalog entry (if any) representing an item the user is considering
     /// buying — not yet saved to their closet. `StylistBrain`'s prompt
@@ -90,6 +103,7 @@ struct CatalogEntry: Codable, Equatable {
         case necklineOrRise = "neckline_or_rise"
         case fabricWeightDetail = "fabric_weight_detail"
         case userRating = "user_rating"
+        case userNote = "user_note"
         case isProspectivePurchase = "is_prospective_purchase"
     }
 }
@@ -126,7 +140,8 @@ enum WardrobeCatalogBuilder {
         maxItems: Int = defaultMaxItems,
         descriptionCharLimit: Int = defaultDescriptionCharLimit,
         history: FeedbackHistory? = nil,
-        prospectiveItemID: UUID? = nil
+        prospectiveItemID: UUID? = nil,
+        itemNotes: [UUID: [ItemNote]] = [:]
     ) -> (entries: [CatalogEntry], index: [String: WardrobeItem]) {
         let ghostCount = inventory.filter(\.isGhostElement).count
         var candidates = inventory.filter { !$0.isGhostElement }
@@ -135,6 +150,23 @@ enum WardrobeCatalogBuilder {
         // — the LLM should never recommend something the user hasn't washed.
         let laundryCount = candidates.filter(\.inLaundry).count
         candidates = candidates.filter { !$0.inLaundry }
+
+        // Item-Level Feedback, `blocking` severity (2026-07-27): an item the
+        // user has taken out of rotation is dropped here rather than
+        // discouraged in the prompt. Same reasoning as the laundry filter
+        // directly above — the LLM cannot pick what it never sees, so this
+        // needs no tier, no tokens, and no model compliance. `conditional`
+        // notes are the opposite: they stay in the catalog and inform
+        // placement via `userNote` below.
+        let blockedIDs = Set(
+            itemNotes
+                .filter { $0.value.contains { note in note.severity == .blocking } }
+                .map(\.key)
+        )
+        let blockedCount = candidates.filter { blockedIDs.contains($0.id) }.count
+        if !blockedIDs.isEmpty {
+            candidates = candidates.filter { !blockedIDs.contains($0.id) }
+        }
 
         if let constraints {
             let prefiltered = candidates.filter {
@@ -193,6 +225,7 @@ enum WardrobeCatalogBuilder {
                 necklineOrRise: item.necklineOrRise,
                 fabricWeightDetail: item.fabricWeightDetail,
                 userRating: history.map { ItemRatingScoring.score(for: item.id, history: $0) },
+                userNote: conditionalNoteText(for: item.id, itemNotes: itemNotes),
                 isProspectivePurchase: item.id == prospectiveItemID
             )
         }
@@ -200,7 +233,8 @@ enum WardrobeCatalogBuilder {
         let slotCounts = Slot.allCases
             .map { slot in "\(slot.rawValue)=\(candidates.filter { $0.slot == slot }.count)" }
             .joined(separator: " ")
-        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) laundryExcluded=\(laundryCount) entries=\(entries.count) prospectiveItem=\(prospectiveItemID != nil) slotCounts=[\(slotCounts, privacy: .public)]")
+        let notedEntries = entries.filter { $0.userNote != nil }.count
+        MLLog.logger.notice("catalogBuild: inventory=\(inventory.count) ghostExcluded=\(ghostCount) laundryExcluded=\(laundryCount) blockedExcluded=\(blockedCount) entries=\(entries.count) withUserNote=\(notedEntries) prospectiveItem=\(prospectiveItemID != nil) slotCounts=[\(slotCounts, privacy: .public)]")
 
         // Diagnostic for OutfitRecommendationValidator's unknownID rejections
         // (Domain/CLAUDE.md's isRequired guardrail): a required slot with zero
@@ -260,6 +294,26 @@ enum WardrobeCatalogBuilder {
             history.attributeProfile.affinityBonus(for: a) > history.attributeProfile.affinityBonus(for: b)
         }
     }
+
+    /// Joins one item's `conditional` notes into the short clause list sent to
+    /// the recommender. Newest first (the repository already sorts by
+    /// `updatedAt`) and capped, so a garment the user has complained about
+    /// repeatedly still can't dominate the prompt. Returns `nil` — not an
+    /// empty string — when there's nothing to say, so the key is omitted from
+    /// the encoded catalog entirely.
+    private static func conditionalNoteText(for itemID: UUID, itemNotes: [UUID: [ItemNote]]) -> String? {
+        guard let notes = itemNotes[itemID] else { return nil }
+        let clauses = notes
+            .filter { $0.severity == .conditional }
+            .prefix(maxPromptedNotesPerItem)
+            .map(\.text)
+        guard !clauses.isEmpty else { return nil }
+        return clauses.joined(separator: "; ")
+    }
+
+    /// Fewer than the repository's own per-item storage cap: the user may keep
+    /// more notes than are worth spending prompt budget on.
+    static let maxPromptedNotesPerItem = 3
 
     private static func truncate(_ text: String?, to limit: Int) -> String? {
         guard let text, !text.isEmpty else { return nil }

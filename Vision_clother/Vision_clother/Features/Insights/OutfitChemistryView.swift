@@ -20,8 +20,16 @@ struct OutfitChemistryView: View {
     @Query private var combinationEvents: [SwipeCombinationEvent]
     @Query private var itemRatings: [ItemRating]
     @Query private var outfitFeedbacks: [OutfitFeedback]
+    // Whole-look chemistry can only be learned from rated outfits, so this
+    // tab also has to be able to *ask* for that feedback — the empty state
+    // lists the user's own unrated saved outfits and opens
+    // `RateCombinationView` on each, rather than telling them to go find the
+    // Discover deck themselves.
+    @Query(sort: \SavedCombination.savedAt, order: .reverse) private var savedCombinations: [SavedCombination]
+    @Query private var inventory: [WardrobeItem]
 
     @State private var viewModel = OutfitChemistryViewModel()
+    @State private var combinationToRate: SavedCombination?
 
     var body: some View {
         Group {
@@ -37,12 +45,34 @@ struct OutfitChemistryView: View {
         }
         .navigationTitle("Chemistry")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $combinationToRate) { combination in
+            RateCombinationView(combination: combination, items: resolveItems(for: combination))
+        }
         .task {
             recompute()
         }
         .onChange(of: combinationEvents.count) { recompute() }
         .onChange(of: itemRatings.count) { recompute() }
         .onChange(of: outfitFeedbacks.count) { recompute() }
+    }
+
+    /// Saved outfits that carry no whole-look chemistry yet — every one of
+    /// them is a card this tab could be showing, so they're exactly what the
+    /// prompt below asks the user to rate. A row that was rated through the
+    /// swipe+comment flow but whose LLM chemistry inference failed still
+    /// counts as pending, since it contributed nothing to the profile.
+    private var combinationsAwaitingFeedback: [SavedCombination] {
+        let ratedIDs = Set(
+            outfitFeedbacks
+                .filter { $0.swipeSentiment != nil && $0.inferredCombinationMetadata != nil }
+                .map(\.outfitID)
+        )
+        return savedCombinations.filter { !ratedIDs.contains($0.id) }
+    }
+
+    private func resolveItems(for combination: SavedCombination) -> [WardrobeItem] {
+        let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
+        return CombinationsViewModel.resolveItems(for: combination, itemsByID: itemsByID)
     }
 
     private func recompute() {
@@ -160,9 +190,90 @@ struct OutfitChemistryView: View {
                 if !snapshot.sampleRationales.isEmpty {
                     whyTheseWorkCard(snapshot)
                 }
+                if !combinationsAwaitingFeedback.isEmpty {
+                    rateMoreCard
+                }
             }
             .padding(VCSpacing.lg)
         }
+    }
+
+    /// Shown under real content: every dimension above sharpens with more
+    /// rated outfits, so the tab keeps asking rather than going quiet once it
+    /// has just enough signal to render.
+    private var rateMoreCard: some View {
+        VStack(alignment: .leading, spacing: VCSpacing.sm) {
+            Label("Sharpen This", systemImage: "plus.circle.fill")
+                .font(.headline)
+            InsightSourceCaption(text: "\(combinationsAwaitingFeedback.count) saved outfit\(combinationsAwaitingFeedback.count == 1 ? "" : "s") you haven't reacted to yet")
+            Text("Every outfit you swipe teaches this tab another read on what makes a combination work for you.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            outfitRatingRows(Array(combinationsAwaitingFeedback.prefix(Self.maxPromptedOutfits)))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .premiumCard()
+    }
+
+    /// At most this many outfits offered at once — the prompt is a nudge, not
+    /// a work queue.
+    private static let maxPromptedOutfits = 5
+
+    /// One tappable row per outfit, opening the same swipe+comment flow
+    /// `CombinationDetailView`'s "Rate this outfit" does.
+    private func outfitRatingRows(_ combinations: [SavedCombination]) -> some View {
+        VStack(spacing: VCSpacing.xs) {
+            ForEach(combinations) { combination in
+                Button {
+                    combinationToRate = combination
+                } label: {
+                    HStack(spacing: VCSpacing.sm) {
+                        outfitThumbnail(combination)
+                        Text(combination.displayTitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: VCSpacing.sm)
+                        Image(systemName: "hand.draw")
+                            .font(.subheadline)
+                            .foregroundStyle(VCAccentColor.brand)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, VCSpacing.xs)
+    }
+
+    @ViewBuilder
+    private func outfitThumbnail(_ combination: SavedCombination) -> some View {
+        let size = CGSize(width: 44, height: 44)
+        if combination.hasRenderedImage {
+            CachedWardrobeImage(assetName: combination.imageAssetName, thumbnailSize: size) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(VCRadius.shape(VCRadius.swatch))
+            } placeholder: {
+                slotSwatches(combination)
+            }
+        } else {
+            slotSwatches(combination)
+        }
+    }
+
+    /// Fallback for an outfit with no render yet — the item colors it's made
+    /// of, reusing the same `SwatchCluster` the Taste tab uses.
+    private func slotSwatches(_ combination: SavedCombination) -> some View {
+        let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
+        let hexes = CombinationsViewModel.resolveItems(for: combination, itemsByID: itemsByID)
+            .prefix(4)
+            .map(\.colorProfile.primaryHex)
+        return SwatchCluster(hexes: Array(hexes))
+            .frame(width: 44, alignment: .leading)
     }
 
     private func dimensionCard(title: String, icon: String, caption: String, rows: [OutfitChemistrySnapshot.Row]) -> some View {
@@ -261,11 +372,44 @@ struct OutfitChemistryView: View {
         .premiumCard()
     }
 
+    /// Chemistry is the one Insights surface with no closet-composition
+    /// fallback: it can only describe whole outfits the user has actually
+    /// reacted to. So the empty state does the asking — it lists their own
+    /// saved outfits and opens the swipe+comment flow on each, instead of
+    /// pointing at a different tab and leaving.
+    @ViewBuilder
     private var stillLearning: some View {
-        ContentUnavailableView {
-            Label("Still Learning Your Chemistry", systemImage: "flame")
-        } description: {
-            Text("Swipe on a few full-outfit looks in the Discover deck — color harmony, style coherence, and rule-breaking combos will show up here.")
+        let pending = combinationsAwaitingFeedback
+        if pending.isEmpty {
+            ContentUnavailableView {
+                Label("Still Learning Your Chemistry", systemImage: "flame")
+            } description: {
+                Text("Save an outfit — from Daily Assistant or Pairing — then react to it, and this tab will read the color harmony, proportion, and rule-breaking behind what you like.\n\nSwiping full-outfit looks in the Discover deck teaches it too.")
+            }
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: VCSpacing.lg) {
+                    VStack(alignment: .leading, spacing: VCSpacing.sm) {
+                        Label("Tell Me About These Outfits", systemImage: "flame")
+                            .font(.headline)
+                        Text("Chemistry reads whole looks, not single garments — so it needs your reaction to outfits you've actually seen. React to a few of these and this tab fills in with your color harmony, proportion, and rule-breaking patterns.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        outfitRatingRows(Array(pending.prefix(Self.maxPromptedOutfits)))
+                        if pending.count > Self.maxPromptedOutfits {
+                            Text("\(pending.count - Self.maxPromptedOutfits) more waiting in Combinations.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, VCSpacing.xs)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .premiumCard()
+
+                    InsightSourceCaption(text: "Swiping full-outfit looks in the Discover deck teaches this tab too")
+                }
+                .padding(VCSpacing.lg)
+            }
         }
     }
 }
