@@ -2,139 +2,94 @@
 //  RateCombinationViewModel.swift
 //  Vision_clother
 //
-//  Combination Rating (Stylist Intelligence Engine Phase 1): collects the
-//  dimension-based Level 1 (Overall Experience) + Level 2 (Fashion
-//  Evaluation) question set for a whole saved outfit, plus a Favorite/
-//  Weakest Item pick, persisting via `WardrobeRepository.recordOutfitRating`
-//  keyed to a durable `SavedCombination.id`. Drives the first step of
-//  `Features/Rating/RateCombinationView.swift`.
-//
-//  Deliberately does not conform to `RatingQuestionsViewModel`
-//  (`Features/Rating/RateItemViewModel.swift`) — its question set no longer
-//  matches the item-level Fit/Comfort/Confidence/Wear-again form, so it gets
-//  its own dedicated view rather than forcing a shared shape.
+//  Swipe + Comment Combination Feedback (2026-07-27): replaces the manual
+//  Level 1/2/3 dimension-based form with a single swipe (love/like/dislike/
+//  hate, reusing `SwipeGestureResolver` from
+//  `Features/SwipeDiscovery/SwipeDiscoveryViewModel.swift`) plus an optional
+//  free-text comment, persisting via
+//  `WardrobeRepository.recordCombinationSwipeFeedback` keyed to a durable
+//  `SavedCombination.id`. Drives `Features/Rating/RateCombinationView.swift`,
+//  now a single screen (the per-item follow-up step that used to sequence
+//  after this one has been removed from this flow).
 //
 
 import Foundation
 import Observation
 
+/// Save/submit lifecycle for the combination-feedback flow. Moved here
+/// 2026-07-27 from the now-deleted `RateItemViewModel.swift` (the per-item
+/// rating step this type used to be shared with was removed from
+/// `RateCombinationView` entirely, not just replaced).
+enum RatingSaveState: Equatable {
+    case idle
+    case saving
+    case saved
+    case failed(String)
+}
+
 @Observable
 @MainActor
 final class RateCombinationViewModel {
     let outfitID: UUID
-    /// Real (non-ghost) items resolved from the saved outfit — backs the
-    /// Favorite/Weakest Item pickers.
+    /// Real (non-ghost) items resolved from the saved outfit — sent (as a
+    /// text-only catalog projection, no images) to `chemistryService` so it
+    /// can reason about the specific garments in this combination.
     let items: [WardrobeItem]
 
-    // Level 1 — Overall Experience
-    var overallSatisfaction: Int = 3
-    var wearAgain: WearAgainAnswer = .maybe
-    var confidence: Int = 3
-    var comfort: Int = 3
-
-    // Level 2 — Fashion Evaluation
-    var occasionMatch: Int = 3
-    var styleMatch: Int = 3
-    var colorHarmony: Int = 3
-    var silhouette: Int = 3
-    var weatherSuitability: Int = 3
-    var practicality: Int = 3
-
-    // Level 4/5 — Favorite / Weakest Item
-    var favoriteItemID: UUID?
-    var weakestItemID: UUID?
-
-    // Level 3 — "What would you change?" checklist
-    var selectedChangeReasons: Set<OutfitChangeReason> = []
-
-    // Analytics & Insights, Phase 3 — Better Feedback Collection. All
-    // optional; the view only shows the like-reason chips on the positive
-    // path (see `RateCombinationQuestionsView`'s `wouldRecommend` check).
-    var selectedLikeReasons: Set<OutfitLikeReason> = []
-    var selectedOccasion: OutfitOccasion?
-    var wouldBuySimilar: Bool?
-    var savedForInspiration: Bool = false
-    var selectedReplacementSuggestion: ReplacementSuggestion?
+    var sentiment: SwipeSentiment?
+    var comment: String = ""
 
     private(set) var state: RatingSaveState = .idle
 
     private let repository: WardrobeRepository
+    private let chemistryService: CombinationChemistryInferenceService
 
-    init(outfitID: UUID, items: [WardrobeItem], repository: WardrobeRepository) {
+    init(
+        outfitID: UUID,
+        items: [WardrobeItem],
+        repository: WardrobeRepository,
+        chemistryService: CombinationChemistryInferenceService
+    ) {
         self.outfitID = outfitID
         self.items = items
         self.repository = repository
+        self.chemistryService = chemistryService
     }
 
-    /// Selecting the same item as both Favorite and Weakest doesn't make
-    /// sense — picking one clears the other.
-    func selectFavorite(_ itemID: UUID?) {
-        favoriteItemID = itemID
-        if itemID != nil, weakestItemID == itemID {
-            weakestItemID = nil
-        }
-    }
-
-    func selectWeakest(_ itemID: UUID?) {
-        weakestItemID = itemID
-        if itemID != nil, favoriteItemID == itemID {
-            favoriteItemID = nil
-        }
-    }
-
-    /// "Too formal" and "Too casual" describe opposite directions on the
-    /// same formality dimension — selecting one clears the other, mirroring
-    /// `selectFavorite`/`selectWeakest`'s mutual-exclusion pattern.
-    func toggleChangeReason(_ reason: OutfitChangeReason) {
-        if selectedChangeReasons.contains(reason) {
-            selectedChangeReasons.remove(reason)
-            return
-        }
-        selectedChangeReasons.insert(reason)
-        switch reason {
-        case .tooFormal: selectedChangeReasons.remove(.tooCasual)
-        case .tooCasual: selectedChangeReasons.remove(.tooFormal)
-        default: break
-        }
-    }
-
-    func toggleLikeReason(_ reason: OutfitLikeReason) {
-        if selectedLikeReasons.contains(reason) {
-            selectedLikeReasons.remove(reason)
-        } else {
-            selectedLikeReasons.insert(reason)
-        }
-    }
-
+    /// Saves the sentiment + comment immediately (a fast, local-only write),
+    /// then infers the richer relational chemistry in the background and
+    /// updates the same row once it resolves. A slow or failed chemistry call
+    /// must never block the user's swipe from registering, and must never be
+    /// lost either — the initial save always lands even if inference never
+    /// completes.
     func submit() async {
-        AppLog.info(.viewModel, "RateCombinationViewModel.submit: outfitID=\(outfitID)")
+        guard let sentiment else { return }
+        AppLog.info(.viewModel, "RateCombinationViewModel.submit: outfitID=\(outfitID) sentiment=\(sentiment.rawValue)")
         state = .saving
+        let commentText = comment.isEmpty ? nil : comment
+
         do {
-            let submission = OutfitRatingSubmission(
-                overallSatisfaction: overallSatisfaction,
-                wearAgain: wearAgain,
-                confidence: confidence,
-                comfort: comfort,
-                occasionMatch: occasionMatch,
-                styleMatch: styleMatch,
-                colorHarmony: colorHarmony,
-                silhouette: silhouette,
-                weatherSuitability: weatherSuitability,
-                practicality: practicality,
-                favoriteItemID: favoriteItemID,
-                weakestItemID: weakestItemID,
-                changeReasons: selectedChangeReasons,
-                likeReasons: selectedLikeReasons,
-                occasion: selectedOccasion,
-                wouldBuySimilar: wouldBuySimilar,
-                savedForInspiration: savedForInspiration,
-                replacementSuggestion: selectedReplacementSuggestion
-            )
-            try repository.recordOutfitRating(outfitID: outfitID, submission: submission)
+            try repository.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: commentText, chemistry: nil)
             state = .saved
         } catch {
             AppLog.error(.viewModel, "RateCombinationViewModel.submit: failed outfitID=\(outfitID) — \(String(describing: error))")
-            state = .failed("Couldn't save that rating. Try again.")
+            state = .failed("Couldn't save that. Try again.")
+            return
+        }
+
+        // Fire-and-forget: `submit()` has already returned control to the
+        // caller by the time this resolves, so the UI never waits on it.
+        let outfitID = self.outfitID
+        let items = self.items
+        let repository = self.repository
+        let chemistryService = self.chemistryService
+        Task {
+            let catalogEntries = WardrobeCatalogBuilder.build(from: items).entries
+            guard let chemistry = try? await chemistryService.inferChemistry(items: catalogEntries, sentiment: sentiment, comment: commentText) else {
+                AppLog.error(.viewModel, "RateCombinationViewModel.submit: chemistry inference failed outfitID=\(outfitID) — sentiment/comment already saved")
+                return
+            }
+            try? repository.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: commentText, chemistry: chemistry)
         }
     }
 }

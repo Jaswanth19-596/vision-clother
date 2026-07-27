@@ -23,13 +23,11 @@ final class StyleViewModel {
     private(set) var styleDNASnapshot: StyleDNAScorer.StyleDNASnapshot?
     private(set) var isLoadingConfig = false
 
-    private let repository: WardrobeRepository
     private let configService: AnalyticsConfigService
     private var configTask: Task<Void, Never>?
     private var recomputeTask: Task<Void, Never>?
 
-    init(repository: WardrobeRepository, configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
-        self.repository = repository
+    init(configService: AnalyticsConfigService = ServiceFactory.makeAnalyticsConfigService()) {
         self.configService = configService
     }
 
@@ -65,12 +63,13 @@ final class StyleViewModel {
         outfitFeedbacks: [OutfitFeedback],
         wornLogEntries: [WornLogEntry],
         ratingSampleSize: Int,
-        comboTimeRange: AnalyticsTimeRange
+        comboTimeRange: AnalyticsTimeRange,
+        repository: WardrobeRepository
     ) {
         recomputeTask?.cancel()
         recomputeTask = Task { [weak self] in
             guard let self else { return }
-            let history = (try? await self.repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            let history = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
             guard !Task.isCancelled else { return }
 
             self.snapshot = ColorInsightsAggregator.buildStyleColorSnapshot(

@@ -54,7 +54,7 @@ final class WardrobeInsightsViewModel {
         }
     }
 
-    func recompute(inventory: [WardrobeItem], wornLogEntries: [WornLogEntry], profile: UserStyleProfile? = nil) {
+    func recompute(inventory: [WardrobeItem], wornLogEntries: [WornLogEntry], repository: WardrobeRepository, profile: UserStyleProfile? = nil) {
         let wardrobeSnapshot = WardrobeInsightsAggregator.buildSnapshot(
             inventory: inventory,
             wornLogEntries: wornLogEntries,
@@ -70,7 +70,7 @@ final class WardrobeInsightsViewModel {
         recomputeTask?.cancel()
         recomputeTask = Task { [weak self] in
             guard let self else { return }
-            let history = (try? await self.repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            let history = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
             guard !Task.isCancelled else { return }
 
             self.shoppingSnapshot = ShoppingInsightsAggregator.buildSnapshot(

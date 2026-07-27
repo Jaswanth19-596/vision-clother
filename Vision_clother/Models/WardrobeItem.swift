@@ -51,6 +51,45 @@ enum FabricWeight: String, Codable, CaseIterable {
     case light, medium, heavy
 }
 
+/// How bold a garment's pattern reads, independent of `GarmentPattern`'s
+/// motif type — a striped shirt can be a subtle pinstripe or a bold Breton
+/// stripe. Additive alongside `GarmentPattern`, added 2026-07-27.
+enum PatternScale: String, Codable, CaseIterable {
+    case solid
+    case microPattern = "micro_pattern"
+    case mediumPattern = "medium_pattern"
+    case boldStatementPattern = "bold_statement_pattern"
+}
+
+/// Surface finish of the fabric — distinct from the free-text `texture`
+/// field, added 2026-07-27.
+enum TextureFinish: String, Codable, CaseIterable {
+    case matte
+    case sheenGloss = "sheen_gloss"
+    case texturedKnit = "textured_knit"
+    case roughLeather = "rough_leather"
+    case denim
+    case satin
+    case other
+}
+
+/// Structural cut of the garment — distinct from the free-text `silhouette`
+/// field, added 2026-07-27.
+enum SilhouetteCut: String, Codable, CaseIterable {
+    case fitted, regular, oversized, cropped, relaxed
+    case wideLeg = "wide_leg"
+}
+
+/// How the fabric drapes — a more descriptive sibling to `FabricWeight`'s
+/// coarse light/medium/heavy, kept as a separate field rather than new cases
+/// on `FabricWeight` so no existing consumer's enum-switch needs to change.
+/// Added 2026-07-27.
+enum FabricWeightDetail: String, Codable, CaseIterable {
+    case lightFlowy = "light_flowy"
+    case mediumStandard = "medium_standard"
+    case heavyStructured = "heavy_structured"
+}
+
 /// Shared vocabulary for both the vision-ingestion `color_profile.category`
 /// (PRD §3.1) and the intent-extraction `color_palette_vibe` (PRD §3.3) —
 /// one enum, reused for wardrobe items and constraints alike.
@@ -120,6 +159,13 @@ final class WardrobeItem {
     var material: String? = nil
     var texture: String? = nil
 
+    // Rich styling attributes, round 2 (added 2026-07-27)
+    var patternScale: PatternScale? = nil
+    var textureFinish: TextureFinish? = nil
+    var silhouetteCut: SilhouetteCut? = nil
+    var necklineOrRise: String? = nil
+    var fabricWeightDetail: FabricWeightDetail? = nil
+
     /// Content fingerprint (`ImageStorage.fingerprint`) of the bytes at
     /// `imageAssetName`, captured once wherever those bytes are first
     /// written locally (ingestion, prospective-purchase save, Cloud Sync
@@ -172,6 +218,11 @@ final class WardrobeItem {
         silhouette: String? = nil,
         material: String? = nil,
         texture: String? = nil,
+        patternScale: PatternScale? = nil,
+        textureFinish: TextureFinish? = nil,
+        silhouetteCut: SilhouetteCut? = nil,
+        necklineOrRise: String? = nil,
+        fabricWeightDetail: FabricWeightDetail? = nil,
         imageFingerprint: String? = nil,
         inLaundry: Bool = false,
         wearCount: Int = 0,
@@ -193,6 +244,11 @@ final class WardrobeItem {
         self.silhouette = silhouette
         self.material = material
         self.texture = texture
+        self.patternScale = patternScale
+        self.textureFinish = textureFinish
+        self.silhouetteCut = silhouetteCut
+        self.necklineOrRise = necklineOrRise
+        self.fabricWeightDetail = fabricWeightDetail
         self.imageFingerprint = imageFingerprint
         self.inLaundry = inLaundry
         self.wearCount = wearCount

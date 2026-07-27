@@ -264,10 +264,18 @@ final class DailyAssistantViewModel {
     private let recommendationService: OutfitRecommendationService
     /// Wardrobe/Insights Q&A (2026-07-20): a separate, smaller call —
     /// deliberately not folded into `recommendationService`'s prompt — tried
-    /// first (behind `Domain/QuestionIntentHeuristic.swift`'s cheap gate) so
-    /// a genuine wardrobe/Insights question gets answered directly instead
-    /// of forced into an outfit recommendation. See `resolveWardrobeQuestion()`.
+    /// first (gated by `intentRoutingService`'s classification) so a genuine
+    /// wardrobe/Insights question gets answered directly instead of forced
+    /// into an outfit recommendation. See `resolveWardrobeQuestion()`.
     private let stylistQAService: StylistQAService
+    /// Intent routing (2026-07-27): replaces `Domain/QuestionIntentHeuristic.swift`'s
+    /// on-device keyword/"?" pre-filter with a real LLM classification call
+    /// (`RECOMMENDATION` vs `GENERAL_QA`), so a question phrased without a
+    /// leading interrogative word ("summarize my style") still gets routed to
+    /// `stylistQAService` instead of silently falling through to
+    /// `recommendationService`. Hits the uncapped `openRouterChatURL` route,
+    /// never the metered one — see `Services/IntentRoutingService.swift`.
+    private let intentRoutingService: IntentRoutingService
     private let weatherProvider: CurrentWeatherProviding
     /// Backs the lazy profile backfill in `requestOutfitIdeas()` — derives
     /// once from an existing portrait if `fetchUserProfile()` is still nil,
@@ -303,6 +311,7 @@ final class DailyAssistantViewModel {
         jobQueueStore: JobQueueStore,
         recommendationService: OutfitRecommendationService = MockOutfitRecommendationService(),
         stylistQAService: StylistQAService = MockStylistQAService(),
+        intentRoutingService: IntentRoutingService = MockIntentRoutingService(),
         weatherProvider: CurrentWeatherProviding = MockCurrentWeatherProvider(),
         profileDerivationService: UserProfileDerivationService = MockUserProfileDerivationService(),
         usageTracker: UsageTracker
@@ -311,6 +320,7 @@ final class DailyAssistantViewModel {
         self.jobQueueStore = jobQueueStore
         self.recommendationService = recommendationService
         self.stylistQAService = stylistQAService
+        self.intentRoutingService = intentRoutingService
         self.weatherProvider = weatherProvider
         self.profileDerivationService = profileDerivationService
         self.usageTracker = usageTracker
@@ -466,7 +476,7 @@ final class DailyAssistantViewModel {
         // too, rather than leaving it running in the background.
         let workTask = Task {
             await PerfLog.time("resolveTurn.total") {
-                await self.resolveTurn(userText: userText, conversationHistory: historySnapshot, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
+                await self.resolveTurn(conversationHistory: historySnapshot, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
             }
         }
         let timeoutTask = Task {
@@ -573,24 +583,29 @@ final class DailyAssistantViewModel {
     }
 
     /// Wardrobe/Insights Q&A (2026-07-20) entry point for every ordinary
-    /// free-text turn — tries `resolveWardrobeQuestion` first (behind
-    /// `Domain/QuestionIntentHeuristic.swift`'s cheap on-device gate, so an
-    /// ordinary "dress me for X" turn never pays for it) and only falls
-    /// through to `resolveOutfits` when that returns nil — either the
-    /// heuristic didn't trigger, the QA call itself decided this wasn't a
-    /// wardrobe question, or the QA call failed outright.
+    /// free-text turn — tries `resolveWardrobeQuestion` first (gated by
+    /// `intentRoutingService`'s classification, 2026-07-27) and only falls
+    /// through to `resolveOutfits` when that returns nil — either
+    /// `intentRoutingService` classified this as `.recommendation` (or
+    /// failed, which degrades to the same fallback), the QA call itself
+    /// decided this wasn't a wardrobe question, or the QA call failed
+    /// outright.
     ///
-    /// HIGH perf fix (2026-07-21): the heuristic fires on any question-
-    /// phrased scenario request too ("What should I wear to a rooftop
-    /// party?"), so the QA-then-fallback path used to pay for the wardrobe
-    /// snapshot + catalog build TWICE — once inside the old
-    /// `resolveWardrobeQuestion`, again inside `resolveOutfits` when QA
-    /// correctly routed back. Fetched once here instead and threaded through
-    /// both as `PrefetchedWardrobeContext` — `resolveOutfits` still does its
-    /// own fetch/build when called from the non-question fast path below
-    /// (`prefetched` stays nil), so that path is exactly as before.
-    private func resolveTurn(userText: String, conversationHistory: [ConversationTurn], isFinalTurn: Bool, mentionedItemIDs: [UUID] = []) async -> RequestOutcome {
-        guard QuestionIntentHeuristic.looksLikeWardrobeQuestion(userText) else {
+    /// HIGH perf fix (2026-07-21): a question-phrased scenario request
+    /// ("What should I wear to a rooftop party?") can still route to
+    /// `.generalQA` and then get correctly declined by `StylistQAResponse.isWardrobeQuestion`,
+    /// so the QA-then-fallback path would otherwise pay for the wardrobe
+    /// snapshot + catalog build TWICE. Fetched once here instead and threaded
+    /// through both as `PrefetchedWardrobeContext` — `resolveOutfits` still
+    /// does its own fetch/build when called from the `.recommendation` fast
+    /// path below (`prefetched` stays nil), so that path is exactly as before.
+    private func resolveTurn(conversationHistory: [ConversationTurn], isFinalTurn: Bool, mentionedItemIDs: [UUID] = []) async -> RequestOutcome {
+        // Any router failure (network/decoding/missing key) degrades to the
+        // ordinary recommendation flow — same "never surface a routing-
+        // specific error" posture as `resolveWardrobeQuestion`'s own catch
+        // block below.
+        let intent = try? await intentRoutingService.routeIntent(conversationHistory: conversationHistory)
+        guard intent == .generalQA else {
             return await resolveOutfits(conversationHistory: conversationHistory, isFinalTurn: isFinalTurn, mentionedItemIDs: mentionedItemIDs)
         }
         guard !Task.isCancelled else { return .timedOut }

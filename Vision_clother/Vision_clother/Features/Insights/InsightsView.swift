@@ -15,7 +15,7 @@ import SwiftData
 import SwiftUI
 
 private enum InsightsSection: String, CaseIterable, Identifiable {
-    case overview, style, trends, wardrobe, discover
+    case overview, style, trends, wardrobe, discover, chemistry
 
     var id: String { rawValue }
 
@@ -31,6 +31,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .trends: return "Trends"
         case .wardrobe: return "Wardrobe"
         case .discover: return "Taste"
+        case .chemistry: return "Chemistry"
         }
     }
 
@@ -41,6 +42,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .trends: return "chart.line.uptrend.xyaxis"
         case .wardrobe: return "tshirt"
         case .discover: return "heart.text.square"
+        case .chemistry: return "flame.fill"
         }
     }
 
@@ -51,6 +53,7 @@ private enum InsightsSection: String, CaseIterable, Identifiable {
         case .trends: return "How your color, category, and style preferences are shifting over time."
         case .wardrobe: return "How well you're using what you already own — worn vs. unworn, gaps, and duplicates."
         case .discover: return "The colors, fits, and materials you gravitate toward — and where your closet matches or misses what you love."
+        case .chemistry: return "What your loved full-outfit swipes reveal about color harmony, style coherence, and rule-breaking combos."
         }
     }
 }
@@ -135,6 +138,8 @@ struct InsightsView: View {
                 WardrobeInsightsView()
             case .discover:
                 TasteInsightsView()
+            case .chemistry:
+                OutfitChemistryView()
             }
         }
         .transition(VCTransition.lateral(forward: isForward))
@@ -144,7 +149,7 @@ struct InsightsView: View {
 #Preview {
     InsightsView()
         .modelContainer(
-            for: [WardrobeItem.self, ItemRating.self, OutfitFeedback.self, WornLogEntry.self],
+            for: [WardrobeItem.self, ItemRating.self, OutfitFeedback.self, WornLogEntry.self, SwipeCombinationEvent.self],
             inMemory: true
         )
 }

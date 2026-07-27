@@ -22,18 +22,13 @@ final class TasteInsightsViewModel {
     /// inventory the view passes in.
     private(set) var alignment: TasteClosetAlignmentSnapshot?
 
-    private let repository: WardrobeRepository
     private var recomputeTask: Task<Void, Never>?
 
-    init(repository: WardrobeRepository) {
-        self.repository = repository
-    }
-
-    func recompute(inventory: [WardrobeItem]) {
+    func recompute(inventory: [WardrobeItem], repository: WardrobeRepository) {
         recomputeTask?.cancel()
         recomputeTask = Task { [weak self] in
             guard let self else { return }
-            let history = (try? await self.repository.fetchFeedbackHistory()) ?? FeedbackHistory()
+            let history = (try? await repository.fetchFeedbackHistory()) ?? FeedbackHistory()
             guard !Task.isCancelled else { return }
             let snap = TasteInsightsAggregator.build(profile: history.attributeProfile)
             let align = TasteClosetAlignmentAggregator.build(profile: history.attributeProfile, inventory: inventory)

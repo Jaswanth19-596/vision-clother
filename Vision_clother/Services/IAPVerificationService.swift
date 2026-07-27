@@ -95,7 +95,7 @@ final class RemoteIAPVerificationService: IAPVerificationService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.payments, "[\(requestID)] iapVerify: missing auth header — \(String(describing: error))")
             throw IAPVerificationError.notSignedIn

@@ -59,6 +59,7 @@ struct OverviewView: View {
             }
         }
         .navigationTitle("Overview")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             viewModel.loadConfigIfNeeded()
             viewModel.refreshTaste(repository: SyncingWardrobeRepository(modelContext: modelContext))

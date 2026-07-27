@@ -51,7 +51,7 @@ final class RemoteAnalyticsConfigService: AnalyticsConfigService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.network, "[\(requestID)] analyticsConfig: missing auth header — \(String(describing: error))")
             throw AnalyticsConfigServiceError.missingAPIKey

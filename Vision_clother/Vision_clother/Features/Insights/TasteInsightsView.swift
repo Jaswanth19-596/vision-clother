@@ -22,38 +22,44 @@ struct TasteInsightsView: View {
     @Query private var itemRatings: [ItemRating]
     @Query private var outfitFeedbacks: [OutfitFeedback]
 
-    @State private var viewModel: TasteInsightsViewModel?
+    @State private var viewModel = TasteInsightsViewModel()
 
     var body: some View {
         Group {
-            if let viewModel, let snapshot = viewModel.snapshot {
+            if let snapshot = viewModel.snapshot {
                 if snapshot.hasSignal, !snapshot.dimensions.isEmpty {
                     content(snapshot)
                 } else {
                     stillLearning
                 }
             } else {
+                // The taste snapshot is inherently derived from an async
+                // repository fetch (unlike Overview/Trends/Wardrobe's
+                // synchronous aggregation), so a brief loading state here is
+                // unavoidable — but it no longer compounds with a deferred
+                // view-model construction step the way it used to.
                 ProgressView()
             }
         }
         .navigationTitle("Taste")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            if viewModel == nil {
-                viewModel = TasteInsightsViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
-            }
-            viewModel?.recompute(inventory: inventory)
+            recompute()
         }
-        .onChange(of: inventory.count) { viewModel?.recompute(inventory: inventory) }
-        .onChange(of: itemRatings.count) { viewModel?.recompute(inventory: inventory) }
-        .onChange(of: outfitFeedbacks.count) { viewModel?.recompute(inventory: inventory) }
+        .onChange(of: inventory.count) { recompute() }
+        .onChange(of: itemRatings.count) { recompute() }
+        .onChange(of: outfitFeedbacks.count) { recompute() }
+    }
+
+    private func recompute() {
+        viewModel.recompute(inventory: inventory, repository: SyncingWardrobeRepository(modelContext: modelContext))
     }
 
     private func content(_ snapshot: TasteInsightsSnapshot) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: VCSpacing.xxl) {
                 fingerprintCard(snapshot.fingerprint)
-                if let alignment = viewModel?.alignment, alignment.hasSignal {
+                if let alignment = viewModel.alignment, alignment.hasSignal {
                     alignmentCard(alignment)
                 }
                 ForEach(snapshot.dimensions) { dimension in
@@ -146,7 +152,7 @@ struct TasteInsightsView: View {
             InsightSourceCaption(text: "50% is neutral — higher means you're drawn to it")
             VStack(spacing: VCSpacing.sm) {
                 ForEach(dimension.rows) { row in
-                    TasteBarRow(row: row)
+                    AffinityBarRow(label: row.label, affinity: row.affinity, swatchHexes: row.swatchHexes)
                 }
             }
             .padding(.top, 2)
@@ -179,74 +185,6 @@ struct TasteInsightsView: View {
             Label("Still Learning Your Taste", systemImage: "sparkle.magnifyingglass")
         } description: {
             Text("Swipe a few looks in the Discover deck and rate some outfits — your color, fit, and material preferences will show up here.")
-        }
-    }
-}
-
-/// One value's affinity as an overflow-safe row: optional colour swatches, a
-/// truncation-safe label in a fixed column, a proportional bar with a neutral
-/// tick at 50%, and an inline percentage. Everything is fixed-width or
-/// flexible-fill, so nothing can run off the card edge (the reason the old
-/// `RankedBarShareChart` reuse was dropped here).
-private struct TasteBarRow: View {
-    let row: TasteInsightsSnapshot.Row
-
-    private var fillColor: Color {
-        if row.affinity > TasteInsightsAggregator.lovedThreshold { return VCAccentColor.brand }
-        if row.affinity < TasteInsightsAggregator.avoidThreshold { return Color(.systemGray3) }
-        return VCAccentColor.brand.opacity(0.5)
-    }
-
-    var body: some View {
-        HStack(spacing: VCSpacing.sm) {
-            if !row.swatchHexes.isEmpty {
-                SwatchCluster(hexes: row.swatchHexes)
-            }
-            Text(row.label)
-                .font(.subheadline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(width: 100, alignment: .leading)
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color(.systemGray5))
-                        .frame(height: 8)
-                    Capsule()
-                        .fill(fillColor)
-                        .frame(width: max(4, w * row.affinity), height: 8)
-                    Rectangle()
-                        .fill(Color(.systemGray2))
-                        .frame(width: 1, height: 12)
-                        .position(x: w * 0.5, y: geo.size.height / 2)
-                }
-            }
-            .frame(height: 14)
-            Text("\(Int((row.affinity * 100).rounded()))%")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .trailing)
-        }
-    }
-}
-
-/// A little cluster of representative colour swatches (hairline-bordered so
-/// white/pastel stay visible), used by the colour-based Taste dimensions.
-private struct SwatchCluster: View {
-    let hexes: [String]
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(Array(hexes.prefix(4).enumerated()), id: \.offset) { _, hex in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(hex: hex) ?? .gray)
-                    .frame(width: 11, height: 11)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 2)
-                            .stroke(Color(.systemGray3), lineWidth: 0.5)
-                    )
-            }
         }
     }
 }

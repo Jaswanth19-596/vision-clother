@@ -14,11 +14,11 @@
 //  "recommendation" quota as an outfit request, with zero backend changes.
 //
 //  Called by `DailyAssistantViewModel` only when
-//  `Domain/QuestionIntentHeuristic.swift` thinks a turn might be a question
-//  — never on the ordinary recommendation happy path, so this adds no
-//  latency/cost to a normal "dress me for X" request. When
-//  `StylistQAResponse.isWardrobeQuestion` comes back false, the caller falls
-//  through to the ordinary, unmodified recommendation flow.
+//  `Services/IntentRoutingService.swift` classifies a turn as `.generalQA`
+//  (2026-07-27, replacing the old on-device `QuestionIntentHeuristic`
+//  keyword/"?" pre-filter) — never on the ordinary recommendation happy
+//  path. When `StylistQAResponse.isWardrobeQuestion` comes back false, the
+//  caller falls through to the ordinary, unmodified recommendation flow.
 //
 
 import Foundation
@@ -124,7 +124,7 @@ final class OpenRouterStylistQAService: StylistQAService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.recommendation, "[\(requestID)] stylistQA: missing auth header — \(String(describing: error))")
             throw StylistQAError.missingAPIKey

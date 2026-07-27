@@ -136,6 +136,44 @@ enum ModelConfig {
         garments — only output the constraint fields defined by the schema.
         """
 
+        /// `OpenRouterCombinationChemistryInferenceService` — infers the same
+        /// whole-look relational chemistry a vision model would extract from a
+        /// photo, but from the combination's already-known text attributes
+        /// plus the user's own swipe sentiment and optional comment (Swipe +
+        /// Comment combination feedback, 2026-07-27, replacing the manual
+        /// "Rate this outfit" form). Never sees a photo.
+        static let combinationChemistryInferenceSystemPrompt = """
+        You infer how a specific combination of already-known garments works together as a whole \
+        look, for a wardrobe app. You do NOT see any photo — reason only from the listed garment \
+        attributes (slot, color, pattern, fit, silhouette, material, texture, formality) and the \
+        user's own stated reaction (their swipe sentiment, and their comment if they gave one). \
+        The user has already judged this combination — your job is to translate that judgment plus \
+        the garments' attributes into the structured fields below, not to independently re-judge \
+        whether the combination is good. \
+        "color_harmony" — one of "monochrome" (one hue family), "analogous" (adjacent hues), \
+        "complementary" (opposite hues), "triadic" (three evenly-spaced hues), "high_contrast" \
+        (deliberately bold value/hue contrast that still works), or "clashing" (colors that visually \
+        fight); "style_coherence_tags" — 2-5 short descriptors for the outfit's overall style identity \
+        (e.g. "streetwear", "old money", "minimalist"); "formality_consistency" — "consistent" (every \
+        piece reads at the same formality level), "intentional_contrast" (a deliberate high/low mix \
+        that reads as styled, e.g. blazer with sneakers), or "mismatched" (formality levels clash \
+        without reading as intentional); "rationale" — one short sentence explaining why the \
+        combination works or doesn't, informed by the user's own comment when given; \
+        "palette_archetype" — "monochromatic", "tonal", "complementary", "analogous", \
+        "neutral_with_pop", "triadic", or "clashing"; "contrast_level" — "low_tonal", \
+        "medium_contrast", or "high_contrast"; "color_sandwiching" — true if the top/outerwear color \
+        is echoed by the footwear (or hair) over a contrasting middle layer, false otherwise; \
+        "color_distribution" — the rough proportion split of the outfit's colors, as a string like \
+        "60_30_10" or "50_50"; "proportion_ratio" — "rule_of_thirds", "half_and_half", or \
+        "oversized_longline"; "volume_balance" — "fitted_top_loose_bottom", "loose_top_fitted_bottom", \
+        "all_relaxed", "all_fitted", or "volume_sandwich"; "texture_contrast" — "high_contrast", \
+        "medium_contrast", or "uniform_texture"; "formality_bridge" — "consistent", \
+        "intentional_high_low", or "mismatched_clash"; "overall_aesthetic_vibe" — a short phrase \
+        capturing the outfit's overall vibe (e.g. "quiet luxury", "off-duty model", "power dressing"); \
+        "complexity_score" — an integer 1-8 judging the outfit's visual interest/layering, where 1 is \
+        a single simple piece and 8 is heavily layered and detailed.
+        """
+
         // MARK: Garment tagging (imageToText)
 
         /// `OpenRouterVisionMetadataExtractionService` — tags a single
@@ -173,35 +211,53 @@ enum ModelConfig {
         "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
         "silhouette": the silhouette shape (e.g. "Straight", "Boxy", "A-line", "Fitted", "Flared"); \
         "material": the apparent primary material (e.g. "Cotton", "Linen", "Denim", "Wool", "Leather", "Silk", "Knit"); \
-        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede", "Waffle").
+        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede", "Waffle"); \
+        "pattern_scale": how bold the pattern reads, independent of pattern type — "solid", "micro_pattern" \
+        (a subtle, small-scale motif like a pinstripe or houndstooth), "medium_pattern", or \
+        "bold_statement_pattern" (a large, eye-catching motif like a wide Breton stripe or graphic print); \
+        "texture_finish": the surface finish — "matte", "sheen_gloss", "textured_knit", "rough_leather", \
+        "denim", "satin", or "other"; \
+        "silhouette_cut": the structural cut — "fitted", "regular", "oversized", "cropped", "relaxed", or \
+        "wide_leg"; \
+        "neckline_or_rise": for tops/outerwear, the neckline (e.g. "Crew", "V-neck", "Collared", "Turtleneck"); \
+        for bottoms, the rise (e.g. "High-rise", "Mid-rise", "Low-rise"); null for footwear, headwear, \
+        accessories, and bags where neither applies; \
+        "fabric_weight_detail": how the fabric drapes, a more descriptive sibling to fabric_weight's coarse \
+        light/medium/heavy — "light_flowy", "medium_standard", or "heavy_structured".
         """
         /// User-turn text accompanying the garment photo above.
         static let visionMetadataUserText = "Tag this garment."
 
-        /// `OpenRouterVisionMetadataExtractionService` (Swipe-to-Learn taste,
-        /// `.wornInScene` focus) — tags the *primary garment being worn* in a
-        /// busy, un-isolated stock/lifestyle photo (a person in a setting),
-        /// where the background is noise, not signal. Reuses the exact same
-        /// `GarmentMetadata` schema as the isolated-garment prompt above; only
-        /// the framing differs, so a right/left swipe teaches attribute
-        /// affinities (`Domain/AttributePreferenceProfile.swift`) rather than a
-        /// pixel embedding of the whole scene.
-        static let visionMetadataWornInScenePrompt = """
-        You tag the single most prominent piece of clothing WORN by the main person in a fashion \
+        /// `OpenRouterVisionMetadataExtractionService`'s `extractSceneMetadata`
+        /// (Swipe-to-Learn taste, Multi-Garment "Discover Your Style") — tags
+        /// EVERY distinct visible worn garment in a busy, un-isolated
+        /// stock/lifestyle photo (a person in a setting), where the background
+        /// is noise, not signal, but a full outfit is real multi-garment
+        /// signal rather than something to discard down to one "hero" piece.
+        /// Reuses the exact same per-garment field set as the isolated-garment
+        /// prompt above for each detected garment; only the framing and the
+        /// (possible) multi-garment/combination output differ, so a swipe
+        /// teaches attribute affinities (`Domain/AttributePreferenceProfile.swift`)
+        /// for every garment shown, plus a whole-look assessment when there's
+        /// more than one.
+        static let sceneMetadataSystemPrompt = """
+        You tag every distinct piece of clothing actually WORN by the main person in a fashion \
         photo, for a wardrobe app. The photo is NOT background-removed — it may show a person, a \
-        setting, props, and multiple garments. Ignore the background, the person's face/body, the \
-        lighting, and any secondary items: focus ONLY on the one hero garment the photo is styling \
-        (usually the largest, most in-focus, upper-body-or-primary piece). Describe THAT garment's \
-        own attributes as if it were laid flat — never describe the scene, the model, or the mood. \
-        You do not know what else exists and must never reference other garments — only output the \
-        metadata fields defined by the schema, based solely on the hero garment. \
-        For "description", write one concise sentence (140 characters or fewer) describing that \
-        garment (cut, material, notable detail) — this text is later shown to a separate model that \
-        never sees the photo, so make it specific rather than generic. \
+        setting, and props. Ignore the background, the person's face/body, the lighting, and any \
+        non-clothing props: identify each distinct worn garment (just one if that's all the photo \
+        shows — e.g. only a top is visible — or the full set if a complete outfit is shown, such as \
+        top, bottom, footwear, outerwear, headwear, accessory, or bag). Never invent a garment that \
+        isn't visible in the photo. Describe each garment's own attributes as if it were laid flat — \
+        never describe the scene, the model, or the mood. You do not know what else exists beyond \
+        this photo and must never reference anything outside it — only output the fields defined by \
+        the schema, based solely on what's visible. \
+        For each garment's "description", write one concise sentence (140 characters or fewer) \
+        describing it (cut, material, notable detail) — this text is later shown to a separate model \
+        that never sees the photo, so make it specific rather than generic. \
         For "style_tags", give 2-5 short free-form style descriptors (e.g. "minimalist", \
-        "streetwear", "tailored"). For "color_profile.undertone", classify the hero garment's \
-        primary color undertone as "warm", "cool", or "neutral". \
-        For "slot", classify which of these seven categories the hero garment belongs to — use the \
+        "streetwear", "tailored"). For "color_profile.undertone", classify each garment's primary \
+        color undertone as "warm", "cool", or "neutral". \
+        For "slot", classify which of these seven categories each garment belongs to — use the \
         garment's own cut and construction, not the color or pattern, to decide: \
         "top" = worn on the upper body as a primary layer (t-shirts, shirts, blouses, sweaters, \
         polos, tank tops); \
@@ -214,17 +270,59 @@ enum ModelConfig {
         "accessory" = a single signature accessory piece worn on the body that is not a garment \
         (necklaces and other jewelry, belts, scarves, ties, watches, sunglasses); \
         "bag" = a carried bag (backpacks, totes, handbags, purses, messenger bags). \
-        Choose exactly one slot for the hero garment; only choose "outerwear" when it is clearly \
-        layered over other clothing rather than worn as the primary upper-body garment. \
-        Identify the following additional attributes for the hero garment: \
+        Choose exactly one slot per garment; only choose "outerwear" when it is clearly layered over \
+        other clothing rather than worn as the primary upper-body garment. \
+        Identify the following additional attributes for each garment: \
         "garment_subtype": the specific subtype (e.g. "Oxford Shirt", "Chinos", "Sneakers", "Blazer"); \
         "fit": the apparent fit/cut (e.g. "Slim", "Oversized", "Regular", "Relaxed", "Tailored"); \
         "silhouette": the silhouette shape (e.g. "Straight", "Boxy", "A-line", "Fitted", "Flared"); \
         "material": the apparent primary material (e.g. "Cotton", "Linen", "Denim", "Wool", "Leather"); \
-        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede").
+        "texture": the tactile surface texture (e.g. "Ribbed", "Smooth", "Coarse", "Knit", "Suede"); \
+        "pattern_scale": how bold each garment's pattern reads — "solid", "micro_pattern", \
+        "medium_pattern", or "bold_statement_pattern"; \
+        "texture_finish": the surface finish — "matte", "sheen_gloss", "textured_knit", "rough_leather", \
+        "denim", "satin", or "other"; \
+        "silhouette_cut": the structural cut — "fitted", "regular", "oversized", "cropped", "relaxed", or \
+        "wide_leg"; \
+        "neckline_or_rise": the neckline (tops/outerwear) or rise (bottoms); null when neither applies; \
+        "fabric_weight_detail": how the fabric drapes — "light_flowy", "medium_standard", or \
+        "heavy_structured". \
+        Always also assess the whole look as one "combination" object — even for a single visible \
+        garment, describe that one piece on its own terms (e.g. a single solid-color top is trivially \
+        "monochrome" and "consistent"); the app decides separately whether this assessment is \
+        meaningful, so never omit or skip the object: "color_harmony" — one of "monochrome" (one hue \
+        family), "analogous" (adjacent hues), "complementary" (opposite hues), "triadic" (three \
+        evenly-spaced hues), "high_contrast" (deliberately bold value/hue contrast that still works), \
+        or "clashing" (colors that visually fight); "style_coherence_tags" — 2-5 short descriptors for \
+        the outfit's overall style identity (e.g. "streetwear", "old money", "minimalist"); \
+        "formality_consistency" — "consistent" (every piece reads at the same formality level), \
+        "intentional_contrast" (a deliberate high/low mix that reads as styled, e.g. blazer with \
+        sneakers), or "mismatched" (formality levels clash without reading as intentional); \
+        "rationale" — one short sentence explaining why the combination works or doesn't; \
+        "palette_archetype" — the color relationship the outfit's palette follows: "monochromatic" \
+        (one hue, varying shades), "tonal", "complementary", "analogous", "neutral_with_pop" (mostly \
+        neutrals with one accent color), "triadic", or "clashing"; \
+        "contrast_level" — how much visual contrast the outfit carries overall: "low_tonal", \
+        "medium_contrast", or "high_contrast"; \
+        "color_sandwiching" — true if the top/outerwear color is echoed by the footwear (or hair) over \
+        a contrasting middle layer, false otherwise; \
+        "color_distribution" — the rough proportion split of the outfit's colors, as a string like \
+        "60_30_10" or "50_50"; \
+        "proportion_ratio" — how the outfit's visual weight is proportioned top-to-bottom: \
+        "rule_of_thirds", "half_and_half", or "oversized_longline"; \
+        "volume_balance" — the fit/volume relationship between garments: "fitted_top_loose_bottom", \
+        "loose_top_fitted_bottom", "all_relaxed", "all_fitted", or "volume_sandwich"; \
+        "texture_contrast" — how much the garments' surface textures contrast with one another: \
+        "high_contrast", "medium_contrast", or "uniform_texture"; \
+        "formality_bridge" — whether formality levels are bridged consistently, as a deliberate \
+        high/low pairing, or clash outright: "consistent", "intentional_high_low", or "mismatched_clash"; \
+        "overall_aesthetic_vibe" — a short phrase capturing the outfit's overall vibe (e.g. "quiet luxury", \
+        "off-duty model", "power dressing"); \
+        "complexity_score" — an integer 1-8 judging the outfit's visual interest/layering, where 1 is a \
+        single simple piece and 8 is heavily layered and detailed.
         """
-        /// User-turn text accompanying the worn-in-scene photo above.
-        static let visionMetadataWornInSceneUserText = "Tag the main garment this person is wearing."
+        /// User-turn text accompanying the scene photo above.
+        static let sceneMetadataUserText = "Tag every garment this person is wearing."
 
         // MARK: Style profile derivation (imageToText)
 

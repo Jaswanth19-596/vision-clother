@@ -255,7 +255,16 @@ enum ImageStorage {
         guard longestSide > maxDimension else { return image }
         let scale = maxDimension / longestSide
         let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: newSize)
+        // `UIGraphicsImageRenderer(size:)` alone defaults to the device's
+        // screen scale (2x/3x) — without pinning `format.scale = 1`, the
+        // rendered bitmap's real pixel dimensions come out 2-3x larger per
+        // side (4-9x the pixel count) than `newSize` implies, silently
+        // defeating this whole downscale (e.g. a "768px" target upload was
+        // observed at ~19MB — a multi-megapixel PNG, not a 768px one — which
+        // then blew past the backend's 15MB request body cap).
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }

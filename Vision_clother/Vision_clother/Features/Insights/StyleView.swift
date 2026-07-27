@@ -20,7 +20,7 @@ struct StyleView: View {
     @Query(sort: \SavedCombination.savedAt, order: .reverse) private var savedCombinations: [SavedCombination]
     @Query private var wornLogEntries: [WornLogEntry]
 
-    @State private var viewModel: StyleViewModel?
+    @State private var viewModel = StyleViewModel()
     @State private var comboTimeRange: AnalyticsTimeRange = .threeMonths
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -32,7 +32,11 @@ struct StyleView: View {
                     systemImage: "paintpalette",
                     description: Text("Add a few items to your closet to see your favorite colors here.")
                 )
-            } else if let viewModel {
+            } else {
+                // Scaffold renders on the very first frame regardless of
+                // whether `viewModel.snapshot` has populated yet — see
+                // `WardrobeInsightsView` for why this matters for the
+                // Insights tab-switch transition.
                 ScrollView {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
                         if let snapshot = viewModel.snapshot {
@@ -53,17 +57,12 @@ struct StyleView: View {
                     }
                     .padding(VCSpacing.lg)
                 }
-            } else {
-                ProgressView()
             }
         }
         .navigationTitle("Style")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            if viewModel == nil {
-                viewModel = StyleViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
-            }
-            viewModel?.loadConfigIfNeeded()
+            viewModel.loadConfigIfNeeded()
             recompute()
         }
         .onChange(of: comboTimeRange) {
@@ -79,14 +78,15 @@ struct StyleView: View {
 
     private func recompute() {
         let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
-        viewModel?.recompute(
+        viewModel.recompute(
             inventory: inventory,
             savedCombinations: savedCombinations,
             itemRatings: itemRatings,
             outfitFeedbacks: outfitFeedbacks,
             wornLogEntries: wornLogEntries,
             ratingSampleSize: itemRatings.count + detailedOutfitFeedbacks.count,
-            comboTimeRange: comboTimeRange
+            comboTimeRange: comboTimeRange,
+            repository: SyncingWardrobeRepository(modelContext: modelContext)
         )
     }
 
@@ -279,7 +279,7 @@ struct StyleView: View {
                     }
                 }
             } else {
-                let remaining = max(0, (viewModel?.thresholds ?? .conservativeDefault).styleDNAMinRatings - dna.ratingSampleSize)
+                let remaining = max(0, viewModel.thresholds.styleDNAMinRatings - dna.ratingSampleSize)
                 Text("Rate \(remaining) more item\(remaining == 1 ? "" : "s") or outfit\(remaining == 1 ? "" : "s") to unlock your Style DNA.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

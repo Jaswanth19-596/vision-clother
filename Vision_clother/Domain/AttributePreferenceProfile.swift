@@ -95,6 +95,14 @@ struct RatedAttributes {
     /// right") for owned items, or the swipe like/dislike signal for swipes.
     /// `nil` whenever `fit` is `nil`, so it never contributes alone.
     let fitLike: Double?
+    /// Credit-assignment weight, `[0,1]`, composed multiplicatively with
+    /// `build(from:)`'s exponential time-decay weight (added 2026-07-27) —
+    /// `SwipeAttributeEvent.weight` (`1.0 / N` for an N-garment swiped photo)
+    /// threaded through so a multi-garment swipe no longer injects N× the
+    /// signal of a single-garment one. `= 1.0` default so every other call
+    /// site (owned-item `ItemRating`s, tests) keeps contributing at full
+    /// strength, unchanged from before this field existed.
+    let weight: Double
 
     /// Explicit init (rather than relying on the synthesized memberwise
     /// init's default-value support) — with trailing defaulted parameters,
@@ -107,7 +115,7 @@ struct RatedAttributes {
         silhouetteTag: String? = nil, silhouetteFit: Double? = nil,
         fabricWeight: FabricWeight = .medium, fabricComfort: Double = 0.5,
         undertone: Undertone? = nil, material: String? = nil, texture: String? = nil,
-        fit: String? = nil, fitLike: Double? = nil
+        fit: String? = nil, fitLike: Double? = nil, weight: Double = 1.0
     ) {
         self.colorLike = colorLike
         self.patternLike = patternLike
@@ -128,6 +136,7 @@ struct RatedAttributes {
         self.texture = texture
         self.fit = fit
         self.fitLike = fitLike
+        self.weight = weight
     }
 }
 
@@ -211,6 +220,66 @@ struct OutfitDimensionRatedAttributes {
     }
 }
 
+/// One whole-look combination swipe — either a `SwipeCombinationEvent`
+/// (stock-photo swiped photo with 2+ detected garments) or, since 2026-07-27,
+/// an owned-item combination rated via the swipe+comment flow
+/// (`OutfitFeedback.inferredCombinationMetadata`) — both unified into this one
+/// shape by the caller (`Data/WardrobeRepository.swift`) so this module never
+/// touches SwiftData directly and never needs to know which source a rating
+/// came from. Unlike every other rated-input struct, this has no owned-item
+/// analogue for its color/style fields (`colorHarmonyAffinity` is a
+/// pairing/whole-look signal, not a per-item one).
+struct RatedCombination {
+    let colorHarmony: ColorHarmonyDescriptor
+    /// `SwipeCombinationEvent.styleCoherenceTags` — folded into the same
+    /// `styleTagAffinity` map owned-item style tags already feed, rather than
+    /// a parallel map.
+    let styleTags: [String]
+    /// `SwipeSentiment.ratingValue` for the swipe this combination came from,
+    /// `[0,1]`.
+    let signal: Double
+    /// `SwipeCombinationEvent.recordedAt` — feeds `build(from:)`'s exponential
+    /// time-decay weighting, same as every other rated-input struct.
+    let recordedAt: Date
+
+    // Relational styling attributes, round 2 (added 2026-07-27) — mirrors
+    // `CombinationMetadata`'s expanded schema. The first seven feed
+    // recommendation-time scoring (`combinationAffinityBonus`); the last two
+    // are Insights-only (never read by scoring) — see
+    // `AttributePreferenceProfile.aestheticVibeAffinity`/`complexityScoreAffinity`.
+    let paletteArchetype: PaletteArchetype?
+    let contrastLevel: ContrastLevel?
+    let colorSandwiching: Bool?
+    let proportionRatio: ProportionRatio?
+    let volumeBalance: VolumeBalance?
+    let textureContrast: TextureContrast?
+    let formalityBridge: FormalityBridge?
+    let overallAestheticVibe: String?
+    let complexityScore: Int?
+
+    init(
+        colorHarmony: ColorHarmonyDescriptor, styleTags: [String] = [], signal: Double, recordedAt: Date = .now,
+        paletteArchetype: PaletteArchetype? = nil, contrastLevel: ContrastLevel? = nil,
+        colorSandwiching: Bool? = nil, proportionRatio: ProportionRatio? = nil,
+        volumeBalance: VolumeBalance? = nil, textureContrast: TextureContrast? = nil,
+        formalityBridge: FormalityBridge? = nil, overallAestheticVibe: String? = nil, complexityScore: Int? = nil
+    ) {
+        self.colorHarmony = colorHarmony
+        self.styleTags = styleTags
+        self.signal = signal
+        self.recordedAt = recordedAt
+        self.paletteArchetype = paletteArchetype
+        self.contrastLevel = contrastLevel
+        self.colorSandwiching = colorSandwiching
+        self.proportionRatio = proportionRatio
+        self.volumeBalance = volumeBalance
+        self.textureContrast = textureContrast
+        self.formalityBridge = formalityBridge
+        self.overallAestheticVibe = overallAestheticVibe
+        self.complexityScore = complexityScore
+    }
+}
+
 /// Sendable projection of a `WardrobeItem`'s attribute fields — the only
 /// subset `AttributePreferenceProfile.build()` reads. Used by
 /// `WardrobeRepository.fetchFeedbackHistory()` to pass inventory data across
@@ -257,31 +326,72 @@ struct AttributePreferenceProfile {
     /// above, just not here.
     var colorVibeAffinityBySlot: [Slot: [ColorVibe: Double]] = [:]
     var patternAffinity: [GarmentPattern: Double] = [:]
+    /// Same shrunk affinity as `patternAffinity`, broken out per `Slot` —
+    /// see `colorVibeAffinityBySlot`'s doc comment; every `*BySlot` map below
+    /// follows the identical posture (additive sibling, populated only when
+    /// the source rating's `slot` is known, generalized 2026-07-27 from the
+    /// color-only precedent).
+    var patternAffinityBySlot: [Slot: [GarmentPattern: Double]] = [:]
     var formalityAffinity: [Int: Double] = [:]
+    var formalityAffinityBySlot: [Slot: [Int: Double]] = [:]
     /// Personal Style Match (Stylist Intelligence Engine Phase 1), keyed by
     /// `WardrobeItem.styleTags` — the first scoring consumer of that field,
     /// previously LLM-prompt-only.
     var styleTagAffinity: [String: Double] = [:]
+    var styleTagAffinityBySlot: [Slot: [String: Double]] = [:]
     /// Fit & Silhouette, keyed by `WardrobeItem.silhouette`.
     var silhouetteAffinity: [String: Double] = [:]
+    var silhouetteAffinityBySlot: [Slot: [String: Double]] = [:]
     /// Weather Suitability + Practicality (folded into one bucket), keyed by
     /// `WardrobeItem.fabricWeight`.
     var fabricWeightAffinity: [FabricWeight: Double] = [:]
+    var fabricWeightAffinityBySlot: [Slot: [FabricWeight: Double]] = [:]
     /// Color undertone taste (warm/cool/neutral), keyed by
     /// `WardrobeItem.colorProfile.undertone` — added 2026-07-24 so the merged
     /// engine learns undertone, not just color vibe.
     var undertoneAffinity: [Undertone: Double] = [:]
+    var undertoneAffinityBySlot: [Slot: [Undertone: Double]] = [:]
     /// Fabric material taste (e.g. "Linen", "Denim"), keyed by
     /// `WardrobeItem.material` — previously extracted by the vision LLM but
     /// never learned.
     var materialAffinity: [String: Double] = [:]
+    var materialAffinityBySlot: [Slot: [String: Double]] = [:]
     /// Tactile surface-texture taste (e.g. "Ribbed", "Smooth"), keyed by
     /// `WardrobeItem.texture`.
     var textureAffinity: [String: Double] = [:]
+    var textureAffinityBySlot: [Slot: [String: Double]] = [:]
     /// Fit/cut taste (e.g. "Slim", "Oversized"), keyed by `WardrobeItem.fit`
     /// — how the garment sits on the body, distinct from `silhouetteAffinity`
     /// (its shape).
     var fitAffinity: [String: Double] = [:]
+    var fitAffinityBySlot: [Slot: [String: Double]] = [:]
+    /// Whole-look color-harmony taste (e.g. "monochrome" vs. "high contrast"),
+    /// keyed by `ColorHarmonyDescriptor` — learned only from
+    /// `RatedCombination` (Swipe-to-Learn multi-garment scenes), since a
+    /// single owned item has no color harmony of its own to rate. Insights-only
+    /// for now — not read by `matchDetail(for:)`/`affinityBonus`, which score
+    /// one item at a time.
+    var colorHarmonyAffinity: [ColorHarmonyDescriptor: Double] = [:]
+
+    // Relational styling attributes, round 2 (added 2026-07-27) — learned
+    // only from `RatedCombination`, same posture as `colorHarmonyAffinity`
+    // above. The first seven are read by `combinationAffinityBonus`
+    // (recommendation-time scoring against a deterministic on-device
+    // estimate, `Domain/PairCompatibilityScoring.estimateCombinationHeuristics`);
+    // `aestheticVibeAffinity`/`complexityScoreAffinity` stay Insights-only —
+    // there's no reliable deterministic way to estimate a whole outfit's
+    // "vibe" or visual complexity from item attributes alone the way contrast
+    // or formality bridging can be, so they're never used for a recommendation
+    // bonus.
+    var paletteArchetypeAffinity: [PaletteArchetype: Double] = [:]
+    var contrastLevelAffinity: [ContrastLevel: Double] = [:]
+    var colorSandwichingAffinity: [Bool: Double] = [:]
+    var proportionRatioAffinity: [ProportionRatio: Double] = [:]
+    var volumeBalanceAffinity: [VolumeBalance: Double] = [:]
+    var textureContrastAffinity: [TextureContrast: Double] = [:]
+    var formalityBridgeAffinity: [FormalityBridge: Double] = [:]
+    var aestheticVibeAffinity: [String: Double] = [:]
+    var complexityScoreAffinity: [Int: Double] = [:]
 
     /// Bounds how far `affinityBonus` can push a score, so attribute bias
     /// can re-rank candidates but never overwhelm the deterministic
@@ -316,26 +426,30 @@ struct AttributePreferenceProfile {
         max(PairCompatibilityScoring.defaultPriorWeight, Double(baselineCount) * 0.1)
     }
 
-    /// Folds one decay-weighted `(colorVibe, value)` observation into
-    /// `sums`, nested under `slot` — a no-op when `slot` is `nil` (rating
-    /// has no known slot, so it only contributes to the flat `colorSums`
-    /// the caller tracks separately).
-    private static func accumulateSlotColor(
-        _ slot: Slot?, colorVibe: ColorVibe, value: Double, weight: Double,
-        into sums: inout [Slot: [ColorVibe: (sum: Double, count: Double)]]
+    /// Folds one decay-weighted `(key, value)` observation into `sums`,
+    /// nested under `slot` — a no-op when `slot` is `nil` (rating has no
+    /// known slot, so it only contributes to the flat sums the caller tracks
+    /// separately). Generalizes the original color-only `accumulateSlotColor`
+    /// (2026-07-27) to every dimension — category-partitioned taste isn't
+    /// just a color concern ("oversized" means something different for a top
+    /// vs. a bottom).
+    private static func accumulateSlot<Key: Hashable>(
+        _ slot: Slot?, key: Key, value: Double, weight: Double,
+        into sums: inout [Slot: [Key: (sum: Double, count: Double)]]
     ) {
         guard let slot else { return }
         var slotMap = sums[slot] ?? [:]
-        var entry = slotMap[colorVibe] ?? (0, 0)
+        var entry = slotMap[key] ?? (0, 0)
         entry.sum += value * weight
         entry.count += weight
-        slotMap[colorVibe] = entry
+        slotMap[key] = entry
         sums[slot] = slotMap
     }
 
     static func build(
         from ratings: [RatedAttributes],
         outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
+        combinationRatings: [RatedCombination] = [],
         inventory: [WardrobeItem] = [],
         now: Date = .now
     ) -> AttributePreferenceProfile {
@@ -357,6 +471,7 @@ struct AttributePreferenceProfile {
         return build(
             from: ratings,
             outfitDimensionRatings: outfitDimensionRatings,
+            combinationRatings: combinationRatings,
             inventorySnapshots: snapshots,
             now: now
         )
@@ -365,64 +480,100 @@ struct AttributePreferenceProfile {
     static func build(
         from ratings: [RatedAttributes],
         outfitDimensionRatings: [OutfitDimensionRatedAttributes] = [],
+        combinationRatings: [RatedCombination] = [],
         inventorySnapshots: [ItemAttributeSnapshot],
         now: Date = .now
     ) -> AttributePreferenceProfile {
         var colorSums: [ColorVibe: (sum: Double, count: Double)] = [:]
         var colorSumsBySlot: [Slot: [ColorVibe: (sum: Double, count: Double)]] = [:]
         var patternSums: [GarmentPattern: (sum: Double, count: Double)] = [:]
+        var patternSumsBySlot: [Slot: [GarmentPattern: (sum: Double, count: Double)]] = [:]
         var formalitySums: [Int: (sum: Double, count: Double)] = [:]
+        var formalitySumsBySlot: [Slot: [Int: (sum: Double, count: Double)]] = [:]
         var styleTagSums: [String: (sum: Double, count: Double)] = [:]
+        var styleTagSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
         var silhouetteSums: [String: (sum: Double, count: Double)] = [:]
+        var silhouetteSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
         var fabricWeightSums: [FabricWeight: (sum: Double, count: Double)] = [:]
+        var fabricWeightSumsBySlot: [Slot: [FabricWeight: (sum: Double, count: Double)]] = [:]
         var undertoneSums: [Undertone: (sum: Double, count: Double)] = [:]
+        var undertoneSumsBySlot: [Slot: [Undertone: (sum: Double, count: Double)]] = [:]
         var materialSums: [String: (sum: Double, count: Double)] = [:]
+        var materialSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
         var textureSums: [String: (sum: Double, count: Double)] = [:]
+        var textureSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
         var fitSums: [String: (sum: Double, count: Double)] = [:]
+        var fitSumsBySlot: [Slot: [String: (sum: Double, count: Double)]] = [:]
+        var colorHarmonySums: [ColorHarmonyDescriptor: (sum: Double, count: Double)] = [:]
+        var paletteArchetypeSums: [PaletteArchetype: (sum: Double, count: Double)] = [:]
+        var contrastLevelSums: [ContrastLevel: (sum: Double, count: Double)] = [:]
+        var colorSandwichingSums: [Bool: (sum: Double, count: Double)] = [:]
+        var proportionRatioSums: [ProportionRatio: (sum: Double, count: Double)] = [:]
+        var volumeBalanceSums: [VolumeBalance: (sum: Double, count: Double)] = [:]
+        var textureContrastSums: [TextureContrast: (sum: Double, count: Double)] = [:]
+        var formalityBridgeSums: [FormalityBridge: (sum: Double, count: Double)] = [:]
+        var aestheticVibeSums: [String: (sum: Double, count: Double)] = [:]
+        var complexityScoreSums: [Int: (sum: Double, count: Double)] = [:]
 
         for rating in ratings {
-            let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
+            // Composed multiplicatively, not replaced: `rating.weight` is the
+            // 1/N garment-count credit-assignment factor
+            // (`Data/WardrobeRepository.swift.recordSwipeAttributes`), decay
+            // is the existing 60-day-half-life recency factor — a love'd
+            // 4-garment photo swiped yesterday now counts less per-garment
+            // than a love'd single-garment photo swiped yesterday, and both
+            // still decay identically over time.
+            let weight = decayWeight(recordedAt: rating.recordedAt, now: now) * rating.weight
 
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorLike * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
-            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.colorLike, weight: weight, into: &colorSumsBySlot)
+            accumulateSlot(rating.slot, key: rating.colorVibe, value: rating.colorLike, weight: weight, into: &colorSumsBySlot)
 
             if let patternLike = rating.patternLike {
                 patternSums[rating.pattern, default: (0, 0)].sum += patternLike * weight
                 patternSums[rating.pattern, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: rating.pattern, value: patternLike, weight: weight, into: &patternSumsBySlot)
             }
 
             formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.formalityFit * weight
             formalitySums[rating.formalityBand, default: (0, 0)].count += weight
+            accumulateSlot(rating.slot, key: rating.formalityBand, value: rating.formalityFit, weight: weight, into: &formalitySumsBySlot)
 
             for tag in rating.styleTags {
                 styleTagSums[tag, default: (0, 0)].sum += rating.styleIdentity * weight
                 styleTagSums[tag, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: tag, value: rating.styleIdentity, weight: weight, into: &styleTagSumsBySlot)
             }
 
             if let silhouetteTag = rating.silhouetteTag, let silhouetteFit = rating.silhouetteFit {
                 silhouetteSums[silhouetteTag, default: (0, 0)].sum += silhouetteFit * weight
                 silhouetteSums[silhouetteTag, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: silhouetteTag, value: silhouetteFit, weight: weight, into: &silhouetteSumsBySlot)
             }
 
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.fabricComfort * weight
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
+            accumulateSlot(rating.slot, key: rating.fabricWeight, value: rating.fabricComfort, weight: weight, into: &fabricWeightSumsBySlot)
 
             if let undertone = rating.undertone {
                 undertoneSums[undertone, default: (0, 0)].sum += rating.colorLike * weight
                 undertoneSums[undertone, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: undertone, value: rating.colorLike, weight: weight, into: &undertoneSumsBySlot)
             }
             if let material = rating.material {
                 materialSums[material, default: (0, 0)].sum += rating.fabricComfort * weight
                 materialSums[material, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: material, value: rating.fabricComfort, weight: weight, into: &materialSumsBySlot)
             }
             if let texture = rating.texture {
                 textureSums[texture, default: (0, 0)].sum += rating.fabricComfort * weight
                 textureSums[texture, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: texture, value: rating.fabricComfort, weight: weight, into: &textureSumsBySlot)
             }
             if let fit = rating.fit, let fitLike = rating.fitLike {
                 fitSums[fit, default: (0, 0)].sum += fitLike * weight
                 fitSums[fit, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: fit, value: fitLike, weight: weight, into: &fitSumsBySlot)
             }
         }
 
@@ -431,83 +582,165 @@ struct AttributePreferenceProfile {
 
             colorSums[rating.colorVibe, default: (0, 0)].sum += rating.colorHarmony * weight
             colorSums[rating.colorVibe, default: (0, 0)].count += weight
-            accumulateSlotColor(rating.slot, colorVibe: rating.colorVibe, value: rating.colorHarmony, weight: weight, into: &colorSumsBySlot)
+            accumulateSlot(rating.slot, key: rating.colorVibe, value: rating.colorHarmony, weight: weight, into: &colorSumsBySlot)
 
             formalitySums[rating.formalityBand, default: (0, 0)].sum += rating.occasionMatch * weight
             formalitySums[rating.formalityBand, default: (0, 0)].count += weight
+            accumulateSlot(rating.slot, key: rating.formalityBand, value: rating.occasionMatch, weight: weight, into: &formalitySumsBySlot)
 
             if let patternDissatisfaction = rating.patternDissatisfaction {
                 patternSums[rating.pattern, default: (0, 0)].sum += patternDissatisfaction * weight
                 patternSums[rating.pattern, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: rating.pattern, value: patternDissatisfaction, weight: weight, into: &patternSumsBySlot)
             }
 
             for tag in rating.styleTags {
                 styleTagSums[tag, default: (0, 0)].sum += rating.styleMatch * weight
                 styleTagSums[tag, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: tag, value: rating.styleMatch, weight: weight, into: &styleTagSumsBySlot)
             }
 
             if let silhouetteTag = rating.silhouetteTag {
                 silhouetteSums[silhouetteTag, default: (0, 0)].sum += rating.silhouette * weight
                 silhouetteSums[silhouetteTag, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: silhouetteTag, value: rating.silhouette, weight: weight, into: &silhouetteSumsBySlot)
             }
 
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].sum += rating.weatherFit * weight
             fabricWeightSums[rating.fabricWeight, default: (0, 0)].count += weight
+            accumulateSlot(rating.slot, key: rating.fabricWeight, value: rating.weatherFit, weight: weight, into: &fabricWeightSumsBySlot)
 
             if let undertone = rating.undertone {
                 undertoneSums[undertone, default: (0, 0)].sum += rating.colorHarmony * weight
                 undertoneSums[undertone, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: undertone, value: rating.colorHarmony, weight: weight, into: &undertoneSumsBySlot)
             }
             if let material = rating.material {
                 materialSums[material, default: (0, 0)].sum += rating.weatherFit * weight
                 materialSums[material, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: material, value: rating.weatherFit, weight: weight, into: &materialSumsBySlot)
             }
             if let texture = rating.texture {
                 textureSums[texture, default: (0, 0)].sum += rating.weatherFit * weight
                 textureSums[texture, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: texture, value: rating.weatherFit, weight: weight, into: &textureSumsBySlot)
             }
             if let fit = rating.fit {
                 fitSums[fit, default: (0, 0)].sum += rating.silhouette * weight
                 fitSums[fit, default: (0, 0)].count += weight
+                accumulateSlot(rating.slot, key: fit, value: rating.silhouette, weight: weight, into: &fitSumsBySlot)
+            }
+        }
+
+        for rating in combinationRatings {
+            let weight = decayWeight(recordedAt: rating.recordedAt, now: now)
+
+            colorHarmonySums[rating.colorHarmony, default: (0, 0)].sum += rating.signal * weight
+            colorHarmonySums[rating.colorHarmony, default: (0, 0)].count += weight
+
+            for tag in rating.styleTags {
+                styleTagSums[tag, default: (0, 0)].sum += rating.signal * weight
+                styleTagSums[tag, default: (0, 0)].count += weight
+            }
+
+            if let paletteArchetype = rating.paletteArchetype {
+                paletteArchetypeSums[paletteArchetype, default: (0, 0)].sum += rating.signal * weight
+                paletteArchetypeSums[paletteArchetype, default: (0, 0)].count += weight
+            }
+            if let contrastLevel = rating.contrastLevel {
+                contrastLevelSums[contrastLevel, default: (0, 0)].sum += rating.signal * weight
+                contrastLevelSums[contrastLevel, default: (0, 0)].count += weight
+            }
+            if let colorSandwiching = rating.colorSandwiching {
+                colorSandwichingSums[colorSandwiching, default: (0, 0)].sum += rating.signal * weight
+                colorSandwichingSums[colorSandwiching, default: (0, 0)].count += weight
+            }
+            if let proportionRatio = rating.proportionRatio {
+                proportionRatioSums[proportionRatio, default: (0, 0)].sum += rating.signal * weight
+                proportionRatioSums[proportionRatio, default: (0, 0)].count += weight
+            }
+            if let volumeBalance = rating.volumeBalance {
+                volumeBalanceSums[volumeBalance, default: (0, 0)].sum += rating.signal * weight
+                volumeBalanceSums[volumeBalance, default: (0, 0)].count += weight
+            }
+            if let textureContrast = rating.textureContrast {
+                textureContrastSums[textureContrast, default: (0, 0)].sum += rating.signal * weight
+                textureContrastSums[textureContrast, default: (0, 0)].count += weight
+            }
+            if let formalityBridge = rating.formalityBridge {
+                formalityBridgeSums[formalityBridge, default: (0, 0)].sum += rating.signal * weight
+                formalityBridgeSums[formalityBridge, default: (0, 0)].count += weight
+            }
+            if let overallAestheticVibe = rating.overallAestheticVibe {
+                let key = overallAestheticVibe.lowercased()
+                aestheticVibeSums[key, default: (0, 0)].sum += rating.signal * weight
+                aestheticVibeSums[key, default: (0, 0)].count += weight
+            }
+            if let complexityScore = rating.complexityScore {
+                complexityScoreSums[complexityScore, default: (0, 0)].sum += rating.signal * weight
+                complexityScoreSums[complexityScore, default: (0, 0)].count += weight
             }
         }
 
         var colorBaseline: [ColorVibe: Int] = [:]
         var colorBaselineBySlot: [Slot: [ColorVibe: Int]] = [:]
         var patternBaseline: [GarmentPattern: Int] = [:]
+        var patternBaselineBySlot: [Slot: [GarmentPattern: Int]] = [:]
         var formalityBaseline: [Int: Int] = [:]
+        var formalityBaselineBySlot: [Slot: [Int: Int]] = [:]
         var styleTagBaseline: [String: Int] = [:]
+        var styleTagBaselineBySlot: [Slot: [String: Int]] = [:]
         var silhouetteBaseline: [String: Int] = [:]
+        var silhouetteBaselineBySlot: [Slot: [String: Int]] = [:]
         var fabricWeightBaseline: [FabricWeight: Int] = [:]
+        var fabricWeightBaselineBySlot: [Slot: [FabricWeight: Int]] = [:]
         var undertoneBaseline: [Undertone: Int] = [:]
+        var undertoneBaselineBySlot: [Slot: [Undertone: Int]] = [:]
         var materialBaseline: [String: Int] = [:]
+        var materialBaselineBySlot: [Slot: [String: Int]] = [:]
         var textureBaseline: [String: Int] = [:]
+        var textureBaselineBySlot: [Slot: [String: Int]] = [:]
         var fitBaseline: [String: Int] = [:]
+        var fitBaselineBySlot: [Slot: [String: Int]] = [:]
+
+        func bump<Key: Hashable>(_ key: Key, slot: Slot, in bySlot: inout [Slot: [Key: Int]]) {
+            var slotMap = bySlot[slot] ?? [:]
+            slotMap[key, default: 0] += 1
+            bySlot[slot] = slotMap
+        }
+
         for item in inventorySnapshots {
             colorBaseline[item.colorCategory, default: 0] += 1
-            var slotBaselineMap = colorBaselineBySlot[item.slot] ?? [:]
-            slotBaselineMap[item.colorCategory, default: 0] += 1
-            colorBaselineBySlot[item.slot] = slotBaselineMap
+            bump(item.colorCategory, slot: item.slot, in: &colorBaselineBySlot)
             patternBaseline[item.pattern, default: 0] += 1
+            bump(item.pattern, slot: item.slot, in: &patternBaselineBySlot)
             formalityBaseline[item.formalityBand, default: 0] += 1
+            bump(item.formalityBand, slot: item.slot, in: &formalityBaselineBySlot)
             for tag in item.styleTags {
                 styleTagBaseline[tag, default: 0] += 1
+                bump(tag, slot: item.slot, in: &styleTagBaselineBySlot)
             }
             if let silhouette = item.silhouette {
                 silhouetteBaseline[silhouette, default: 0] += 1
+                bump(silhouette, slot: item.slot, in: &silhouetteBaselineBySlot)
             }
             fabricWeightBaseline[item.fabricWeight, default: 0] += 1
+            bump(item.fabricWeight, slot: item.slot, in: &fabricWeightBaselineBySlot)
             if let undertone = item.undertone {
                 undertoneBaseline[undertone, default: 0] += 1
+                bump(undertone, slot: item.slot, in: &undertoneBaselineBySlot)
             }
             if let material = item.material {
                 materialBaseline[material, default: 0] += 1
+                bump(material, slot: item.slot, in: &materialBaselineBySlot)
             }
             if let texture = item.texture {
                 textureBaseline[texture, default: 0] += 1
+                bump(texture, slot: item.slot, in: &textureBaselineBySlot)
             }
             if let fit = item.fit {
                 fitBaseline[fit, default: 0] += 1
+                bump(fit, slot: item.slot, in: &fitBaselineBySlot)
             }
         }
 
@@ -522,23 +755,63 @@ struct AttributePreferenceProfile {
             }
         }
 
-        var colorVibeAffinityBySlot: [Slot: [ColorVibe: Double]] = [:]
-        for (slot, sums) in colorSumsBySlot {
-            colorVibeAffinityBySlot[slot] = affinityMap(sums: sums, baseline: colorBaselineBySlot[slot] ?? [:])
+        func affinityMapBySlot<Key: Hashable>(
+            sumsBySlot: [Slot: [Key: (sum: Double, count: Double)]],
+            baselineBySlot: [Slot: [Key: Int]]
+        ) -> [Slot: [Key: Double]] {
+            sumsBySlot.reduce(into: [Slot: [Key: Double]]()) { result, entry in
+                let (slot, sums) = entry
+                result[slot] = affinityMap(sums: sums, baseline: baselineBySlot[slot] ?? [:])
+            }
         }
 
         var profile = AttributePreferenceProfile()
         profile.colorVibeAffinity = affinityMap(sums: colorSums, baseline: colorBaseline)
-        profile.colorVibeAffinityBySlot = colorVibeAffinityBySlot
+        profile.colorVibeAffinityBySlot = affinityMapBySlot(sumsBySlot: colorSumsBySlot, baselineBySlot: colorBaselineBySlot)
         profile.patternAffinity = affinityMap(sums: patternSums, baseline: patternBaseline)
+        profile.patternAffinityBySlot = affinityMapBySlot(sumsBySlot: patternSumsBySlot, baselineBySlot: patternBaselineBySlot)
         profile.formalityAffinity = affinityMap(sums: formalitySums, baseline: formalityBaseline)
+        profile.formalityAffinityBySlot = affinityMapBySlot(sumsBySlot: formalitySumsBySlot, baselineBySlot: formalityBaselineBySlot)
         profile.styleTagAffinity = affinityMap(sums: styleTagSums, baseline: styleTagBaseline)
+        profile.styleTagAffinityBySlot = affinityMapBySlot(sumsBySlot: styleTagSumsBySlot, baselineBySlot: styleTagBaselineBySlot)
         profile.silhouetteAffinity = affinityMap(sums: silhouetteSums, baseline: silhouetteBaseline)
+        profile.silhouetteAffinityBySlot = affinityMapBySlot(sumsBySlot: silhouetteSumsBySlot, baselineBySlot: silhouetteBaselineBySlot)
         profile.fabricWeightAffinity = affinityMap(sums: fabricWeightSums, baseline: fabricWeightBaseline)
+        profile.fabricWeightAffinityBySlot = affinityMapBySlot(sumsBySlot: fabricWeightSumsBySlot, baselineBySlot: fabricWeightBaselineBySlot)
         profile.undertoneAffinity = affinityMap(sums: undertoneSums, baseline: undertoneBaseline)
+        profile.undertoneAffinityBySlot = affinityMapBySlot(sumsBySlot: undertoneSumsBySlot, baselineBySlot: undertoneBaselineBySlot)
         profile.materialAffinity = affinityMap(sums: materialSums, baseline: materialBaseline)
+        profile.materialAffinityBySlot = affinityMapBySlot(sumsBySlot: materialSumsBySlot, baselineBySlot: materialBaselineBySlot)
         profile.textureAffinity = affinityMap(sums: textureSums, baseline: textureBaseline)
+        profile.textureAffinityBySlot = affinityMapBySlot(sumsBySlot: textureSumsBySlot, baselineBySlot: textureBaselineBySlot)
         profile.fitAffinity = affinityMap(sums: fitSums, baseline: fitBaseline)
+        profile.fitAffinityBySlot = affinityMapBySlot(sumsBySlot: fitSumsBySlot, baselineBySlot: fitBaselineBySlot)
+        // No owned-item baseline exists for a whole-look descriptor like
+        // "monochrome" or "high contrast" — floors at the flat
+        // `defaultPriorWeight`, same as every other dimension's fallback when
+        // `baseline[key]` is absent (`dynamicPriorWeight(baselineCount: 0)`
+        // already resolves to this same constant).
+        profile.colorHarmonyAffinity = colorHarmonySums.reduce(into: [ColorHarmonyDescriptor: Double]()) { result, entry in
+            result[entry.key] = shrunkAffinity(sum: entry.value.sum, count: entry.value.count, priorWeight: PairCompatibilityScoring.defaultPriorWeight)
+        }
+
+        // Same "no owned-item baseline" shrinkage as `colorHarmonyAffinity`
+        // above — a whole-look descriptor has nothing in the closet to
+        // baseline against.
+        func combinationAffinityMap<Key: Hashable>(_ sums: [Key: (sum: Double, count: Double)]) -> [Key: Double] {
+            sums.reduce(into: [Key: Double]()) { result, entry in
+                result[entry.key] = shrunkAffinity(sum: entry.value.sum, count: entry.value.count, priorWeight: PairCompatibilityScoring.defaultPriorWeight)
+            }
+        }
+        profile.paletteArchetypeAffinity = combinationAffinityMap(paletteArchetypeSums)
+        profile.contrastLevelAffinity = combinationAffinityMap(contrastLevelSums)
+        profile.colorSandwichingAffinity = combinationAffinityMap(colorSandwichingSums)
+        profile.proportionRatioAffinity = combinationAffinityMap(proportionRatioSums)
+        profile.volumeBalanceAffinity = combinationAffinityMap(volumeBalanceSums)
+        profile.textureContrastAffinity = combinationAffinityMap(textureContrastSums)
+        profile.formalityBridgeAffinity = combinationAffinityMap(formalityBridgeSums)
+        profile.aestheticVibeAffinity = combinationAffinityMap(aestheticVibeSums)
+        profile.complexityScoreAffinity = combinationAffinityMap(complexityScoreSums)
         return profile
     }
 
@@ -563,6 +836,95 @@ struct AttributePreferenceProfile {
         matchDetail(for: item).bonus
     }
 
+    /// Bounded, NaN-safe bias term for a whole candidate outfit's
+    /// deterministically-estimated combination chemistry (added 2026-07-27,
+    /// `Domain/PairCompatibilityScoring.estimateCombinationHeuristics`) —
+    /// same `[-maxBonusMagnitude, +maxBonusMagnitude]` shape as
+    /// `affinityBonus`. Only the 7 scoreable dimensions are read;
+    /// `aestheticVibeAffinity`/`complexityScoreAffinity` stay Insights-only.
+    /// Any dimension the estimate couldn't derive is simply skipped, not
+    /// defaulted — an empty estimate (e.g. a 1-item "outfit") returns 0.
+    func combinationAffinityBonus(for estimate: PairCompatibilityScoring.CombinationHeuristicEstimate) -> Double {
+        var affinities: [Double] = []
+        if let value = estimate.paletteArchetype { affinities.append(paletteArchetypeAffinity[value] ?? 0.5) }
+        if let value = estimate.contrastLevel { affinities.append(contrastLevelAffinity[value] ?? 0.5) }
+        if let value = estimate.colorSandwiching { affinities.append(colorSandwichingAffinity[value] ?? 0.5) }
+        if let value = estimate.proportionRatio { affinities.append(proportionRatioAffinity[value] ?? 0.5) }
+        if let value = estimate.volumeBalance { affinities.append(volumeBalanceAffinity[value] ?? 0.5) }
+        if let value = estimate.textureContrast { affinities.append(textureContrastAffinity[value] ?? 0.5) }
+        if let value = estimate.formalityBridge { affinities.append(formalityBridgeAffinity[value] ?? 0.5) }
+        guard !affinities.isEmpty else { return 0 }
+        let mean = affinities.reduce(0, +) / Double(affinities.count)
+        return ((mean - 0.5) * 2.0 * Self.maxBonusMagnitude).clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
+    }
+
+    // MARK: - Slot-aware accessors (backward-compatible with the flat maps)
+    //
+    // One explicit accessor per dimension, each preferring the per-`Slot`
+    // breakdown when `slot` is supplied and that slot has data, falling back
+    // to the flat map otherwise — so every existing caller that only reads
+    // the flat maps directly keeps compiling and behaving unchanged, while
+    // `matchDetail(for:)` below opts into the richer per-slot data.
+
+    func colorVibeAffinity(_ vibe: ColorVibe, slot: Slot?) -> Double {
+        if let slot, let value = colorVibeAffinityBySlot[slot]?[vibe] { return value }
+        return colorVibeAffinity[vibe] ?? 0.5
+    }
+
+    func patternAffinity(_ pattern: GarmentPattern, slot: Slot?) -> Double {
+        if let slot, let value = patternAffinityBySlot[slot]?[pattern] { return value }
+        return patternAffinity[pattern] ?? 0.5
+    }
+
+    func formalityAffinity(_ band: Int, slot: Slot?) -> Double {
+        if let slot, let value = formalityAffinityBySlot[slot]?[band] { return value }
+        return formalityAffinity[band] ?? 0.5
+    }
+
+    func styleTagAffinity(_ tag: String, slot: Slot?) -> Double {
+        if let slot, let value = styleTagAffinityBySlot[slot]?[tag] { return value }
+        return styleTagAffinity[tag] ?? 0.5
+    }
+
+    func silhouetteAffinity(_ silhouette: String, slot: Slot?) -> Double {
+        if let slot, let value = silhouetteAffinityBySlot[slot]?[silhouette] { return value }
+        return silhouetteAffinity[silhouette] ?? 0.5
+    }
+
+    func fabricWeightAffinity(_ weight: FabricWeight, slot: Slot?) -> Double {
+        if let slot, let value = fabricWeightAffinityBySlot[slot]?[weight] { return value }
+        return fabricWeightAffinity[weight] ?? 0.5
+    }
+
+    func undertoneAffinity(_ undertone: Undertone, slot: Slot?) -> Double {
+        if let slot, let value = undertoneAffinityBySlot[slot]?[undertone] { return value }
+        return undertoneAffinity[undertone] ?? 0.5
+    }
+
+    func materialAffinity(_ material: String, slot: Slot?) -> Double {
+        if let slot, let value = materialAffinityBySlot[slot]?[material] { return value }
+        return materialAffinity[material] ?? 0.5
+    }
+
+    func textureAffinity(_ texture: String, slot: Slot?) -> Double {
+        if let slot, let value = textureAffinityBySlot[slot]?[texture] { return value }
+        return textureAffinity[texture] ?? 0.5
+    }
+
+    func fitAffinity(_ fit: String, slot: Slot?) -> Double {
+        if let slot, let value = fitAffinityBySlot[slot]?[fit] { return value }
+        return fitAffinity[fit] ?? 0.5
+    }
+
+    /// Learned affinity for one whole-look color-harmony descriptor, `[0,1]`,
+    /// 0.5 = neutral/unrated — deliberately not folded into `matchDetail(for:
+    /// WardrobeItem)`, since color harmony describes a pairing/whole-look, not
+    /// one item. Read by `Domain/OutfitChemistryAggregator.swift` (Chemistry
+    /// Insights tab).
+    func colorHarmonyAffinity(for descriptor: ColorHarmonyDescriptor) -> Double {
+        colorHarmonyAffinity[descriptor] ?? 0.5
+    }
+
     /// Whether the profile has learned anything at all yet — used by the
     /// "Test Your Style" verifier (`Features/Profile/StyleCheckViewModel.swift`)
     /// to distinguish "no signal to compare against" from a genuine neutral
@@ -572,7 +934,7 @@ struct AttributePreferenceProfile {
         !colorVibeAffinity.isEmpty || !patternAffinity.isEmpty || !formalityAffinity.isEmpty
             || !styleTagAffinity.isEmpty || !silhouetteAffinity.isEmpty || !fabricWeightAffinity.isEmpty
             || !undertoneAffinity.isEmpty || !materialAffinity.isEmpty || !textureAffinity.isEmpty
-            || !fitAffinity.isEmpty
+            || !fitAffinity.isEmpty || !colorHarmonyAffinity.isEmpty
     }
 
     /// Same bounded bias as `affinityBonus`, but also surfaces the per-attribute
@@ -587,22 +949,23 @@ struct AttributePreferenceProfile {
         let category = item.colorProfile.category
         let pattern = item.pattern
         let formalityBand = Int(item.formalityScore.rounded())
+        let slot = item.slot
 
-        let colorAff = colorVibeAffinity[category] ?? 0.5
-        let patternAff = patternAffinity[pattern] ?? 0.5
-        let formalityAff = formalityAffinity[formalityBand] ?? 0.5
+        let colorAff = colorVibeAffinity(category, slot: slot)
+        let patternAff = patternAffinity(pattern, slot: slot)
+        let formalityAff = formalityAffinity(formalityBand, slot: slot)
 
-        let matchedTags = item.styleTags.filter { styleTagAffinity[$0] != nil }
-        let matchingTagAffinities = matchedTags.compactMap { styleTagAffinity[$0] }
+        let matchedTags = item.styleTags.filter { styleTagAffinityBySlot[slot]?[$0] != nil || styleTagAffinity[$0] != nil }
+        let matchingTagAffinities = matchedTags.map { styleTagAffinity($0, slot: slot) }
         let styleTagAff = matchingTagAffinities.isEmpty ? 0.5 : matchingTagAffinities.reduce(0, +) / Double(matchingTagAffinities.count)
 
-        let silhouetteAff = item.silhouette.flatMap { silhouetteAffinity[$0] } ?? 0.5
-        let fabricWeightAff = fabricWeightAffinity[item.fabricWeight] ?? 0.5
+        let silhouetteAff = item.silhouette.map { silhouetteAffinity($0, slot: slot) } ?? 0.5
+        let fabricWeightAff = fabricWeightAffinity(item.fabricWeight, slot: slot)
 
-        let undertoneAff = item.colorProfile.undertone.flatMap { undertoneAffinity[$0] } ?? 0.5
-        let materialAff = item.material.flatMap { materialAffinity[$0] } ?? 0.5
-        let textureAff = item.texture.flatMap { textureAffinity[$0] } ?? 0.5
-        let fitAff = item.fit.flatMap { fitAffinity[$0] } ?? 0.5
+        let undertoneAff = item.colorProfile.undertone.map { undertoneAffinity($0, slot: slot) } ?? 0.5
+        let materialAff = item.material.map { materialAffinity($0, slot: slot) } ?? 0.5
+        let textureAff = item.texture.map { textureAffinity($0, slot: slot) } ?? 0.5
+        let fitAff = item.fit.map { fitAffinity($0, slot: slot) } ?? 0.5
 
         // Fixed 10-way mean (was 6-way before undertone/material/texture/fit
         // were learned, 2026-07-24) — an unrated attribute still contributes
@@ -614,34 +977,34 @@ struct AttributePreferenceProfile {
             .clamped(to: -Self.maxBonusMagnitude...Self.maxBonusMagnitude)
 
         var components: [AttributeMatchDetail.Component] = []
-        if colorVibeAffinity[category] != nil {
+        if colorVibeAffinityBySlot[slot]?[category] != nil || colorVibeAffinity[category] != nil {
             components.append(.init(label: "\(Self.prettify(category.rawValue)) colors", affinity: colorAff))
         }
-        if patternAffinity[pattern] != nil {
+        if patternAffinityBySlot[slot]?[pattern] != nil || patternAffinity[pattern] != nil {
             components.append(.init(label: "\(Self.prettify(pattern.rawValue)) pattern", affinity: patternAff))
         }
-        if formalityAffinity[formalityBand] != nil {
+        if formalityAffinityBySlot[slot]?[formalityBand] != nil || formalityAffinity[formalityBand] != nil {
             components.append(.init(label: "\(Self.formalityDescriptor(formalityBand)) formality", affinity: formalityAff))
         }
         if !matchingTagAffinities.isEmpty {
             components.append(.init(label: "Style: \(matchedTags.joined(separator: ", "))", affinity: styleTagAff))
         }
-        if let silhouette = item.silhouette, silhouetteAffinity[silhouette] != nil {
+        if let silhouette = item.silhouette, silhouetteAffinityBySlot[slot]?[silhouette] != nil || silhouetteAffinity[silhouette] != nil {
             components.append(.init(label: "\(silhouette) silhouette", affinity: silhouetteAff))
         }
-        if fabricWeightAffinity[item.fabricWeight] != nil {
+        if fabricWeightAffinityBySlot[slot]?[item.fabricWeight] != nil || fabricWeightAffinity[item.fabricWeight] != nil {
             components.append(.init(label: "\(Self.prettify(item.fabricWeight.rawValue)) fabric", affinity: fabricWeightAff))
         }
-        if let undertone = item.colorProfile.undertone, undertoneAffinity[undertone] != nil {
+        if let undertone = item.colorProfile.undertone, undertoneAffinityBySlot[slot]?[undertone] != nil || undertoneAffinity[undertone] != nil {
             components.append(.init(label: "\(Self.prettify(undertone.rawValue)) undertone", affinity: undertoneAff))
         }
-        if let material = item.material, materialAffinity[material] != nil {
+        if let material = item.material, materialAffinityBySlot[slot]?[material] != nil || materialAffinity[material] != nil {
             components.append(.init(label: "\(material) material", affinity: materialAff))
         }
-        if let texture = item.texture, textureAffinity[texture] != nil {
+        if let texture = item.texture, textureAffinityBySlot[slot]?[texture] != nil || textureAffinity[texture] != nil {
             components.append(.init(label: "\(texture) texture", affinity: textureAff))
         }
-        if let fit = item.fit, fitAffinity[fit] != nil {
+        if let fit = item.fit, fitAffinityBySlot[slot]?[fit] != nil || fitAffinity[fit] != nil {
             components.append(.init(label: "\(fit) fit", affinity: fitAff))
         }
 

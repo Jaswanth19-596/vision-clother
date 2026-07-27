@@ -49,6 +49,13 @@ struct GarmentMetadata: Codable, Equatable {
     var material: String?
     var texture: String?
 
+    // Rich styling attributes, round 2 (added 2026-07-27)
+    var patternScale: PatternScale?
+    var textureFinish: TextureFinish?
+    var silhouetteCut: SilhouetteCut?
+    var necklineOrRise: String?
+    var fabricWeightDetail: FabricWeightDetail?
+
     enum CodingKeys: String, CodingKey {
         case slot
         case formalityScore = "formality_score"
@@ -63,5 +70,10 @@ struct GarmentMetadata: Codable, Equatable {
         case silhouette
         case material
         case texture
+        case patternScale = "pattern_scale"
+        case textureFinish = "texture_finish"
+        case silhouetteCut = "silhouette_cut"
+        case necklineOrRise = "neckline_or_rise"
+        case fabricWeightDetail = "fabric_weight_detail"
     }
 }

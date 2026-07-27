@@ -133,9 +133,10 @@ final class OpenRouterBackgroundIsolationService: BackgroundIsolationService {
     }
 
     func isolateForeground(from imageData: Data) async throws -> Data {
+        let requestID = AppLog.newRequestID()
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             throw BackgroundIsolationError.missingAPIKey
         }

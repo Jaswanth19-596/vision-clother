@@ -202,6 +202,80 @@ struct TrendLineChart: View {
     }
 }
 
+/// One value's affinity as an overflow-safe row: optional colour swatches, a
+/// truncation-safe label in a fixed column, a proportional bar with a neutral
+/// tick at 50%, and an inline percentage. Everything is fixed-width or
+/// flexible-fill, so nothing can run off the card edge (the reason
+/// `RankedBarShareChart` isn't reused for this shape). Promoted from
+/// `TasteInsightsView`'s private `TasteBarRow` (Multi-Garment "Discover Your
+/// Style" + Chemistry Insights) so `Features/Insights/OutfitChemistryView.swift`
+/// can reuse the identical 0.5-centered affinity visual instead of duplicating it.
+struct AffinityBarRow: View {
+    let label: String
+    let affinity: Double
+    var swatchHexes: [String] = []
+
+    private var fillColor: Color {
+        if affinity > TasteInsightsAggregator.lovedThreshold { return VCAccentColor.brand }
+        if affinity < TasteInsightsAggregator.avoidThreshold { return Color(.systemGray3) }
+        return VCAccentColor.brand.opacity(0.5)
+    }
+
+    var body: some View {
+        HStack(spacing: VCSpacing.sm) {
+            if !swatchHexes.isEmpty {
+                SwatchCluster(hexes: swatchHexes)
+            }
+            Text(label)
+                .font(.subheadline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 100, alignment: .leading)
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color(.systemGray5))
+                        .frame(height: 8)
+                    Capsule()
+                        .fill(fillColor)
+                        .frame(width: max(4, w * affinity), height: 8)
+                    Rectangle()
+                        .fill(Color(.systemGray2))
+                        .frame(width: 1, height: 12)
+                        .position(x: w * 0.5, y: geo.size.height / 2)
+                }
+            }
+            .frame(height: 14)
+            Text("\(Int((affinity * 100).rounded()))%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .trailing)
+        }
+    }
+}
+
+/// A little cluster of representative colour swatches (hairline-bordered so
+/// white/pastel stay visible), used by `AffinityBarRow` for colour-based
+/// dimensions.
+struct SwatchCluster: View {
+    let hexes: [String]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(hexes.prefix(4).enumerated()), id: \.offset) { _, hex in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(hex: hex) ?? .gray)
+                    .frame(width: 11, height: 11)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(Color(.systemGray3), lineWidth: 0.5)
+                    )
+            }
+        }
+    }
+}
+
 /// One-line legend for `PeriodComparisonChart` — rendered once by the
 /// hosting card rather than per chart instance, since the current/previous
 /// color mapping is fixed and shared across every `PeriodComparisonChart`

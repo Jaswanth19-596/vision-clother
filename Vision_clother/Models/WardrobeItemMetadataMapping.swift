@@ -33,7 +33,12 @@ extension WardrobeItem {
             fit: metadata.fit?.isEmpty == true ? nil : metadata.fit,
             silhouette: metadata.silhouette?.isEmpty == true ? nil : metadata.silhouette,
             material: metadata.material?.isEmpty == true ? nil : metadata.material,
-            texture: metadata.texture?.isEmpty == true ? nil : metadata.texture
+            texture: metadata.texture?.isEmpty == true ? nil : metadata.texture,
+            patternScale: metadata.patternScale,
+            textureFinish: metadata.textureFinish,
+            silhouetteCut: metadata.silhouetteCut,
+            necklineOrRise: metadata.necklineOrRise?.isEmpty == true ? nil : metadata.necklineOrRise,
+            fabricWeightDetail: metadata.fabricWeightDetail
         )
     }
 
@@ -60,6 +65,11 @@ extension WardrobeItem {
         silhouette = metadata.silhouette?.isEmpty == true ? nil : metadata.silhouette
         material = metadata.material?.isEmpty == true ? nil : metadata.material
         texture = metadata.texture?.isEmpty == true ? nil : metadata.texture
+        patternScale = metadata.patternScale
+        textureFinish = metadata.textureFinish
+        silhouetteCut = metadata.silhouetteCut
+        necklineOrRise = metadata.necklineOrRise?.isEmpty == true ? nil : metadata.necklineOrRise
+        fabricWeightDetail = metadata.fabricWeightDetail
     }
 
     /// Inverse mapping — seeds the edit form from an existing item.
@@ -82,7 +92,12 @@ extension WardrobeItem {
             fit: fit,
             silhouette: silhouette,
             material: material,
-            texture: texture
+            texture: texture,
+            patternScale: patternScale,
+            textureFinish: textureFinish,
+            silhouetteCut: silhouetteCut,
+            necklineOrRise: necklineOrRise,
+            fabricWeightDetail: fabricWeightDetail
         )
     }
 }

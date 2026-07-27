@@ -120,6 +120,35 @@ struct GarmentAttributesFormView: View {
                 TextField("Silhouette (e.g. Straight, Boxy, Fitted)", text: $model.silhouette)
                 TextField("Material (e.g. Linen, Cotton, Denim)", text: $model.material)
                 TextField("Texture (e.g. Ribbed, Knit, Smooth)", text: $model.texture)
+                TextField("Neckline / Rise (e.g. Crew, High-rise)", text: $model.necklineOrRise)
+
+                Picker("Pattern Scale", selection: $model.patternScale) {
+                    Text("Unknown").tag(PatternScale?.none)
+                    ForEach(PatternScale.allCases, id: \.self) { scale in
+                        Text(scale.rawValue.replacingOccurrences(of: "_", with: " ").capitalized).tag(PatternScale?.some(scale))
+                    }
+                }
+
+                Picker("Texture Finish", selection: $model.textureFinish) {
+                    Text("Unknown").tag(TextureFinish?.none)
+                    ForEach(TextureFinish.allCases, id: \.self) { finish in
+                        Text(finish.rawValue.replacingOccurrences(of: "_", with: " ").capitalized).tag(TextureFinish?.some(finish))
+                    }
+                }
+
+                Picker("Silhouette Cut", selection: $model.silhouetteCut) {
+                    Text("Unknown").tag(SilhouetteCut?.none)
+                    ForEach(SilhouetteCut.allCases, id: \.self) { cut in
+                        Text(cut.rawValue.replacingOccurrences(of: "_", with: " ").capitalized).tag(SilhouetteCut?.some(cut))
+                    }
+                }
+
+                Picker("Fabric Weight Detail", selection: $model.fabricWeightDetail) {
+                    Text("Unknown").tag(FabricWeightDetail?.none)
+                    ForEach(FabricWeightDetail.allCases, id: \.self) { detail in
+                        Text(detail.rawValue.replacingOccurrences(of: "_", with: " ").capitalized).tag(FabricWeightDetail?.some(detail))
+                    }
+                }
             }
 
             Section("Description") {

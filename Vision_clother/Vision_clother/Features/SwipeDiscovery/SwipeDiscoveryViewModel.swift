@@ -3,14 +3,18 @@
 //  Vision_clother
 //
 //  Swipe-to-Learn (attribute space): loads a deck of licensed stock photos
-//  (`Services/StockImageFeedService.swift`) and, on each swipe, tags the worn
-//  garment with the vision LLM (`Services/VisionMetadataExtractionService.swift`,
-//  `.wornInScene`) and folds its attributes into the one taste engine
+//  (`Services/StockImageFeedService.swift`) and, on each swipe, tags every
+//  worn garment in the scene with the vision LLM
+//  (`Services/VisionMetadataExtractionService.swift`'s `extractSceneMetadata`)
+//  and folds their attributes (plus a whole-look combination signal, when 2+
+//  garments are detected) into the one taste engine
 //  (`Domain/AttributePreferenceProfile.swift`) via
 //  `WardrobeRepository.recordSwipeAttributes`. A cheap `noteSwipeForCalibration`
 //  call bumps the calibration ring. The former pixel-embedding path was retired
 //  2026-07-24. Persistence runs in the background so the swipe gesture never
-//  blocks on network/Vision work — the deck advances immediately.
+//  blocks on network/Vision work — the deck advances immediately. Sentiment is
+//  a 4-point scale (`SwipeSentiment`), not flat like/dislike — see
+//  `SwipeGestureResolver` below.
 //
 
 import Foundation
@@ -27,22 +31,42 @@ enum SwipeDeckLoadState: Equatable {
 
 /// Pure translation-to-decision mapping for the card's drag gesture — kept
 /// isolated from `SwipeDiscoveryView`'s rendering code so the "past
-/// threshold -> liked/disliked" logic is unit-testable without SwiftUI.
+/// threshold -> sentiment" logic is unit-testable without SwiftUI. A short
+/// drag past `commitThreshold` commits to the moderate Like/Dislike; a longer
+/// drag past `intenseThreshold` commits to the strongest Love/Hate instead.
 enum SwipeGestureResolver {
     /// Horizontal drag distance (points) past which a release commits to a
     /// like/dislike rather than springing back to center.
     static let commitThreshold: CGFloat = 110
+    /// Horizontal drag distance (points) past which a release commits to the
+    /// strongest sentiment (love/hate) instead of the moderate one.
+    static let intenseThreshold: CGFloat = 220
 
     enum Decision: Equatable {
+        case love
         case like
         case dislike
+        case hate
         case undecided
     }
 
     static func decision(forHorizontalTranslation translation: CGFloat) -> Decision {
+        if translation >= intenseThreshold { return .love }
         if translation >= commitThreshold { return .like }
+        if translation <= -intenseThreshold { return .hate }
         if translation <= -commitThreshold { return .dislike }
         return .undecided
+    }
+
+    /// `nil` for `.undecided` — the gesture never committed to anything.
+    static func sentiment(for decision: Decision) -> SwipeSentiment? {
+        switch decision {
+        case .love: return .love
+        case .like: return .like
+        case .dislike: return .dislike
+        case .hate: return .hate
+        case .undecided: return nil
+        }
     }
 }
 
@@ -118,9 +142,24 @@ final class SwipeDiscoveryViewModel {
         loadState = .loading
         do {
             let photos = try await feedService.fetchDeck(count: deckSize)
-            deck.append(contentsOf: photos)
+            // Pexels' query pool is small (`PexelsImageFeedService.defaultQueryPool`)
+            // and pages are picked at random, so the same photo can easily
+            // resurface across deck loads. Re-showing an already-swiped photo
+            // wastes the swipe: `WardrobeRepository.recordSwipeAttributes`'s
+            // own dedup (`hasSwipeAttributes`) silently skips retagging it, so
+            // it can never contribute new taste signal — filter those out
+            // before they ever reach the deck, rather than relying on that
+            // downstream skip alone.
+            let alreadyInDeck = Set(deck.map(\.id))
+            var freshPhotos: [StockPhoto] = []
+            for photo in photos {
+                guard !alreadyInDeck.contains(photo.id), !freshPhotos.contains(where: { $0.id == photo.id }) else { continue }
+                if (try? repository.hasSwipeAttributes(sourcePhotoID: photo.id)) == true { continue }
+                freshPhotos.append(photo)
+            }
+            deck.append(contentsOf: freshPhotos)
             loadState = .loaded
-            AppLog.info(.viewModel, "SwipeDiscoveryViewModel.loadDeck: ok fetched=\(photos.count) deckSize=\(deck.count)")
+            AppLog.info(.viewModel, "SwipeDiscoveryViewModel.loadDeck: ok fetched=\(photos.count) fresh=\(freshPhotos.count) deckSize=\(deck.count)")
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.loadDeck: failed — \(String(describing: error))")
             loadState = .failed("Couldn't load new photos. Try again.")
@@ -129,13 +168,13 @@ final class SwipeDiscoveryViewModel {
 
     /// Pops the top card immediately (so the deck advances without waiting
     /// on network/Vision work) and persists the swipe in the background.
-    func swipe(liked: Bool) {
+    func swipe(sentiment: SwipeSentiment) {
         guard !deck.isEmpty else { return }
         let photo = deck.removeFirst()
         lastSwipeError = nil
 
         Task { [weak self] in
-            await self?.persistSwipe(photo, liked: liked)
+            await self?.persistSwipe(photo, sentiment: sentiment)
         }
 
         if deck.count < refillThreshold {
@@ -145,46 +184,48 @@ final class SwipeDiscoveryViewModel {
         }
     }
 
-    private func persistSwipe(_ photo: StockPhoto, liked: Bool) async {
+    private func persistSwipe(_ photo: StockPhoto, sentiment: SwipeSentiment) async {
         do {
             guard let url = URL(string: photo.imageURLString) else {
                 throw StockImageFeedError.invalidResponse
             }
             let (data, _) = try await session.data(from: url)
-            // Bump the calibration ring immediately (cheap, no network/Vision).
+            // Bump the calibration ring immediately (cheap, no network/Vision) —
+            // counts any swipe regardless of sentiment intensity.
             try repository.noteSwipeForCalibration()
             refreshCalibrationState()
-            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: ok photo=\(photo.id) liked=\(liked)")
-            // The taste signal itself: tag the worn garment and fold its
-            // attributes into the one preference engine. Best-effort — a
-            // tagging failure must not undo the swipe the user already saw commit.
-            await tagSwipeAttributes(photo, liked: liked, imageData: data)
+            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: ok photo=\(photo.id) sentiment=\(sentiment.rawValue)")
+            // The taste signal itself: tag every worn garment in the scene and
+            // fold their attributes into the one preference engine. Best-effort
+            // — a tagging failure must not undo the swipe the user already saw commit.
+            await tagSwipeAttributes(photo, sentiment: sentiment, imageData: data)
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.persistSwipe: failed photo=\(photo.id) — \(String(describing: error))")
             lastSwipeError = "Couldn't save that swipe — it won't count toward your taste profile."
         }
     }
 
-    /// Extracts the worn garment's attributes and folds them into the
+    /// Extracts every worn garment's attributes (plus a whole-look
+    /// combination when 2+ are detected) and folds them into the
     /// attribute-space taste profile. Deduped by stock-photo id so a re-shown
     /// card (deck reshuffle) never pays for a second LLM tagging call. Runs in
     /// the background off the committed gesture, so its latency and any failure
     /// are invisible to the swipe.
-    private func tagSwipeAttributes(_ photo: StockPhoto, liked: Bool, imageData: Data) async {
+    private func tagSwipeAttributes(_ photo: StockPhoto, sentiment: SwipeSentiment, imageData: Data) async {
         do {
             if try repository.hasSwipeAttributes(sourcePhotoID: photo.id) {
                 AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: skip already-tagged photo=\(photo.id)")
                 return
             }
             let downscaled = ImageStorage.downscaledPNGForUpload(imageData, maxDimension: Self.taggingMaxDimension)
-            let metadata = try await visionService.extractMetadata(imageData: downscaled, focus: .wornInScene)
+            let sceneMetadata = try await visionService.extractSceneMetadata(imageData: downscaled)
             try repository.recordSwipeAttributes(
                 sourcePhotoID: photo.id,
                 imageURLString: photo.imageURLString,
-                liked: liked,
-                metadata: metadata
+                sentiment: sentiment,
+                sceneMetadata: sceneMetadata
             )
-            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: ok photo=\(photo.id) liked=\(liked) slot=\(metadata.slot.rawValue)")
+            AppLog.debug(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: ok photo=\(photo.id) sentiment=\(sentiment.rawValue) garments=\(sceneMetadata.garments.count) hasCombo=\(sceneMetadata.combination != nil)")
         } catch {
             AppLog.error(.viewModel, "SwipeDiscoveryViewModel.tagSwipeAttributes: failed photo=\(photo.id) — \(String(describing: error))")
         }

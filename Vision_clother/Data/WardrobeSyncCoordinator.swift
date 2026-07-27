@@ -329,7 +329,7 @@ final class WardrobeSyncCoordinator {
         let syncedAndLocalOnlyTypes: [any PersistentModel.Type] = [
             WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
             ItemRating.self, SavedCombination.self, UserStyleProfile.self, SwipeEvent.self,
-            SwipeAttributeEvent.self,
+            SwipeAttributeEvent.self, SwipeCombinationEvent.self,
             VisualPreferenceState.self, WardrobeItemEmbedding.self, RecommendationImpressionEvent.self,
             AnalyticsSnapshot.self, RecommendationAnalyticsSnapshot.self, WornLogEntry.self,
             ItemPairBan.self, SessionSummary.self, SyncMetadata.self,

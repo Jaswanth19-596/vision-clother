@@ -118,7 +118,7 @@ final class OpenRouterIntentExtractionService: IntentExtractionService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.network, "[\(requestID)] intentExtraction: missing auth header — \(String(describing: error))")
             throw IntentExtractionError.missingAPIKey

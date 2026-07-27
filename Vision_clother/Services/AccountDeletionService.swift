@@ -60,7 +60,7 @@ final class RemoteAccountDeletionService: AccountDeletionService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.network, "[\(requestID)] accountDeletion: missing auth header — \(String(describing: error))")
             throw AccountDeletionError.missingAPIKey

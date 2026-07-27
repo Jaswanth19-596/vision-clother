@@ -14,12 +14,16 @@
 import Foundation
 
 enum ProxyAuthHeaders {
-    /// `X-Request-Id` (generated fresh per call, `AppLog.newRequestID()`) is
-    /// the join key between this client-side call's `AppLog` lines and the
-    /// matching `backend/functions/src/app.ts` request-logging middleware's
-    /// Cloud Logging line for the same request — echoed back verbatim by the
-    /// backend so a caller that logs it here can grep both sides by the same
-    /// short id.
+    /// `X-Request-Id` is the join key between this client-side call's
+    /// `AppLog` lines and the matching `backend/functions/src/app.ts`
+    /// request-logging middleware's Cloud Logging line for the same request
+    /// — echoed back verbatim by the backend so a caller that logs it can
+    /// grep both sides by the same short id. **Callers must pass the exact
+    /// `requestID` they already minted via `AppLog.newRequestID()` for their
+    /// own log lines** — this used to generate a second, different id
+    /// internally, which silently broke that join (the id printed in the
+    /// on-device log was never the one actually sent to the server, so the
+    /// two logs couldn't be correlated at all).
     ///
     /// `X-Idempotency-Key` (a fresh UUID, same one-per-call cadence as
     /// `X-Request-Id` above) is required by `backend/functions/src/middleware/idempotency.ts`'s
@@ -32,12 +36,12 @@ enum ProxyAuthHeaders {
     /// different model/payload, which must get its own key). Harmless on
     /// routes that don't require it (`/openrouter/chat`, `/pexels/search`,
     /// the account routes) — those simply ignore the extra header.
-    static func current() async throws -> [String: String] {
+    static func current(requestID: String) async throws -> [String: String] {
         do {
             let token = try await AuthService.shared.currentIDToken()
             return [
                 "Authorization": "Bearer \(token)",
-                "X-Request-Id": AppLog.newRequestID(),
+                "X-Request-Id": requestID,
                 "X-Idempotency-Key": UUID().uuidString,
             ]
         } catch {

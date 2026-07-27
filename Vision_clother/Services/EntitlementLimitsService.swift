@@ -52,7 +52,7 @@ final class RemoteEntitlementLimitsService: EntitlementLimitsService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.network, "[\(requestID)] entitlementLimits: missing auth header — \(String(describing: error))")
             throw EntitlementLimitsServiceError.missingAPIKey

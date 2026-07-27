@@ -725,6 +725,403 @@ enum SchemaV15: VersionedSchema {
             SessionSummary.self,
         ]
     }
+
+    /// Frozen pre-`sentiment` snapshot — same reason `SchemaV13.SwipeAttributeEvent`
+    /// exists: this schema version already shipped (2026-07-24's attribute-space
+    /// swipe deck), so its checksum must keep reflecting the shape actually on
+    /// disk (still binary `liked: Bool`, one row per swiped photo). Must never
+    /// be edited to track the live `SwipeAttributeEvent` type. Nested (not
+    /// top-level) — Swift resolves the unqualified `SwipeAttributeEvent.self`
+    /// reference in `models` above to *this* nested type, not the live one
+    /// (which now has `sentiment: SwipeSentiment` instead of `liked: Bool`,
+    /// Multi-Garment "Discover Your Style" + 4-Point Sentiment).
+    @Model
+    final class SwipeAttributeEvent {
+        @Attribute(.unique) var id: UUID
+        var sourcePhotoID: String
+        var imageURLString: String
+        var liked: Bool
+        var colorVibe: ColorVibe
+        var pattern: GarmentPattern
+        var formalityBand: Int
+        var fabricWeight: FabricWeight
+        var slot: Slot
+        var styleTags: [String]
+        var silhouette: String?
+        var undertone: Undertone?
+        var material: String?
+        var texture: String?
+        var fit: String?
+        var recordedAt: Date
+
+        init(
+            id: UUID = UUID(),
+            sourcePhotoID: String,
+            imageURLString: String,
+            liked: Bool,
+            colorVibe: ColorVibe,
+            pattern: GarmentPattern,
+            formalityBand: Int,
+            fabricWeight: FabricWeight,
+            slot: Slot,
+            styleTags: [String],
+            silhouette: String?,
+            undertone: Undertone? = nil,
+            material: String? = nil,
+            texture: String? = nil,
+            fit: String? = nil,
+            recordedAt: Date = .now
+        ) {
+            self.id = id
+            self.sourcePhotoID = sourcePhotoID
+            self.imageURLString = imageURLString
+            self.liked = liked
+            self.colorVibe = colorVibe
+            self.pattern = pattern
+            self.formalityBand = formalityBand
+            self.fabricWeight = fabricWeight
+            self.slot = slot
+            self.styleTags = styleTags
+            self.silhouette = silhouette
+            self.undertone = undertone
+            self.material = material
+            self.texture = texture
+            self.fit = fit
+            self.recordedAt = recordedAt
+        }
+    }
+}
+
+/// V15 -> V16 renames `SwipeAttributeEvent.liked: Bool` to
+/// `sentiment: SwipeSentiment` (4-Point Sentiment) and adds the new
+/// `SwipeCombinationEvent` table (Multi-Garment "Discover Your Style" — a
+/// swiped photo now yields one attribute row per detected garment, plus one
+/// combination row when 2+ were detected). The sentiment rename is a semantic
+/// change, not purely additive, so this needs a `.custom` stage (see
+/// `migrateV15toV16` below) — mirroring `SavedCombination`'s V1->V2 pattern.
+enum SchemaV16: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(16, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+            WornLogEntry.self,
+            ItemPairBan.self,
+            SwipeAttributeEvent.self,
+            SessionSummary.self,
+            SwipeCombinationEvent.self,
+        ]
+    }
+
+    /// Frozen pre-round-2-attributes snapshot — same reason
+    /// `SchemaV13.SwipeAttributeEvent` exists: this schema version already
+    /// shipped (Multi-Garment "Discover Your Style" + 4-Point Sentiment,
+    /// 2026-07-27), so its checksum must keep reflecting the shape actually
+    /// on disk (no `patternScale`/`textureFinish`/`silhouetteCut`/
+    /// `necklineOrRise`/`fabricWeightDetail` columns yet — those are added by
+    /// V16 -> V17 below with zero new tables in that transition, so without
+    /// this snapshot `WardrobeItem.self` in `models` above would resolve to
+    /// the live V17 shape and collide with `SchemaV17`'s checksum). Must
+    /// never be edited to track the live `WardrobeItem` type.
+    @Model
+    final class WardrobeItem {
+        @Attribute(.unique) var id: UUID
+        var slot: Slot
+        var formalityScore: Double
+        var colorProfile: ColorProfile
+        var pattern: GarmentPattern
+        var seasonality: [Season]
+        var fabricWeight: FabricWeight
+        var imageAssetName: String?
+        var isGhostElement: Bool
+        var itemDescription: String?
+        var styleTags: [String] = []
+        var garmentSubtype: String? = nil
+        var fit: String? = nil
+        var silhouette: String? = nil
+        var material: String? = nil
+        var texture: String? = nil
+        var imageFingerprint: String? = nil
+        var inLaundry: Bool = false
+        var wearCount: Int = 0
+        var lastWornDate: Date? = nil
+
+        init(
+            id: UUID = UUID(),
+            slot: Slot,
+            formalityScore: Double,
+            colorProfile: ColorProfile,
+            pattern: GarmentPattern,
+            seasonality: [Season],
+            fabricWeight: FabricWeight,
+            imageAssetName: String? = nil,
+            isGhostElement: Bool = false,
+            itemDescription: String? = nil,
+            styleTags: [String] = [],
+            garmentSubtype: String? = nil,
+            fit: String? = nil,
+            silhouette: String? = nil,
+            material: String? = nil,
+            texture: String? = nil,
+            imageFingerprint: String? = nil,
+            inLaundry: Bool = false,
+            wearCount: Int = 0,
+            lastWornDate: Date? = nil
+        ) {
+            self.id = id
+            self.slot = slot
+            self.formalityScore = formalityScore
+            self.colorProfile = colorProfile
+            self.pattern = pattern
+            self.seasonality = seasonality
+            self.fabricWeight = fabricWeight
+            self.imageAssetName = imageAssetName
+            self.isGhostElement = isGhostElement
+            self.itemDescription = itemDescription
+            self.styleTags = styleTags
+            self.garmentSubtype = garmentSubtype
+            self.fit = fit
+            self.silhouette = silhouette
+            self.material = material
+            self.texture = texture
+            self.imageFingerprint = imageFingerprint
+            self.inLaundry = inLaundry
+            self.wearCount = wearCount
+            self.lastWornDate = lastWornDate
+        }
+    }
+
+    /// Frozen pre-`weight` snapshot — same reason `WardrobeItem` above is
+    /// frozen in this schema: `SwipeAttributeEvent` gains a `weight` column
+    /// at V16 -> V17 with no new table in that transition, so this must
+    /// stay pinned to the shape that actually shipped as V16 (post-sentiment
+    /// rename, pre-credit-assignment-weight). Must never be edited to track
+    /// the live `SwipeAttributeEvent` type.
+    @Model
+    final class SwipeAttributeEvent {
+        @Attribute(.unique) var id: UUID
+        var sourcePhotoID: String
+        var imageURLString: String
+        var sentiment: SwipeSentiment = SwipeSentiment.like
+        var colorVibe: ColorVibe
+        var pattern: GarmentPattern
+        var formalityBand: Int
+        var fabricWeight: FabricWeight
+        var slot: Slot
+        var styleTags: [String]
+        var silhouette: String?
+        var undertone: Undertone?
+        var material: String?
+        var texture: String?
+        var fit: String?
+        var recordedAt: Date
+
+        init(
+            id: UUID = UUID(),
+            sourcePhotoID: String,
+            imageURLString: String,
+            sentiment: SwipeSentiment,
+            colorVibe: ColorVibe,
+            pattern: GarmentPattern,
+            formalityBand: Int,
+            fabricWeight: FabricWeight,
+            slot: Slot,
+            styleTags: [String],
+            silhouette: String?,
+            undertone: Undertone? = nil,
+            material: String? = nil,
+            texture: String? = nil,
+            fit: String? = nil,
+            recordedAt: Date = .now
+        ) {
+            self.id = id
+            self.sourcePhotoID = sourcePhotoID
+            self.imageURLString = imageURLString
+            self.sentiment = sentiment
+            self.colorVibe = colorVibe
+            self.pattern = pattern
+            self.formalityBand = formalityBand
+            self.fabricWeight = fabricWeight
+            self.slot = slot
+            self.styleTags = styleTags
+            self.silhouette = silhouette
+            self.undertone = undertone
+            self.material = material
+            self.texture = texture
+            self.fit = fit
+            self.recordedAt = recordedAt
+        }
+    }
+
+    /// Frozen pre-relational-chemistry snapshot — same reason `WardrobeItem`
+    /// above is frozen in this schema: `SwipeCombinationEvent` gains ten
+    /// relational-chemistry columns at V16 -> V17 with no new table in that
+    /// transition, so this must stay pinned to the shape that actually
+    /// shipped as V16 (the version this table was introduced in). Must never
+    /// be edited to track the live `SwipeCombinationEvent` type.
+    @Model
+    final class SwipeCombinationEvent {
+        @Attribute(.unique) var id: UUID
+        var sourcePhotoID: String
+        var sentiment: SwipeSentiment
+        var colorHarmony: ColorHarmonyDescriptor
+        var styleCoherenceTags: [String]
+        var formalityConsistency: FormalityConsistency
+        var rationale: String
+        var recordedAt: Date
+
+        init(
+            id: UUID = UUID(),
+            sourcePhotoID: String,
+            sentiment: SwipeSentiment,
+            colorHarmony: ColorHarmonyDescriptor,
+            styleCoherenceTags: [String],
+            formalityConsistency: FormalityConsistency,
+            rationale: String,
+            recordedAt: Date = .now
+        ) {
+            self.id = id
+            self.sourcePhotoID = sourcePhotoID
+            self.sentiment = sentiment
+            self.colorHarmony = colorHarmony
+            self.styleCoherenceTags = styleCoherenceTags
+            self.formalityConsistency = formalityConsistency
+            self.rationale = rationale
+            self.recordedAt = recordedAt
+        }
+    }
+
+    /// Frozen pre-swipe+comment-combination-feedback snapshot — same reason
+    /// `SchemaV10.OutfitFeedback` exists: `OutfitFeedback` gains sixteen new
+    /// columns at V16 -> V17 with no new table in that transition, so this
+    /// must stay pinned to the shape that actually shipped as V16. Must
+    /// never be edited to track the live `OutfitFeedback` type.
+    @Model
+    final class OutfitFeedback {
+        @Attribute(.unique) var id: UUID
+        var outfitID: UUID
+        var likedOverall: Bool
+        var recordedAt: Date
+        var overallSatisfaction: Int?
+        var wearAgainRaw: String?
+        var confidence: Int?
+        var comfort: Int?
+        var occasionMatch: Int?
+        var styleMatch: Int?
+        var colorHarmony: Int?
+        var silhouette: Int?
+        var weatherSuitability: Int?
+        var practicality: Int?
+        var favoriteItemID: UUID?
+        var weakestItemID: UUID?
+        var changeReasonsRaw: [String] = []
+        var likeReasonsRaw: [String] = []
+        var occasionRaw: String?
+        var wouldBuySimilar: Bool?
+        var savedForInspiration: Bool = false
+        var replacementSuggestionRaw: String?
+
+        init(
+            id: UUID = UUID(),
+            outfitID: UUID,
+            likedOverall: Bool,
+            recordedAt: Date = .now,
+            overallSatisfaction: Int? = nil,
+            wearAgainRaw: String? = nil,
+            confidence: Int? = nil,
+            comfort: Int? = nil,
+            occasionMatch: Int? = nil,
+            styleMatch: Int? = nil,
+            colorHarmony: Int? = nil,
+            silhouette: Int? = nil,
+            weatherSuitability: Int? = nil,
+            practicality: Int? = nil,
+            favoriteItemID: UUID? = nil,
+            weakestItemID: UUID? = nil,
+            changeReasonsRaw: [String] = [],
+            likeReasonsRaw: [String] = [],
+            occasionRaw: String? = nil,
+            wouldBuySimilar: Bool? = nil,
+            savedForInspiration: Bool = false,
+            replacementSuggestionRaw: String? = nil
+        ) {
+            self.id = id
+            self.outfitID = outfitID
+            self.likedOverall = likedOverall
+            self.recordedAt = recordedAt
+            self.overallSatisfaction = overallSatisfaction
+            self.wearAgainRaw = wearAgainRaw
+            self.confidence = confidence
+            self.comfort = comfort
+            self.occasionMatch = occasionMatch
+            self.styleMatch = styleMatch
+            self.colorHarmony = colorHarmony
+            self.silhouette = silhouette
+            self.weatherSuitability = weatherSuitability
+            self.practicality = practicality
+            self.favoriteItemID = favoriteItemID
+            self.weakestItemID = weakestItemID
+            self.changeReasonsRaw = changeReasonsRaw
+            self.likeReasonsRaw = likeReasonsRaw
+            self.occasionRaw = occasionRaw
+            self.wouldBuySimilar = wouldBuySimilar
+            self.savedForInspiration = savedForInspiration
+            self.replacementSuggestionRaw = replacementSuggestionRaw
+        }
+    }
+}
+
+/// V16 -> V17 adds richer per-garment attributes (`patternScale`/`textureFinish`/
+/// `silhouetteCut`/`necklineOrRise`/`fabricWeightDetail`) to `WardrobeItem`,
+/// a `weight` credit-assignment column to `SwipeAttributeEvent`, ten
+/// relational-chemistry columns to `SwipeCombinationEvent` (mirroring
+/// `CombinationMetadata`'s expanded schema), and sixteen swipe+comment
+/// combination-feedback columns to `OutfitFeedback` (AI Stylist Data Model
+/// Refactor, 2026-07-27). Every new column across all four types is
+/// optional or defaulted with no rename/type change to any existing column,
+/// so like V13 -> V14's four-column batch this needs no `.custom` stage —
+/// one `.lightweight` stage covers all of it, and every pre-existing row
+/// reads the new columns as `nil`/`1.0`/`[]` as appropriate, which is
+/// correct (they predate these fields entirely).
+enum SchemaV17: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(17, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            WardrobeItem.self,
+            OutfitFeedback.self,
+            ItemFeedback.self,
+            PairFeedback.self,
+            SavedCombination.self,
+            ItemRating.self,
+            UserStyleProfile.self,
+            SwipeEvent.self,
+            VisualPreferenceState.self,
+            WardrobeItemEmbedding.self,
+            RecommendationImpressionEvent.self,
+            SyncMetadata.self,
+            AnalyticsSnapshot.self,
+            RecommendationAnalyticsSnapshot.self,
+            WornLogEntry.self,
+            ItemPairBan.self,
+            SwipeAttributeEvent.self,
+            SessionSummary.self,
+            SwipeCombinationEvent.self,
+        ]
+    }
 }
 
 /// Bridges data across the `willMigrate`/`didMigrate` boundary of the
@@ -737,10 +1134,20 @@ private enum SavedCombinationMigrationCache {
     static var pendingSlotData: [UUID: (items: [Slot: UUID], labels: [Slot: String])] = [:]
 }
 
-enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self, SchemaV12.self, SchemaV13.self, SchemaV14.self, SchemaV15.self] }
+/// Bridges data across the `willMigrate`/`didMigrate` boundary of
+/// `migrateV15toV16` below — same mechanism as `SavedCombinationMigrationCache`
+/// above: `willMigrate` runs against the still-`liked: Bool`-shaped store,
+/// `didMigrate` runs after the structural migration (the new `sentiment`
+/// column exists, `liked` is gone), so the derived `SwipeSentiment` value
+/// must be carried across in this cache.
+private enum SwipeSentimentMigrationCache {
+    static var pendingSentiment: [UUID: SwipeSentiment] = [:]
+}
 
-    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11, migrateV11toV12, migrateV12toV13, migrateV13toV14, migrateV14toV15] }
+enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self, SchemaV10.self, SchemaV11.self, SchemaV12.self, SchemaV13.self, SchemaV14.self, SchemaV15.self, SchemaV16.self, SchemaV17.self] }
+
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9, migrateV9toV10, migrateV10toV11, migrateV11toV12, migrateV12toV13, migrateV13toV14, migrateV14toV15, migrateV15toV16, migrateV16toV17] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -840,5 +1247,37 @@ enum SavedCombinationMigrationPlan: SchemaMigrationPlan {
     static let migrateV14toV15 = MigrationStage.lightweight(
         fromVersion: SchemaV14.self,
         toVersion: SchemaV15.self
+    )
+
+    /// Semantic rename (`liked: Bool` -> `sentiment: SwipeSentiment`), not
+    /// purely additive, so this needs a `.custom` stage — mirroring
+    /// `migrateV1toV2`'s willMigrate/didMigrate shape. A legacy binary swipe
+    /// carried no intensity signal, so it maps to the *moderate* sentiment
+    /// values (`.like`/`.dislike`), never the extreme `.love`/`.hate` ones —
+    /// those are reserved for a genuine long-drag/button gesture going
+    /// forward.
+    static let migrateV15toV16 = MigrationStage.custom(
+        fromVersion: SchemaV15.self,
+        toVersion: SchemaV16.self,
+        willMigrate: { context in
+            let oldEvents = try context.fetch(FetchDescriptor<SchemaV15.SwipeAttributeEvent>())
+            for event in oldEvents {
+                SwipeSentimentMigrationCache.pendingSentiment[event.id] = event.liked ? .like : .dislike
+            }
+        },
+        didMigrate: { context in
+            let migratedEvents = try context.fetch(FetchDescriptor<SwipeAttributeEvent>())
+            for event in migratedEvents {
+                guard let sentiment = SwipeSentimentMigrationCache.pendingSentiment[event.id] else { continue }
+                event.sentiment = sentiment
+            }
+            try context.save()
+            SwipeSentimentMigrationCache.pendingSentiment.removeAll()
+        }
+    )
+
+    static let migrateV16toV17 = MigrationStage.lightweight(
+        fromVersion: SchemaV16.self,
+        toVersion: SchemaV17.self
     )
 }

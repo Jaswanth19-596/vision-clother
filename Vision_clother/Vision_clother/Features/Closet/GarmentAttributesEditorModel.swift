@@ -31,6 +31,12 @@ final class GarmentAttributesEditorModel {
     var material: String = ""
     var texture: String = ""
 
+    var patternScale: PatternScale? = nil
+    var textureFinish: TextureFinish? = nil
+    var silhouetteCut: SilhouetteCut? = nil
+    var necklineOrRise: String = ""
+    var fabricWeightDetail: FabricWeightDetail? = nil
+
     func reset(defaultSlot: Slot) {
         slot = defaultSlot
         formalityScore = 3.0
@@ -48,6 +54,11 @@ final class GarmentAttributesEditorModel {
         silhouette = ""
         material = ""
         texture = ""
+        patternScale = nil
+        textureFinish = nil
+        silhouetteCut = nil
+        necklineOrRise = ""
+        fabricWeightDetail = nil
     }
 
     func load(from metadata: GarmentMetadata) {
@@ -67,6 +78,11 @@ final class GarmentAttributesEditorModel {
         silhouette = metadata.silhouette ?? ""
         material = metadata.material ?? ""
         texture = metadata.texture ?? ""
+        patternScale = metadata.patternScale
+        textureFinish = metadata.textureFinish
+        silhouetteCut = metadata.silhouetteCut
+        necklineOrRise = metadata.necklineOrRise ?? ""
+        fabricWeightDetail = metadata.fabricWeightDetail
     }
 
     func makeMetadata() -> GarmentMetadata {
@@ -88,7 +104,12 @@ final class GarmentAttributesEditorModel {
             fit: fit,
             silhouette: silhouette,
             material: material,
-            texture: texture
+            texture: texture,
+            patternScale: patternScale,
+            textureFinish: textureFinish,
+            silhouetteCut: silhouetteCut,
+            necklineOrRise: necklineOrRise.isEmpty ? nil : necklineOrRise,
+            fabricWeightDetail: fabricWeightDetail
         )
     }
 }

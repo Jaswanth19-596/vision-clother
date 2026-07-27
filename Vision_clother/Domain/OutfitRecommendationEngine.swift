@@ -100,6 +100,17 @@ enum OutfitRecommendationEngine {
         let affinityBonuses: [Double] = items.map { history.attributeProfile.affinityBonus(for: $0) }
         let meanAffinityBonus = affinityBonuses.isEmpty ? 0 : affinityBonuses.reduce(0, +) / Double(affinityBonuses.count)
 
+        // Combination Chemistry Booster (added 2026-07-27): a deterministic,
+        // on-device estimate of the candidate outfit's own relational
+        // chemistry (palette archetype, contrast, formality bridging, etc.)
+        // scored against what the user's swiped/rated combinations have
+        // taught. Cold-start-safe — with an empty profile every affinity map
+        // is empty, so `combinationAffinityBonus` returns 0 until real
+        // combination feedback accumulates, leaving this byte-for-byte
+        // unchanged from before this feature existed.
+        let combinationEstimate = PairCompatibilityScoring.estimateCombinationHeuristics(items)
+        let combinationBonus = history.attributeProfile.combinationAffinityBonus(for: combinationEstimate)
+
         // Read Disliked Signals (added 2026-07-11): previously `likedOverall`
         // and `.normalizedRating` were collected but never read by scoring —
         // a disliked outfit or item could keep resurfacing indefinitely.
@@ -183,7 +194,7 @@ enum OutfitRecommendationEngine {
             }
         }
 
-        return (meanPairScore + meanPreference + meanAffinityBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
+        return (meanPairScore + meanPreference + meanAffinityBonus + combinationBonus + formalityPenalty + weatherPenalty + profileBonus + negativeFeedbackPenalty)
             .clamped(to: 0...1)
     }
 }

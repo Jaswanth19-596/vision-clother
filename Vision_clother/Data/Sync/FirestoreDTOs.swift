@@ -162,6 +162,24 @@ struct OutfitFeedbackDTO: Codable {
     var savedForInspiration: Bool = false
     var replacementSuggestionRaw: String?
 
+    // Swipe + Comment combination feedback (added 2026-07-27).
+    var swipeSentimentRaw: String?
+    var swipeComment: String?
+    var inferredColorHarmonyRaw: String?
+    var inferredStyleCoherenceTags: [String] = []
+    var inferredFormalityConsistencyRaw: String?
+    var inferredRationale: String?
+    var inferredPaletteArchetypeRaw: String?
+    var inferredContrastLevelRaw: String?
+    var inferredColorSandwiching: Bool?
+    var inferredColorDistribution: String?
+    var inferredProportionRatioRaw: String?
+    var inferredVolumeBalanceRaw: String?
+    var inferredTextureContrastRaw: String?
+    var inferredFormalityBridgeRaw: String?
+    var inferredOverallAestheticVibe: String?
+    var inferredComplexityScore: Int?
+
     static func from(_ model: OutfitFeedback) -> OutfitFeedbackDTO {
         OutfitFeedbackDTO(
             id: model.id.uuidString,
@@ -185,14 +203,30 @@ struct OutfitFeedbackDTO: Codable {
             occasionRaw: model.occasionRaw,
             wouldBuySimilar: model.wouldBuySimilar,
             savedForInspiration: model.savedForInspiration,
-            replacementSuggestionRaw: model.replacementSuggestionRaw
+            replacementSuggestionRaw: model.replacementSuggestionRaw,
+            swipeSentimentRaw: model.swipeSentimentRaw,
+            swipeComment: model.swipeComment,
+            inferredColorHarmonyRaw: model.inferredColorHarmonyRaw,
+            inferredStyleCoherenceTags: model.inferredStyleCoherenceTags,
+            inferredFormalityConsistencyRaw: model.inferredFormalityConsistencyRaw,
+            inferredRationale: model.inferredRationale,
+            inferredPaletteArchetypeRaw: model.inferredPaletteArchetypeRaw,
+            inferredContrastLevelRaw: model.inferredContrastLevelRaw,
+            inferredColorSandwiching: model.inferredColorSandwiching,
+            inferredColorDistribution: model.inferredColorDistribution,
+            inferredProportionRatioRaw: model.inferredProportionRatioRaw,
+            inferredVolumeBalanceRaw: model.inferredVolumeBalanceRaw,
+            inferredTextureContrastRaw: model.inferredTextureContrastRaw,
+            inferredFormalityBridgeRaw: model.inferredFormalityBridgeRaw,
+            inferredOverallAestheticVibe: model.inferredOverallAestheticVibe,
+            inferredComplexityScore: model.inferredComplexityScore
         )
     }
 
     func toModel() -> OutfitFeedback? {
         guard let uuid = UUID(uuidString: id), let outfitUUID = UUID(uuidString: outfitID) else { return nil }
 
-        return OutfitFeedback(
+        let model = OutfitFeedback(
             id: uuid,
             outfitID: outfitUUID,
             likedOverall: likedOverall,
@@ -216,6 +250,27 @@ struct OutfitFeedbackDTO: Codable {
             savedForInspiration: savedForInspiration,
             replacementSuggestion: replacementSuggestionRaw.flatMap(ReplacementSuggestion.init(rawValue:))
         )
+        // Swipe + Comment combination feedback (added 2026-07-27) — no
+        // dedicated init params (the model's convenience `sentiment`/`comment`/
+        // `inferredChemistry` init params take typed values, not the DTO's
+        // raw wire strings), so set the raw stored properties directly.
+        model.swipeSentimentRaw = swipeSentimentRaw
+        model.swipeComment = swipeComment
+        model.inferredColorHarmonyRaw = inferredColorHarmonyRaw
+        model.inferredStyleCoherenceTags = inferredStyleCoherenceTags
+        model.inferredFormalityConsistencyRaw = inferredFormalityConsistencyRaw
+        model.inferredRationale = inferredRationale
+        model.inferredPaletteArchetypeRaw = inferredPaletteArchetypeRaw
+        model.inferredContrastLevelRaw = inferredContrastLevelRaw
+        model.inferredColorSandwiching = inferredColorSandwiching
+        model.inferredColorDistribution = inferredColorDistribution
+        model.inferredProportionRatioRaw = inferredProportionRatioRaw
+        model.inferredVolumeBalanceRaw = inferredVolumeBalanceRaw
+        model.inferredTextureContrastRaw = inferredTextureContrastRaw
+        model.inferredFormalityBridgeRaw = inferredFormalityBridgeRaw
+        model.inferredOverallAestheticVibe = inferredOverallAestheticVibe
+        model.inferredComplexityScore = inferredComplexityScore
+        return model
     }
 }
 

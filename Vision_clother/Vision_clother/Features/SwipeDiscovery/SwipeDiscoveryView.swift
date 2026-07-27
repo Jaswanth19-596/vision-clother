@@ -17,6 +17,11 @@ struct SwipeDiscoveryView: View {
     @State private var viewModel: SwipeDiscoveryViewModel?
     @State private var dragOffset: CGSize = .zero
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// `.sensoryFeedback(_:trigger:)` triggers for the moderate (Like/Dislike)
+    /// and strongest (Love/Hate) sentiment commits — two separate counters
+    /// since the two intensities map to different haptic weights.
+    @State private var moderateImpactTick = 0
+    @State private var intenseImpactTick = 0
 
     var body: some View {
         Group {
@@ -64,6 +69,8 @@ struct SwipeDiscoveryView: View {
             controls(viewModel: viewModel)
         }
         .padding(VCSpacing.lg)
+        .sensoryFeedback(.impact(weight: .light), trigger: moderateImpactTick)
+        .sensoryFeedback(.impact(weight: .heavy), trigger: intenseImpactTick)
     }
 
     // MARK: - Card stack
@@ -149,18 +156,25 @@ struct SwipeDiscoveryView: View {
     @ViewBuilder
     private func swipeStamp(edge: HorizontalEdge) -> some View {
         let decision = SwipeGestureResolver.decision(forHorizontalTranslation: dragOffset.width)
-        let isLikeStamp = edge == .leading
-        if (isLikeStamp && decision == .like) || (!isLikeStamp && decision == .dislike) {
-            Text(isLikeStamp ? "LIKE" : "NOPE")
-                .font(.title2.bold())
-                .foregroundStyle(isLikeStamp ? .green : .red)
+        let isLeadingStamp = edge == .leading
+        let matchesEdge = (isLeadingStamp && (decision == .like || decision == .love))
+            || (!isLeadingStamp && (decision == .dislike || decision == .hate))
+        if matchesEdge {
+            // Love/Hate get a visibly bigger stamp than the moderate Like/
+            // Dislike, so the drag's intensity is legible before release.
+            let isIntense = decision == .love || decision == .hate
+            let label = isLeadingStamp ? (decision == .love ? "LOVE" : "LIKE") : (decision == .hate ? "HATE" : "NOPE")
+            let tint: Color = isLeadingStamp ? .green : .red
+            Text(label)
+                .font(isIntense ? .largeTitle.bold() : .title2.bold())
+                .foregroundStyle(tint)
                 .padding(.horizontal, VCSpacing.md)
                 .padding(.vertical, VCSpacing.xs)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(isLikeStamp ? .green : .red, lineWidth: 3)
+                        .stroke(tint, lineWidth: isIntense ? 5 : 3)
                 )
-                .rotationEffect(.degrees(isLikeStamp ? -15 : 15))
+                .rotationEffect(.degrees(isLeadingStamp ? -15 : 15))
                 .padding(VCSpacing.lg)
         }
     }
@@ -173,12 +187,10 @@ struct SwipeDiscoveryView: View {
                 dragOffset = value.translation
             }
             .onEnded { value in
-                switch SwipeGestureResolver.decision(forHorizontalTranslation: value.translation.width) {
-                case .like:
-                    commitSwipe(liked: true, viewModel: viewModel)
-                case .dislike:
-                    commitSwipe(liked: false, viewModel: viewModel)
-                case .undecided:
+                let decision = SwipeGestureResolver.decision(forHorizontalTranslation: value.translation.width)
+                if let sentiment = SwipeGestureResolver.sentiment(for: decision) {
+                    commitSwipe(sentiment: sentiment, viewModel: viewModel)
+                } else {
                     withAnimation(vcMotion(VCMotion.gesture, reduceMotion: reduceMotion)) {
                         dragOffset = .zero
                     }
@@ -189,46 +201,59 @@ struct SwipeDiscoveryView: View {
     /// Plays the fly-off-screen animation to completion before mutating the
     /// view model's deck — swapping in the next card mid-flight would cut
     /// the animation short and read as a jump-cut.
-    private func commitSwipe(liked: Bool, viewModel: SwipeDiscoveryViewModel) {
+    private func commitSwipe(sentiment: SwipeSentiment, viewModel: SwipeDiscoveryViewModel) {
         guard viewModel.topPhoto != nil else { return }
         withAnimation(vcMotion(VCMotion.commit, reduceMotion: reduceMotion)) {
-            dragOffset = CGSize(width: liked ? 600 : -600, height: dragOffset.height)
+            dragOffset = CGSize(width: sentiment.liked ? 600 : -600, height: dragOffset.height)
+        }
+        switch sentiment {
+        case .love, .hate:
+            intenseImpactTick += 1
+        case .like, .dislike:
+            moderateImpactTick += 1
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + VCMotion.commitDuration) {
-            viewModel.swipe(liked: liked)
+            viewModel.swipe(sentiment: sentiment)
             dragOffset = .zero
         }
     }
 
     // MARK: - Controls
 
-    /// Explicit buttons as a non-gesture fallback — same swipe outcome as
-    /// the drag gesture, for accessibility and testability.
+    /// Explicit 4-button fallback — same swipe outcomes as the drag gesture's
+    /// two thresholds, for accessibility and testability.
     private func controls(viewModel: SwipeDiscoveryViewModel) -> some View {
-        HStack(spacing: VCSpacing.xxl) {
-            Button {
-                commitSwipe(liked: false, viewModel: viewModel)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.red)
-                    .frame(width: 56, height: 56)
-                    .background(.thinMaterial, in: Circle())
-            }
-            .disabled(viewModel.topPhoto == nil)
-            .accessibilityLabel("Dislike")
+        HStack(spacing: VCSpacing.xl) {
+            sentimentButton(sentiment: .hate, systemImage: "heart.slash.fill", tint: .red, viewModel: viewModel)
+            sentimentButton(sentiment: .dislike, systemImage: "xmark", tint: .red, viewModel: viewModel)
+            sentimentButton(sentiment: .like, systemImage: "heart", tint: .green, viewModel: viewModel)
+            sentimentButton(sentiment: .love, systemImage: "heart.fill", tint: .green, viewModel: viewModel)
+        }
+    }
 
-            Button {
-                commitSwipe(liked: true, viewModel: viewModel)
-            } label: {
-                Image(systemName: "heart.fill")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .frame(width: 56, height: 56)
-                    .background(.thinMaterial, in: Circle())
-            }
-            .disabled(viewModel.topPhoto == nil)
-            .accessibilityLabel("Like")
+    private func sentimentButton(
+        sentiment: SwipeSentiment, systemImage: String, tint: Color, viewModel: SwipeDiscoveryViewModel
+    ) -> some View {
+        let isIntense = sentiment == .love || sentiment == .hate
+        return Button {
+            commitSwipe(sentiment: sentiment, viewModel: viewModel)
+        } label: {
+            Image(systemName: systemImage)
+                .font(isIntense ? .title.weight(.semibold) : .title2.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: isIntense ? 56 : 48, height: isIntense ? 56 : 48)
+                .background(.thinMaterial, in: Circle())
+        }
+        .disabled(viewModel.topPhoto == nil)
+        .accessibilityLabel(sentimentAccessibilityLabel(sentiment))
+    }
+
+    private func sentimentAccessibilityLabel(_ sentiment: SwipeSentiment) -> String {
+        switch sentiment {
+        case .love: return "Love"
+        case .like: return "Like"
+        case .dislike: return "Dislike"
+        case .hate: return "Hate"
         }
     }
 }
@@ -242,6 +267,7 @@ struct SwipeDiscoveryView: View {
             WardrobeItem.self, OutfitFeedback.self, ItemFeedback.self, PairFeedback.self,
             SavedCombination.self, ItemRating.self, UserStyleProfile.self,
             SwipeEvent.self, VisualPreferenceState.self, WardrobeItemEmbedding.self, SwipeAttributeEvent.self,
+            SwipeCombinationEvent.self,
         ],
         inMemory: true
     )

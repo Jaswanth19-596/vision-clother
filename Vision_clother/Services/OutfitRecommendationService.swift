@@ -161,7 +161,7 @@ final class OpenRouterOutfitRecommendationService: OutfitRecommendationService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.recommendation, "[\(requestID)] recommend: missing auth header — \(String(describing: error))")
             throw OutfitRecommendationError.missingAPIKey

@@ -114,6 +114,7 @@ struct DailyAssistantView: View {
                     jobQueueStore: jobQueueStore,
                     recommendationService: ServiceFactory.makeOutfitRecommendationService(),
                     stylistQAService: ServiceFactory.makeStylistQAService(),
+                    intentRoutingService: ServiceFactory.makeIntentRoutingService(),
                     weatherProvider: ServiceFactory.makeWeatherProvider(),
                     profileDerivationService: ServiceFactory.makeUserProfileDerivationService(),
                     usageTracker: usageTracker

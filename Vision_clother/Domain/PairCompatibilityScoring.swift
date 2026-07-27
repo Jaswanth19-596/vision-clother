@@ -148,6 +148,150 @@ enum PairCompatibilityScoring {
     }
 }
 
+extension PairCompatibilityScoring {
+    /// The objectively-derivable subset of `CombinationMetadata` (Swipe +
+    /// Comment combination feedback, 2026-07-27), estimated deterministically
+    /// from a candidate outfit's own item attributes — used only for
+    /// recommendation-time scoring
+    /// (`AttributePreferenceProfile.combinationAffinityBonus`), never
+    /// persisted or shown to the user directly. `overallAestheticVibe`/
+    /// `complexityScore` are deliberately absent — there's no reliable
+    /// deterministic way to estimate a whole outfit's subjective "vibe" or
+    /// visual complexity from item attributes alone, unlike contrast or
+    /// formality bridging. Any dimension that can't be estimated (e.g.
+    /// malformed hex, no items in the relevant slots) is left `nil` and
+    /// simply skipped downstream, never defaulted.
+    struct CombinationHeuristicEstimate {
+        var paletteArchetype: PaletteArchetype?
+        var contrastLevel: ContrastLevel?
+        var colorSandwiching: Bool?
+        var proportionRatio: ProportionRatio?
+        var volumeBalance: VolumeBalance?
+        var textureContrast: TextureContrast?
+        var formalityBridge: FormalityBridge?
+    }
+
+    /// Deterministic, on-device estimate of `CombinationHeuristicEstimate`
+    /// for an arbitrary set of items — the recommendation LLM never sees
+    /// images and can't re-derive these judgments per candidate outfit, so
+    /// this reuses the same color-hue (`ColorHarmony`), formality-mismatch
+    /// (`FashionKnowledgeConstants.DressCode`), and loose/slim fit-string
+    /// heuristics `aestheticPrior` above already relies on, rather than
+    /// inventing new math.
+    static func estimateCombinationHeuristics(_ items: [WardrobeItem]) -> CombinationHeuristicEstimate {
+        var estimate = CombinationHeuristicEstimate()
+        guard items.count >= 2 else { return estimate }
+
+        func hueDistance(_ h1: Double, _ h2: Double) -> Double {
+            let diff = abs(h1 - h2).truncatingRemainder(dividingBy: 360)
+            return diff > 180 ? 360 - diff : diff
+        }
+
+        // Palette archetype + contrast level, from pairwise hue/lightness
+        // relationships across every item with a parseable hex.
+        let hsls = items.compactMap { ColorHarmony.hsl(fromHex: $0.colorProfile.primaryHex) }
+        if hsls.count >= 2 {
+            let achromaticSaturationThreshold = 0.12
+            let chromatic = hsls.filter { $0.s >= achromaticSaturationThreshold }
+            let lightnesses = hsls.map(\.l)
+            let lightnessSpread = (lightnesses.max() ?? 0) - (lightnesses.min() ?? 0)
+
+            if chromatic.count <= 1 {
+                // At most one non-neutral color — reads as neutral overall,
+                // with a "pop" if exactly one chromatic item stands out.
+                estimate.paletteArchetype = chromatic.isEmpty ? .monochromatic : .neutralWithPop
+            } else {
+                var maxHueDistance = 0.0
+                for i in 0..<(chromatic.count - 1) {
+                    for j in (i + 1)..<chromatic.count {
+                        maxHueDistance = max(maxHueDistance, hueDistance(chromatic[i].h, chromatic[j].h))
+                    }
+                }
+                switch maxHueDistance {
+                case 0..<15: estimate.paletteArchetype = .monochromatic
+                case 15..<40: estimate.paletteArchetype = .analogous
+                case 40..<110: estimate.paletteArchetype = .clashing
+                case 110..<150: estimate.paletteArchetype = .triadic
+                default: estimate.paletteArchetype = .complementary
+                }
+            }
+
+            switch lightnessSpread {
+            case ..<0.2: estimate.contrastLevel = .lowTonal
+            case 0.2..<0.45: estimate.contrastLevel = .mediumContrast
+            default: estimate.contrastLevel = .highContrast
+            }
+        }
+
+        // Color sandwiching: the top/outerwear color echoed by footwear over
+        // a contrasting bottom.
+        let topOrOuter = items.first { $0.slot == .outerwear } ?? items.first { $0.slot == .top }
+        if let topOrOuter, let bottom = items.first(where: { $0.slot == .bottom }), let footwear = items.first(where: { $0.slot == .footwear }),
+           let topHSL = ColorHarmony.hsl(fromHex: topOrOuter.colorProfile.primaryHex),
+           let bottomHSL = ColorHarmony.hsl(fromHex: bottom.colorProfile.primaryHex),
+           let footwearHSL = ColorHarmony.hsl(fromHex: footwear.colorProfile.primaryHex) {
+            let topFootwearDistance = hueDistance(topHSL.h, footwearHSL.h)
+            let topBottomDistance = hueDistance(topHSL.h, bottomHSL.h)
+            estimate.colorSandwiching = topFootwearDistance < 30 && topBottomDistance > 40
+        }
+
+        // Formality bridge — same mismatch-delta thresholds `aestheticPrior`
+        // uses, single-sourced from `FashionKnowledgeConstants.DressCode`.
+        if let minFormality = items.map(\.formalityScore).min(), let maxFormality = items.map(\.formalityScore).max() {
+            let spread = maxFormality - minFormality
+            if spread > FashionKnowledgeConstants.DressCode.majorFormalityMismatchDelta {
+                estimate.formalityBridge = .mismatchedClash
+            } else if spread > FashionKnowledgeConstants.DressCode.minorFormalityMismatchDelta {
+                estimate.formalityBridge = .intentionalHighLow
+            } else {
+                estimate.formalityBridge = .consistent
+            }
+        }
+
+        // Proportion ratio + volume balance — reuses `aestheticPrior`'s own
+        // loose/slim fit-string heuristic, applied to the top+bottom pair
+        // (proportion is fundamentally a top/bottom relationship).
+        if let top = items.first(where: { $0.slot == .top }), let bottom = items.first(where: { $0.slot == .bottom }) {
+            func isLoose(_ fit: String?) -> Bool {
+                guard let fit = fit?.lowercased() else { return false }
+                return fit.contains("oversized") || fit.contains("relaxed") || fit.contains("boxy") || fit.contains("loose") || fit.contains("wide")
+            }
+            func isSlim(_ fit: String?) -> Bool {
+                guard let fit = fit?.lowercased() else { return false }
+                return fit.contains("slim") || fit.contains("fitted") || fit.contains("tailored")
+            }
+            if isLoose(top.fit), isSlim(bottom.fit) {
+                estimate.volumeBalance = .looseTopFittedBottom
+                estimate.proportionRatio = .ruleOfThirds
+            } else if isSlim(top.fit), isLoose(bottom.fit) {
+                estimate.volumeBalance = .fittedTopLooseBottom
+                estimate.proportionRatio = .ruleOfThirds
+            } else if isLoose(top.fit), isLoose(bottom.fit) {
+                estimate.volumeBalance = .allRelaxed
+                estimate.proportionRatio = .oversizedLongline
+            } else if isSlim(top.fit), isSlim(bottom.fit) {
+                estimate.volumeBalance = .allFitted
+                estimate.proportionRatio = .halfAndHalf
+            }
+        }
+
+        // Texture contrast: how many distinct surface finishes appear.
+        let finishes = items.compactMap(\.textureFinish)
+        if finishes.count >= 2 {
+            let uniqueFinishes = Set(finishes)
+            if uniqueFinishes.count == 1 {
+                estimate.textureContrast = .uniformTexture
+            } else if uniqueFinishes.count == 2 {
+                estimate.textureContrast = .mediumContrast
+            } else {
+                estimate.textureContrast = .highContrast
+            }
+        }
+
+        return estimate
+    }
+}
+
 extension Double {
     func clamped(to range: ClosedRange<Double>) -> Double {
         min(max(self, range.lowerBound), range.upperBound)

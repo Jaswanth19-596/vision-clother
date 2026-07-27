@@ -165,6 +165,13 @@ final class SyncingWardrobeRepository: WardrobeRepository {
         try underlying.fetchOutfitFeedback(for: outfitID)
     }
 
+    func recordCombinationSwipeFeedback(outfitID: UUID, sentiment: SwipeSentiment, comment: String?, chemistry: CombinationMetadata?) throws {
+        try underlying.recordCombinationSwipeFeedback(outfitID: outfitID, sentiment: sentiment, comment: comment, chemistry: chemistry)
+        if let feedback = try underlying.fetchOutfitFeedback(for: outfitID).first {
+            markDirty(.outfitFeedback, entityID: feedback.id, dto: OutfitFeedbackDTO.from(feedback))
+        }
+    }
+
     func fetchAllItemRatings() throws -> [ItemRating] {
         try underlying.fetchAllItemRatings()
     }
@@ -250,8 +257,8 @@ final class SyncingWardrobeRepository: WardrobeRepository {
 
     // MARK: - Local-only (never synced — see file header)
 
-    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws {
-        try underlying.recordSwipeAttributes(sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, liked: liked, metadata: metadata)
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, sentiment: SwipeSentiment, sceneMetadata: SceneMetadata) throws {
+        try underlying.recordSwipeAttributes(sourcePhotoID: sourcePhotoID, imageURLString: imageURLString, sentiment: sentiment, sceneMetadata: sceneMetadata)
     }
 
     func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool {

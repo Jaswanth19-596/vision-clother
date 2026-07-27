@@ -17,7 +17,7 @@ struct WardrobeInsightsView: View {
     @Query private var inventory: [WardrobeItem]
     @Query private var wornLogEntries: [WornLogEntry]
 
-    @State private var viewModel: WardrobeInsightsViewModel?
+    @State private var viewModel = WardrobeInsightsViewModel()
 
     private var itemsByID: [UUID: WardrobeItem] {
         Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
@@ -32,43 +32,45 @@ struct WardrobeInsightsView: View {
                     systemImage: "tshirt",
                     description: Text("Add a few items to your closet to see wardrobe insights here.")
                 )
-            } else if let viewModel, let snapshot = viewModel.snapshot, !snapshot.hasEnoughItems {
+            } else if let snapshot = viewModel.snapshot, !snapshot.hasEnoughItems {
                 ContentUnavailableView(
                     "Still Building Your Closet",
                     systemImage: "tshirt",
                     description: Text("Add \(max(0, viewModel.thresholds.wardrobeInsightsMinItems - snapshot.totalRealItems)) more item\(viewModel.thresholds.wardrobeInsightsMinItems - snapshot.totalRealItems == 1 ? "" : "s") to unlock wardrobe insights.")
                 )
-            } else if let viewModel, let snapshot = viewModel.snapshot {
+            } else {
+                // Scaffold renders on the very first frame regardless of
+                // whether `viewModel.snapshot` has populated yet — cards
+                // fade in individually rather than the whole container
+                // swapping in a frame late, which is what produced the
+                // vertical jump during the Insights tab-switch transition.
                 ScrollView {
                     VStack(alignment: .leading, spacing: VCSpacing.xxl) {
                         TasteCalloutCard(snapshot: viewModel.tasteSnapshot)
                         if let gapReport = viewModel.gapReport {
                             ClosetGapView(report: gapReport)
                         }
-                        utilizationCard(snapshot)
-                        if snapshot.hasEnoughWearData {
-                            itemListCard(title: "Most Worn", items: snapshot.mostWorn, emptyText: nil)
-                            itemListCard(title: "Rarely or Never Worn", items: snapshot.leastWorn, emptyText: "Every item in your closet has been worn at least once — nice.")
+                        if let snapshot = viewModel.snapshot {
+                            utilizationCard(snapshot)
+                            if snapshot.hasEnoughWearData {
+                                itemListCard(title: "Most Worn", items: snapshot.mostWorn, emptyText: nil)
+                                itemListCard(title: "Rarely or Never Worn", items: snapshot.leastWorn, emptyText: "Every item in your closet has been worn at least once — nice.")
+                            }
+                            redundantCard(snapshot)
+                            balanceCard(snapshot)
                         }
-                        redundantCard(snapshot)
-                        balanceCard(snapshot)
                         if let shoppingSnapshot = viewModel.shoppingSnapshot {
                             shoppingCard(shoppingSnapshot)
                         }
                     }
                     .padding(VCSpacing.lg)
                 }
-            } else {
-                ProgressView()
             }
         }
         .navigationTitle("Wardrobe")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            if viewModel == nil {
-                viewModel = WardrobeInsightsViewModel(repository: SyncingWardrobeRepository(modelContext: modelContext))
-            }
-            viewModel?.loadConfigIfNeeded()
+            viewModel.loadConfigIfNeeded()
             recompute()
         }
         .onChange(of: inventory.count) { recompute() }
@@ -76,7 +78,11 @@ struct WardrobeInsightsView: View {
     }
 
     private func recompute() {
-        viewModel?.recompute(inventory: inventory, wornLogEntries: wornLogEntries)
+        viewModel.recompute(
+            inventory: inventory,
+            wornLogEntries: wornLogEntries,
+            repository: SyncingWardrobeRepository(modelContext: modelContext)
+        )
     }
 
     @ViewBuilder
@@ -92,7 +98,7 @@ struct WardrobeInsightsView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                let minWornLogs = viewModel?.thresholds.wardrobeInsightsMinWornLogs ?? AnalyticsConfigResponse.conservativeDefault.wardrobeInsightsMinWornLogs
+                let minWornLogs = viewModel.thresholds.wardrobeInsightsMinWornLogs
                 let remaining = max(0, minWornLogs - wornLogEntries.count)
                 Text("Log \(remaining) more wear\(remaining == 1 ? "" : "s") to unlock your utilization rate.")
                     .font(.subheadline)

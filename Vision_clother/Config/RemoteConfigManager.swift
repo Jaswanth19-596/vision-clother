@@ -40,7 +40,7 @@ final class RemoteConfigManager {
         static let temperature = 0.0
         static let enableStrictJSONSchema = true
         static let maxTokens = 4096
-        static let imageToTextModelName = "minimax/minimax-m3"
+        static let imageToTextModelName = "google/gemini-3.1-flash-lite"
         static let imageToImageModelName = "google/gemini-3.1-flash-lite-image"
         static let imageEditModelName = "google/gemini-3.1-flash-lite-image"
     }

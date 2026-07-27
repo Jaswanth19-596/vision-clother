@@ -89,6 +89,18 @@ protocol WardrobeRepository {
     /// the "already rated" state on `CombinationDetailView`.
     func fetchOutfitFeedback(for outfitID: UUID) throws -> [OutfitFeedback]
 
+    /// Swipe + Comment combination feedback (2026-07-27) — replaces the
+    /// manual Level 1/2/3 form as the write path for a user's own combination
+    /// feedback (`Features/Rating/RateCombinationView.swift`). `outfitID`
+    /// must be a `SavedCombination.id`, same as `recordOutfitRating`. `chemistry`
+    /// is the LLM-inferred `CombinationMetadata` from
+    /// `Services/CombinationChemistryInferenceService.swift` — `nil` when that
+    /// call failed, in which case sentiment/comment are still saved (a flaky
+    /// LLM call must never lose the user's swipe). Upserts one `OutfitFeedback`
+    /// row per outfit from this new flow (never overwrites an old-flow row's
+    /// Level 1/2/3 fields).
+    func recordCombinationSwipeFeedback(outfitID: UUID, sentiment: SwipeSentiment, comment: String?, chemistry: CombinationMetadata?) throws
+
     /// Saved try-on images from "Save this outfit?" (Manual Pairing / Daily
     /// Assistant), newest first — backs the Combinations tab.
     func fetchSavedCombinations() throws -> [SavedCombination]
@@ -144,13 +156,17 @@ protocol WardrobeRepository {
         dislikedCentroids: [VisualCentroid],
         embeddingDimension: Int
     ) throws
-    /// Persists one swipe's garment attributes (extracted in `.wornInScene`
-    /// focus, `Services/VisionMetadataExtractionService.swift`) so the swipe
-    /// teaches `Domain/AttributePreferenceProfile.swift` affinities — the
-    /// primary Swipe-to-Learn signal, alongside `recordSwipe`'s pixel
-    /// embedding. Upserts by `sourcePhotoID` so a re-shown photo doesn't
-    /// duplicate. Local-only (not synced).
-    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws
+    /// Persists one swipe's scene attributes (extracted by
+    /// `Services/VisionMetadataExtractionService.swift`'s `extractSceneMetadata`)
+    /// so the swipe teaches `Domain/AttributePreferenceProfile.swift`
+    /// affinities — the primary Swipe-to-Learn signal, alongside
+    /// `recordSwipe`'s pixel embedding. Upserts one `SwipeAttributeEvent` per
+    /// `(sourcePhotoID, slot)` pair (a re-shown photo, or one already tagged
+    /// at this slot, is updated in place rather than duplicated) and, when
+    /// `sceneMetadata.combination` is non-`nil` (2+ garments detected), one
+    /// `SwipeCombinationEvent` keyed by `sourcePhotoID`. Local-only (not
+    /// synced).
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, sentiment: SwipeSentiment, sceneMetadata: SceneMetadata) throws
     /// Whether a swipe-attribute event already exists for this photo id — lets
     /// the deck skip a redundant (paid) LLM tagging call on a re-shown card.
     func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool
@@ -494,16 +510,17 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         // referencing items no longer in the inventory (deleted since) are
         // skipped — there's no attribute to learn from.
         // Swipe-to-Learn taste, attribute space: each `SwipeAttributeEvent`
-        // (garment attributes extracted from a `.wornInScene` stock photo) is
-        // a synthetic rating — a right swipe teaches "likes this color/pattern/
-        // formality/…" at full strength (1.0), a left swipe at 0.0 — folded
-        // into the same `AttributePreferenceProfile` owned-item ratings drive,
-        // so swipes flow straight into recommendations/Insights rather than the
+        // (one detected garment's attributes from a swiped scene photo) is a
+        // synthetic rating — its `SwipeSentiment.ratingValue` (love=1.0,
+        // like=0.75, dislike=0.25, hate=0.0) teaches "likes this color/pattern/
+        // formality/…" at that strength — folded into the same
+        // `AttributePreferenceProfile` owned-item ratings drive, so swipes
+        // flow straight into recommendations/Insights rather than the
         // separate (weaker) pixel-embedding centroids. `recordedAt` carries the
         // same exponential time-decay as ratings.
         let swipeAttributeEvents = try modelContext.fetch(FetchDescriptor<SwipeAttributeEvent>())
         let swipeRatedAttributes: [RatedAttributes] = swipeAttributeEvents.map { event in
-            let signal = event.liked ? 1.0 : 0.0
+            let signal = event.sentiment.ratingValue
             return RatedAttributes(
                 colorLike: signal,
                 patternLike: signal,
@@ -523,12 +540,60 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 material: event.material,
                 texture: event.texture,
                 fit: event.fit,
-                fitLike: event.fit != nil ? signal : nil
+                fitLike: event.fit != nil ? signal : nil,
+                weight: event.weight
             )
         }
 
+        // Multi-Garment "Discover Your Style": each `SwipeCombinationEvent`
+        // (a swiped photo with 2+ detected garments) is a whole-look synthetic
+        // rating — feeds `AttributePreferenceProfile.colorHarmonyAffinity`
+        // (Insights-only; not read by the recommendation scoring engine).
+        let swipeCombinationEvents = try modelContext.fetch(FetchDescriptor<SwipeCombinationEvent>())
+        let stockPhotoRatedCombinations: [RatedCombination] = swipeCombinationEvents.map { event in
+            RatedCombination(
+                colorHarmony: event.colorHarmony,
+                styleTags: event.styleCoherenceTags,
+                signal: event.sentiment.ratingValue,
+                recordedAt: event.recordedAt,
+                paletteArchetype: event.paletteArchetype,
+                contrastLevel: event.contrastLevel,
+                colorSandwiching: event.colorSandwiching,
+                proportionRatio: event.proportionRatio,
+                volumeBalance: event.volumeBalance,
+                textureContrast: event.textureContrast,
+                formalityBridge: event.formalityBridge,
+                overallAestheticVibe: event.overallAestheticVibe,
+                complexityScore: event.complexityScore
+            )
+        }
+
+        // Swipe + Comment combination feedback (2026-07-27): a user's own
+        // combination, swiped + optionally LLM-chemistry-inferred, unified
+        // into the same `[RatedCombination]` signal as stock-photo swipes
+        // above — one learned taste, regardless of source.
+        let ownCombinationRatedCombinations: [RatedCombination] = outfitFeedbacks.compactMap { feedback -> RatedCombination? in
+            guard let sentiment = feedback.swipeSentiment, let chemistry = feedback.inferredCombinationMetadata else { return nil }
+            return RatedCombination(
+                colorHarmony: chemistry.colorHarmony,
+                styleTags: chemistry.styleCoherenceTags,
+                signal: sentiment.ratingValue,
+                recordedAt: feedback.recordedAt,
+                paletteArchetype: chemistry.paletteArchetype,
+                contrastLevel: chemistry.contrastLevel,
+                colorSandwiching: chemistry.colorSandwiching,
+                proportionRatio: chemistry.proportionRatio,
+                volumeBalance: chemistry.volumeBalance,
+                textureContrast: chemistry.textureContrast,
+                formalityBridge: chemistry.formalityBridge,
+                overallAestheticVibe: chemistry.overallAestheticVibe,
+                complexityScore: chemistry.complexityScore
+            )
+        }
+        let ratedCombinations = stockPhotoRatedCombinations + ownCombinationRatedCombinations
+
         let detailedOutfitFeedbacks = outfitFeedbacks.filter { $0.normalizedRating != nil }
-        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty || !swipeRatedAttributes.isEmpty {
+        if !itemRatings.isEmpty || !detailedOutfitFeedbacks.isEmpty || !swipeRatedAttributes.isEmpty || !ratedCombinations.isEmpty {
             let itemsByID = Dictionary(uniqueKeysWithValues: inventory.map { ($0.id, $0) })
 
             let ratedAttributes: [RatedAttributes] = itemRatings.compactMap { (rating: ItemRating) -> RatedAttributes? in
@@ -629,6 +694,7 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
                 AttributePreferenceProfile.build(
                     from: ratedAttributes + swipeRatedAttributes,
                     outfitDimensionRatings: outfitDimensionRatings,
+                    combinationRatings: ratedCombinations,
                     inventorySnapshots: inventorySnapshots,
                     now: now
                 )
@@ -781,6 +847,45 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
             sortBy: [SortDescriptor(\.recordedAt, order: .reverse)]
         )
         return try modelContext.fetch(descriptor)
+    }
+
+    func recordCombinationSwipeFeedback(outfitID: UUID, sentiment: SwipeSentiment, comment: String?, chemistry: CombinationMetadata?) throws {
+        // Upsert against an existing *new-flow* row only — an old-flow
+        // detailed-rating row (swipeSentimentRaw == nil) for this outfit must
+        // never be overwritten by a re-swipe.
+        let descriptor = FetchDescriptor<OutfitFeedback>(
+            predicate: #Predicate { $0.outfitID == outfitID && $0.swipeSentimentRaw != nil }
+        )
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.likedOverall = sentiment.liked
+            existing.swipeSentimentRaw = sentiment.rawValue
+            existing.swipeComment = comment
+            existing.inferredColorHarmonyRaw = chemistry?.colorHarmony.rawValue
+            existing.inferredStyleCoherenceTags = chemistry?.styleCoherenceTags ?? []
+            existing.inferredFormalityConsistencyRaw = chemistry?.formalityConsistency.rawValue
+            existing.inferredRationale = chemistry?.rationale
+            existing.inferredPaletteArchetypeRaw = chemistry?.paletteArchetype.rawValue
+            existing.inferredContrastLevelRaw = chemistry?.contrastLevel.rawValue
+            existing.inferredColorSandwiching = chemistry?.colorSandwiching
+            existing.inferredColorDistribution = chemistry?.colorDistribution
+            existing.inferredProportionRatioRaw = chemistry?.proportionRatio.rawValue
+            existing.inferredVolumeBalanceRaw = chemistry?.volumeBalance.rawValue
+            existing.inferredTextureContrastRaw = chemistry?.textureContrast.rawValue
+            existing.inferredFormalityBridgeRaw = chemistry?.formalityBridge.rawValue
+            existing.inferredOverallAestheticVibe = chemistry?.overallAestheticVibe
+            existing.inferredComplexityScore = chemistry?.complexityScore
+            existing.recordedAt = .now
+        } else {
+            modelContext.insert(OutfitFeedback(
+                outfitID: outfitID,
+                likedOverall: sentiment.liked,
+                sentiment: sentiment,
+                comment: comment,
+                inferredChemistry: chemistry
+            ))
+        }
+        try saveAndMarkMutated()
+        MLLog.logger.notice("[AI-Stylist-ML] combination swipe: outfit=\(outfitID, privacy: .public) sentiment=\(sentiment.rawValue, privacy: .public) hasComment=\(comment != nil, privacy: .public) hasChemistry=\(chemistry != nil, privacy: .public)")
     }
 
     func fetchAllItemRatings() throws -> [ItemRating] {
@@ -951,55 +1056,111 @@ final class SwiftDataWardrobeRepository: WardrobeRepository {
         try saveAndMarkMutated()
     }
 
-    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, liked: Bool, metadata: GarmentMetadata) throws {
-        let colorVibe = metadata.colorProfile.category
-        // Same banding `fetchFeedbackHistory` applies to owned items, so a
-        // swipe and a rating land in the same `formalityAffinity` bucket.
-        let formalityBand = Int(metadata.formalityScore.rounded())
+    func recordSwipeAttributes(sourcePhotoID: String, imageURLString: String, sentiment: SwipeSentiment, sceneMetadata: SceneMetadata) throws {
+        // Credit-assignment weight: a swiped photo with N detected garments
+        // fans its sentiment out to N rows, so each row is worth 1/N of a
+        // single-garment swipe's full signal — an N-garment "full outfit"
+        // swipe no longer injects N× the raw signal of a 1-garment swipe for
+        // the same sentiment (2026-07-27). A single-garment photo naturally
+        // gets `weight = 1.0`, unchanged from before this existed.
+        let weight = 1.0 / Double(max(sceneMetadata.garments.count, 1))
+        for garment in sceneMetadata.garments {
+            let colorVibe = garment.colorProfile.category
+            // Same banding `fetchFeedbackHistory` applies to owned items, so a
+            // swipe and a rating land in the same `formalityAffinity` bucket.
+            let formalityBand = Int(garment.formalityScore.rounded())
+            let slot = garment.slot
 
-        let descriptor = FetchDescriptor<SwipeAttributeEvent>(
-            predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID }
-        )
-        if let existing = try modelContext.fetch(descriptor).first {
-            // Re-swipe of the same photo (deck reshuffle) — update in place so
-            // the most recent direction wins rather than double-counting.
-            existing.imageURLString = imageURLString
-            existing.liked = liked
-            existing.colorVibe = colorVibe
-            existing.pattern = metadata.pattern
-            existing.formalityBand = formalityBand
-            existing.fabricWeight = metadata.fabricWeight
-            existing.slot = metadata.slot
-            existing.styleTags = metadata.styleTags
-            existing.silhouette = metadata.silhouette
-            existing.undertone = metadata.colorProfile.undertone
-            existing.material = metadata.material
-            existing.texture = metadata.texture
-            existing.fit = metadata.fit
-            existing.recordedAt = .now
-        } else {
-            modelContext.insert(SwipeAttributeEvent(
-                sourcePhotoID: sourcePhotoID,
-                imageURLString: imageURLString,
-                liked: liked,
-                colorVibe: colorVibe,
-                pattern: metadata.pattern,
-                formalityBand: formalityBand,
-                fabricWeight: metadata.fabricWeight,
-                slot: metadata.slot,
-                styleTags: metadata.styleTags,
-                silhouette: metadata.silhouette,
-                undertone: metadata.colorProfile.undertone,
-                material: metadata.material,
-                texture: metadata.texture,
-                fit: metadata.fit
-            ))
+            let descriptor = FetchDescriptor<SwipeAttributeEvent>(
+                predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID && $0.slot == slot }
+            )
+            if let existing = try modelContext.fetch(descriptor).first {
+                // Re-swipe of the same photo (deck reshuffle) — update in
+                // place so the most recent direction wins rather than
+                // double-counting.
+                existing.imageURLString = imageURLString
+                existing.sentiment = sentiment
+                existing.colorVibe = colorVibe
+                existing.pattern = garment.pattern
+                existing.formalityBand = formalityBand
+                existing.fabricWeight = garment.fabricWeight
+                existing.styleTags = garment.styleTags
+                existing.silhouette = garment.silhouette
+                existing.undertone = garment.colorProfile.undertone
+                existing.material = garment.material
+                existing.texture = garment.texture
+                existing.fit = garment.fit
+                existing.weight = weight
+                existing.recordedAt = .now
+            } else {
+                modelContext.insert(SwipeAttributeEvent(
+                    sourcePhotoID: sourcePhotoID,
+                    imageURLString: imageURLString,
+                    sentiment: sentiment,
+                    colorVibe: colorVibe,
+                    pattern: garment.pattern,
+                    formalityBand: formalityBand,
+                    fabricWeight: garment.fabricWeight,
+                    slot: slot,
+                    styleTags: garment.styleTags,
+                    silhouette: garment.silhouette,
+                    undertone: garment.colorProfile.undertone,
+                    material: garment.material,
+                    texture: garment.texture,
+                    fit: garment.fit,
+                    weight: weight
+                ))
+            }
         }
-        // `fetchFeedbackHistory()` reads `SwipeAttributeEvent` into the
-        // attribute profile, so this must invalidate that cache — not a bare
-        // `modelContext.save()`.
+
+        if let combination = sceneMetadata.combination {
+            let comboDescriptor = FetchDescriptor<SwipeCombinationEvent>(
+                predicate: #Predicate { $0.sourcePhotoID == sourcePhotoID }
+            )
+            if let existing = try modelContext.fetch(comboDescriptor).first {
+                existing.sentiment = sentiment
+                existing.colorHarmony = combination.colorHarmony
+                existing.styleCoherenceTags = combination.styleCoherenceTags
+                existing.formalityConsistency = combination.formalityConsistency
+                existing.rationale = combination.rationale
+                existing.paletteArchetypeRaw = combination.paletteArchetype.rawValue
+                existing.contrastLevelRaw = combination.contrastLevel.rawValue
+                existing.colorSandwiching = combination.colorSandwiching
+                existing.colorDistribution = combination.colorDistribution
+                existing.proportionRatioRaw = combination.proportionRatio.rawValue
+                existing.volumeBalanceRaw = combination.volumeBalance.rawValue
+                existing.textureContrastRaw = combination.textureContrast.rawValue
+                existing.formalityBridgeRaw = combination.formalityBridge.rawValue
+                existing.overallAestheticVibe = combination.overallAestheticVibe
+                existing.complexityScore = combination.complexityScore
+                existing.recordedAt = .now
+            } else {
+                modelContext.insert(SwipeCombinationEvent(
+                    sourcePhotoID: sourcePhotoID,
+                    sentiment: sentiment,
+                    colorHarmony: combination.colorHarmony,
+                    styleCoherenceTags: combination.styleCoherenceTags,
+                    formalityConsistency: combination.formalityConsistency,
+                    rationale: combination.rationale,
+                    paletteArchetype: combination.paletteArchetype,
+                    contrastLevel: combination.contrastLevel,
+                    colorSandwiching: combination.colorSandwiching,
+                    colorDistribution: combination.colorDistribution,
+                    proportionRatio: combination.proportionRatio,
+                    volumeBalance: combination.volumeBalance,
+                    textureContrast: combination.textureContrast,
+                    formalityBridge: combination.formalityBridge,
+                    overallAestheticVibe: combination.overallAestheticVibe,
+                    complexityScore: combination.complexityScore
+                ))
+            }
+        }
+
+        // `fetchFeedbackHistory()` reads both `SwipeAttributeEvent` and
+        // `SwipeCombinationEvent` into the attribute profile, so this must
+        // invalidate that cache — not a bare `modelContext.save()`.
         try saveAndMarkMutated()
-        MLLog.logger.notice("[AI-Stylist-ML] swipe attributes: photo=\(sourcePhotoID, privacy: .public) liked=\(liked, privacy: .public) slot=\(metadata.slot.rawValue, privacy: .public) color=\(colorVibe.rawValue, privacy: .public) pattern=\(metadata.pattern.rawValue, privacy: .public)")
+        MLLog.logger.notice("[AI-Stylist-ML] swipe attributes: photo=\(sourcePhotoID, privacy: .public) sentiment=\(sentiment.rawValue, privacy: .public) garments=\(sceneMetadata.garments.count, privacy: .public) hasCombo=\(sceneMetadata.combination != nil, privacy: .public)")
     }
 
     func hasSwipeAttributes(sourcePhotoID: String) throws -> Bool {

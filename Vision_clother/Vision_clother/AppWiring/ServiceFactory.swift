@@ -67,6 +67,14 @@ enum ServiceFactory {
         AuthGatedStylistQAService()
     }
 
+    /// Intent routing (2026-07-27) — same auth-gated-at-call-time posture as
+    /// `makeOutfitRecommendationService()` above. Decides `RECOMMENDATION` vs
+    /// `GENERAL_QA` before either downstream call is attempted; see
+    /// `Services/IntentRoutingService.swift`.
+    static func makeIntentRoutingService() -> IntentRoutingService {
+        AuthGatedIntentRoutingService()
+    }
+
     /// `OpenMeteoWeatherProvider` needs no API key/entitlement — CoreLocation
     /// + Open-Meteo's free REST API — so it's always the real one here, no
     /// key gate like the OpenRouter-backed services above.

@@ -41,6 +41,13 @@ struct CatalogEntry: Codable, Equatable {
     var material: String?
     var texture: String?
 
+    // Rich styling attributes, round 2 (added 2026-07-27)
+    var patternScale: PatternScale?
+    var textureFinish: TextureFinish?
+    var silhouetteCut: SilhouetteCut?
+    var necklineOrRise: String?
+    var fabricWeightDetail: FabricWeightDetail?
+
     /// 0-100 aggregate of past user feedback on this exact item (same score
     /// `Domain/ItemRatingScoring.swift` computes for the Closet UI's rating
     /// badge — a freshly uploaded item with no feedback yet naturally reads
@@ -77,6 +84,11 @@ struct CatalogEntry: Codable, Equatable {
         case silhouette
         case material
         case texture
+        case patternScale = "pattern_scale"
+        case textureFinish = "texture_finish"
+        case silhouetteCut = "silhouette_cut"
+        case necklineOrRise = "neckline_or_rise"
+        case fabricWeightDetail = "fabric_weight_detail"
         case userRating = "user_rating"
         case isProspectivePurchase = "is_prospective_purchase"
     }
@@ -175,6 +187,11 @@ enum WardrobeCatalogBuilder {
                 silhouette: item.silhouette,
                 material: item.material,
                 texture: item.texture,
+                patternScale: item.patternScale,
+                textureFinish: item.textureFinish,
+                silhouetteCut: item.silhouetteCut,
+                necklineOrRise: item.necklineOrRise,
+                fabricWeightDetail: item.fabricWeightDetail,
                 userRating: history.map { ItemRatingScoring.score(for: item.id, history: $0) },
                 isProspectivePurchase: item.id == prospectiveItemID
             )

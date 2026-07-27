@@ -8,8 +8,9 @@
 //  *attribute* preference model (`Domain/AttributePreferenceProfile.swift`) —
 //  the same space that actually drives recommendations, so this now reflects
 //  what the app will really do, not an opaque pixel-embedding side-channel.
-//  The photo is tagged by the vision LLM (`.wornInScene` focus, robust to a
-//  raw un-isolated upload), scored, and discarded — nothing is persisted.
+//  The photo is tagged by the vision LLM's scene extraction (`extractSceneMetadata`,
+//  robust to a raw un-isolated upload) — the primary detected garment is
+//  scored, and everything is discarded — nothing is persisted.
 //
 
 import Foundation
@@ -66,7 +67,11 @@ final class StyleCheckViewModel {
         state = .analyzing
         do {
             let downscaled = ImageStorage.downscaledPNGForUpload(imageData, maxDimension: Self.taggingMaxDimension)
-            let metadata = try await visionService.extractMetadata(imageData: downscaled, focus: .wornInScene)
+            let sceneMetadata = try await visionService.extractSceneMetadata(imageData: downscaled)
+            guard let metadata = sceneMetadata.garments.first else {
+                state = .failed("Couldn't identify a garment in that photo. Try a different one.")
+                return
+            }
             let history = try await repository.fetchFeedbackHistory()
             let profile = history.attributeProfile
 
@@ -96,7 +101,9 @@ final class StyleCheckViewModel {
             logResult(result)
         } catch {
             MLLog.logger.error("manual style check: failed — \(String(describing: error), privacy: .public)")
-            state = .failed("Couldn't analyze that photo. Try a different one.")
+            let message = (error as? VisionMetadataExtractionError)?.errorDescription
+                ?? "Couldn't analyze that photo. Try a different one."
+            state = .failed(message)
         }
     }
 

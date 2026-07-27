@@ -198,6 +198,32 @@ final class OutfitFeedback {
     /// Only meaningful when `weakestItemID` is set.
     var replacementSuggestionRaw: String?
 
+    // Swipe + Comment combination feedback (added 2026-07-27) — replaces the
+    // Level 1/2/3 detailed form as the write path for a user's own combination
+    // feedback (`Features/Rating/RateCombinationView.swift`). A row from this
+    // new flow leaves every Level 1/2/3 field above `nil` and populates these
+    // instead; historical rows from the old flow leave these `nil`. See
+    // `Data/WardrobeRepository.recordCombinationSwipeFeedback`.
+    var swipeSentimentRaw: String?
+    var swipeComment: String?
+    /// Distinctly named from the existing `colorHarmony: Int?` (Level 2 star
+    /// rating, 1-5) above — this is the LLM-inferred `ColorHarmonyDescriptor`
+    /// from `CombinationChemistryInferenceService`, not a user rating.
+    var inferredColorHarmonyRaw: String?
+    var inferredStyleCoherenceTags: [String] = []
+    var inferredFormalityConsistencyRaw: String?
+    var inferredRationale: String?
+    var inferredPaletteArchetypeRaw: String?
+    var inferredContrastLevelRaw: String?
+    var inferredColorSandwiching: Bool?
+    var inferredColorDistribution: String?
+    var inferredProportionRatioRaw: String?
+    var inferredVolumeBalanceRaw: String?
+    var inferredTextureContrastRaw: String?
+    var inferredFormalityBridgeRaw: String?
+    var inferredOverallAestheticVibe: String?
+    var inferredComplexityScore: Int?
+
     init(
         id: UUID = UUID(),
         outfitID: UUID,
@@ -220,7 +246,10 @@ final class OutfitFeedback {
         occasion: OutfitOccasion? = nil,
         wouldBuySimilar: Bool? = nil,
         savedForInspiration: Bool = false,
-        replacementSuggestion: ReplacementSuggestion? = nil
+        replacementSuggestion: ReplacementSuggestion? = nil,
+        sentiment: SwipeSentiment? = nil,
+        comment: String? = nil,
+        inferredChemistry: CombinationMetadata? = nil
     ) {
         self.id = id
         self.outfitID = outfitID
@@ -244,6 +273,74 @@ final class OutfitFeedback {
         self.wouldBuySimilar = wouldBuySimilar
         self.savedForInspiration = savedForInspiration
         self.replacementSuggestionRaw = replacementSuggestion?.rawValue
+        self.swipeSentimentRaw = sentiment?.rawValue
+        self.swipeComment = comment
+        self.inferredColorHarmonyRaw = inferredChemistry?.colorHarmony.rawValue
+        self.inferredStyleCoherenceTags = inferredChemistry?.styleCoherenceTags ?? []
+        self.inferredFormalityConsistencyRaw = inferredChemistry?.formalityConsistency.rawValue
+        self.inferredRationale = inferredChemistry?.rationale
+        self.inferredPaletteArchetypeRaw = inferredChemistry?.paletteArchetype.rawValue
+        self.inferredContrastLevelRaw = inferredChemistry?.contrastLevel.rawValue
+        self.inferredColorSandwiching = inferredChemistry?.colorSandwiching
+        self.inferredColorDistribution = inferredChemistry?.colorDistribution
+        self.inferredProportionRatioRaw = inferredChemistry?.proportionRatio.rawValue
+        self.inferredVolumeBalanceRaw = inferredChemistry?.volumeBalance.rawValue
+        self.inferredTextureContrastRaw = inferredChemistry?.textureContrast.rawValue
+        self.inferredFormalityBridgeRaw = inferredChemistry?.formalityBridge.rawValue
+        self.inferredOverallAestheticVibe = inferredChemistry?.overallAestheticVibe
+        self.inferredComplexityScore = inferredChemistry?.complexityScore
+    }
+
+    /// Sentiment recorded by the swipe+comment combination-feedback flow —
+    /// `nil` for historical rows from the old Level 1/2/3 form.
+    var swipeSentiment: SwipeSentiment? {
+        swipeSentimentRaw.flatMap(SwipeSentiment.init(rawValue:))
+    }
+
+    /// Reconstructs the LLM-inferred chemistry for this combination, only
+    /// when every required field is present (i.e. the inference call
+    /// succeeded) — `nil` for old-flow rows and for a row whose inference
+    /// call failed (sentiment/comment still saved either way, see
+    /// `Data/WardrobeRepository.recordCombinationSwipeFeedback`).
+    var inferredCombinationMetadata: CombinationMetadata? {
+        guard let colorHarmonyRaw = inferredColorHarmonyRaw,
+              let colorHarmony = ColorHarmonyDescriptor(rawValue: colorHarmonyRaw),
+              let formalityConsistencyRaw = inferredFormalityConsistencyRaw,
+              let formalityConsistency = FormalityConsistency(rawValue: formalityConsistencyRaw),
+              let rationale = inferredRationale,
+              let paletteArchetypeRaw = inferredPaletteArchetypeRaw,
+              let paletteArchetype = PaletteArchetype(rawValue: paletteArchetypeRaw),
+              let contrastLevelRaw = inferredContrastLevelRaw,
+              let contrastLevel = ContrastLevel(rawValue: contrastLevelRaw),
+              let colorSandwiching = inferredColorSandwiching,
+              let colorDistribution = inferredColorDistribution,
+              let proportionRatioRaw = inferredProportionRatioRaw,
+              let proportionRatio = ProportionRatio(rawValue: proportionRatioRaw),
+              let volumeBalanceRaw = inferredVolumeBalanceRaw,
+              let volumeBalance = VolumeBalance(rawValue: volumeBalanceRaw),
+              let textureContrastRaw = inferredTextureContrastRaw,
+              let textureContrast = TextureContrast(rawValue: textureContrastRaw),
+              let formalityBridgeRaw = inferredFormalityBridgeRaw,
+              let formalityBridge = FormalityBridge(rawValue: formalityBridgeRaw),
+              let overallAestheticVibe = inferredOverallAestheticVibe,
+              let complexityScore = inferredComplexityScore
+        else { return nil }
+        return CombinationMetadata(
+            colorHarmony: colorHarmony,
+            styleCoherenceTags: inferredStyleCoherenceTags,
+            formalityConsistency: formalityConsistency,
+            rationale: rationale,
+            paletteArchetype: paletteArchetype,
+            contrastLevel: contrastLevel,
+            colorSandwiching: colorSandwiching,
+            colorDistribution: colorDistribution,
+            proportionRatio: proportionRatio,
+            volumeBalance: volumeBalance,
+            textureContrast: textureContrast,
+            formalityBridge: formalityBridge,
+            overallAestheticVibe: overallAestheticVibe,
+            complexityScore: complexityScore
+        )
     }
 
     var wearAgain: WearAgainAnswer? {

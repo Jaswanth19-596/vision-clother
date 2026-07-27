@@ -3,13 +3,13 @@
 //  Vision_clother
 //
 //  Combination Rating: entry point from `CombinationDetailView` ("Rate this
-//  outfit"). Rates the whole outfit first with the dimension-based Level 1 +
-//  Level 2 question set and a Favorite/Weakest Item pick
-//  (`RateCombinationViewModel`, Stylist Intelligence Engine Phase 1), then
-//  sequences through each real item resolved from the combination's
-//  top/bottom/footwear/outerwear ids (`CombinationsViewModel.resolveItems(for:)`),
-//  reusing `RateItemViewModel`/`RateItemQuestionsView` exactly as
-//  `RateOutfitView` does after a Daily Assistant save.
+//  outfit"). Swipe + Comment combination feedback (2026-07-27) — a single
+//  screen: swipe the outfit's own image love/like/dislike/hate (reusing
+//  `SwipeGestureResolver` from
+//  `Features/SwipeDiscovery/SwipeDiscoveryViewModel.swift`), add an optional
+//  comment on why, then submit. Replaces the previous two-step flow (a
+//  dimension-based Level 1/2 form, then a per-item follow-up rating
+//  sequence) entirely — see `RateCombinationViewModel.swift`.
 //
 
 import SwiftUI
@@ -18,19 +18,15 @@ import SwiftData
 struct RateCombinationView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let combination: SavedCombination
-
-    /// Real items resolved from `combination`'s slot ids — may be shorter
-    /// than 4 if a source item was since deleted, or if the outfit never
-    /// had footwear/outerwear resolved (Manual Pairing only selects a
-    /// top+bottom). Snapshotted once into `@State` (via `init`) rather than
-    /// read as a plain `let` from the caller: `CombinationDetailView`'s
-    /// `.sheet(item:)` closure re-calls `resolveItems(for:)` on every one of
-    /// its own re-renders (e.g. a background photo/sync tick) while this
-    /// sheet stays open, which would otherwise silently swap `items` out
-    /// from under `step`'s fixed index mid-flow — showing/submitting the
-    /// wrong item, or re-showing/skipping items across "Next Item" taps.
+    /// Real items resolved from `combination`'s slot ids — sent (text-only,
+    /// no images) to `CombinationChemistryInferenceService` and shown as a
+    /// flatlay fallback when there's no rendered image. Snapshotted once via
+    /// `@State` in `init` for the same reason the prior implementation did:
+    /// `CombinationDetailView`'s `.sheet(item:)` closure re-resolves items on
+    /// every one of its own re-renders while this sheet stays open.
     @State private var items: [WardrobeItem]
 
     init(combination: SavedCombination, items: [WardrobeItem]) {
@@ -38,54 +34,20 @@ struct RateCombinationView: View {
         self._items = State(initialValue: items)
     }
 
-    private enum Step: Equatable {
-        case outfit
-        case item(Int)
-
-        var identity: String {
-            switch self {
-            case .outfit: return "outfit"
-            case .item(let index): return "item-\(index)"
-            }
-        }
-    }
-
-    @State private var step: Step = .outfit
-    @State private var outfitViewModel: RateCombinationViewModel?
-    @State private var itemViewModel: RateItemViewModel?
+    @State private var viewModel: RateCombinationViewModel?
+    @State private var dragOffset: CGSize = .zero
+    @State private var savedTick = 0
 
     var body: some View {
         NavigationStack {
             Group {
-                switch step {
-                case .outfit:
-                    if let outfitViewModel {
-                        RateCombinationQuestionsView(
-                            imageAssetName: combination.imageAssetName,
-                            hasRenderedImage: combination.hasRenderedImage,
-                            flatlayItems: items,
-                            viewModel: outfitViewModel,
-                            submitLabel: items.isEmpty ? "Finish" : "Next: Rate Items",
-                            onSaved: advanceFromOutfit
-                        )
-                    } else {
-                        ProgressView()
-                    }
-
-                case .item(let index):
-                    if index < items.count, let itemViewModel {
-                        RateItemQuestionsView(
-                            item: items[index],
-                            viewModel: itemViewModel,
-                            submitLabel: index == items.count - 1 ? "Finish" : "Next Item",
-                            onSaved: { advanceFromItem(index) }
-                        )
-                    } else {
-                        ProgressView()
-                    }
+                if let viewModel {
+                    content(viewModel: viewModel)
+                } else {
+                    ProgressView()
                 }
             }
-            .navigationTitle(navigationTitle)
+            .navigationTitle("Rate This Outfit")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -93,213 +55,54 @@ struct RateCombinationView: View {
                 }
             }
         }
-        .task(id: step.identity) {
-            switch step {
-            case .outfit:
-                outfitViewModel = RateCombinationViewModel(
-                    outfitID: combination.id,
-                    items: items,
-                    repository: SyncingWardrobeRepository(modelContext: modelContext)
-                )
-            case .item(let index):
-                guard index < items.count else { return }
-                itemViewModel = RateItemViewModel(
-                    item: items[index],
-                    repository: SyncingWardrobeRepository(modelContext: modelContext)
-                )
-            }
+        .task {
+            guard viewModel == nil else { return }
+            viewModel = RateCombinationViewModel(
+                outfitID: combination.id,
+                items: items,
+                repository: SyncingWardrobeRepository(modelContext: modelContext),
+                chemistryService: AuthGatedCombinationChemistryInferenceService()
+            )
         }
     }
 
-    private var navigationTitle: String {
-        switch step {
-        case .outfit: return "Rate This Outfit"
-        case .item(let index): return "Rate Item (\(index + 1)/\(items.count))"
-        }
-    }
-
-    private func advanceFromOutfit() {
-        if items.isEmpty {
-            dismiss()
-        } else {
-            step = .item(0)
-        }
-    }
-
-    private func advanceFromItem(_ index: Int) {
-        if index + 1 < items.count {
-            step = .item(index + 1)
-        } else {
-            dismiss()
-        }
-    }
-}
-
-/// The dimension-based outfit rating form (Stylist Intelligence Engine
-/// Phase 1): Level 1 (Overall Experience) + Level 2 (Fashion Evaluation) +
-/// Favorite/Weakest Item. Each Level 2 question exists because it updates a
-/// specific part of the recommendation engine — see
-/// `Domain/AttributePreferenceProfile.swift` and
-/// `docs/decisions/stylist-intelligence-engine.md` for the mapping.
-private struct RateCombinationQuestionsView: View {
-    let imageAssetName: String
-    /// Mirrors `CombinationDetailView.CombinationDetailPage`'s
-    /// `hasRenderedImage`/`resolvedItems` gate — an outfit saved with no
-    /// try-on render (e.g. "Wearing This Today") has `imageAssetName ==
-    /// SavedCombination.noRenderPlaceholderAssetName`, which
-    /// `CachedWardrobeImage` can never resolve; without this, `combinationImage`
-    /// showed a permanent "Couldn't load this image" instead of falling back
-    /// to the item flatlay the Worn list and detail page already show.
-    let hasRenderedImage: Bool
-    let flatlayItems: [WardrobeItem]
-    @Bindable var viewModel: RateCombinationViewModel
-    let submitLabel: String
-    let onSaved: () -> Void
-
-    /// Ticks once on a completed save — drives the submit-rating
-    /// critical-action haptic.
-    @State private var savedTick = 0
-
-    var body: some View {
+    @ViewBuilder
+    private func content(viewModel: RateCombinationViewModel) -> some View {
         Form {
             Section {
-                combinationImage
+                swipeableImage(viewModel: viewModel)
             }
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
 
-            Section("Overall Satisfaction") {
-                StarRatingRow(rating: $viewModel.overallSatisfaction)
-            }
-
-            Section("Wear Again?") {
-                WearAgainTriStateRow(wearAgain: $viewModel.wearAgain)
-            }
-
-            Section("Confidence") {
-                Text("How confident did you feel?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                ConfidenceEmojiRow(rating: $viewModel.confidence)
-            }
-
-            Section("Comfort") {
-                StarRatingRow(rating: $viewModel.comfort)
-            }
-
-            Section("Occasion Match") {
-                Text("Did this outfit suit the occasion?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.occasionMatch)
-            }
-
-            Section("Personal Style Match") {
-                Text("Did this feel like \u{201C}you\u{201D}?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.styleMatch)
-            }
-
-            Section("Color Harmony") {
-                Text("How did you like the colors together?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.colorHarmony)
-            }
-
-            Section("Fit & Silhouette") {
-                Text("Did the overall silhouette feel right?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.silhouette)
-            }
-
-            Section("Weather Suitability") {
-                Text("Did it feel appropriate for today's weather?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.weatherSuitability)
-            }
-
-            Section("Practicality") {
-                Text("Could you comfortably wear this for the whole event?")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                StarRatingRow(rating: $viewModel.practicality)
-            }
-
-            if viewModel.overallSatisfaction >= 4 {
-                Section("What Did You Like?") {
-                    Text("Select anything that stood out — optional.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    LikeReasonChecklist(
-                        selection: viewModel.selectedLikeReasons,
-                        onToggle: viewModel.toggleLikeReason
-                    )
-                }
-            }
-
-            Section("What Would You Change?") {
-                Text("Select anything that didn't work — optional.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                ChangeReasonChecklist(
-                    selection: viewModel.selectedChangeReasons,
-                    onToggle: viewModel.toggleChangeReason
-                )
-            }
-
-            Section("Occasion") {
-                Text("What was this outfit for? — optional.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                OccasionPicker(selection: $viewModel.selectedOccasion)
-            }
-
-            Section("Would You Buy Something Similar?") {
-                TriStateChip(selection: $viewModel.wouldBuySimilar)
-            }
-
             Section {
-                Toggle("Save for inspiration", isOn: $viewModel.savedForInspiration)
+                if let sentiment = viewModel.sentiment {
+                    HStack {
+                        Image(systemName: sentimentIcon(sentiment))
+                            .foregroundStyle(sentiment.liked ? .green : .red)
+                        Text(sentimentLabel(sentiment))
+                        Spacer()
+                        Button("Change") {
+                            withAnimation(vcMotion(VCMotion.gesture, reduceMotion: reduceMotion)) {
+                                viewModel.sentiment = nil
+                                dragOffset = .zero
+                            }
+                        }
+                        .font(.caption)
+                    }
+                } else {
+                    Text("Swipe the outfit right if you liked it, left if you didn't — drag further for a stronger reaction.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            if !viewModel.items.isEmpty {
-                Section("Favorite Piece") {
-                    Text("Which piece did you like most?")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    FavoriteWeakestPicker(
-                        items: viewModel.items,
-                        selection: viewModel.favoriteItemID,
-                        onSelect: viewModel.selectFavorite
-                    )
-                }
-
-                Section("Weakest Piece") {
-                    Text("Which piece held the outfit back?")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    FavoriteWeakestPicker(
-                        items: viewModel.items,
-                        selection: viewModel.weakestItemID,
-                        onSelect: viewModel.selectWeakest
-                    )
-                }
-
-                if viewModel.weakestItemID != nil {
-                    Section("What Would Replace It?") {
-                        Text("Optional.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ReplacementSuggestionChecklist(
-                            selection: viewModel.selectedReplacementSuggestion,
-                            onSelect: { viewModel.selectedReplacementSuggestion = $0 }
-                        )
-                    }
-                }
+            Section("Why? (Optional)") {
+                TextEditor(text: Binding(
+                    get: { viewModel.comment },
+                    set: { viewModel.comment = $0 }
+                ))
+                .frame(minHeight: 80)
             }
 
             if case .failed(let message) = viewModel.state {
@@ -314,49 +117,121 @@ private struct RateCombinationQuestionsView: View {
                     await viewModel.submit()
                     if viewModel.state == .saved {
                         savedTick += 1
-                        onSaved()
+                        dismiss()
                     }
                 }
             } label: {
-                Text(viewModel.state == .saving ? "Saving\u{2026}" : submitLabel)
+                Text(viewModel.state == .saving ? "Saving\u{2026}" : "Submit")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryButtonStyle())
-            .disabled(viewModel.state == .saving)
+            .disabled(viewModel.state == .saving || viewModel.sentiment == nil)
             .listRowBackground(Color.clear)
         }
         .sensoryFeedback(.success, trigger: savedTick)
     }
 
+    // MARK: - Swipe
+
+    @ViewBuilder
+    private func swipeableImage(viewModel: RateCombinationViewModel) -> some View {
+        combinationImage
+            .offset(dragOffset)
+            .rotationEffect(.degrees(Double(dragOffset.width / 20)))
+            .overlay(alignment: .topLeading) { swipeStamp(edge: .leading) }
+            .overlay(alignment: .topTrailing) { swipeStamp(edge: .trailing) }
+            .gesture(dragGesture(viewModel: viewModel))
+            .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func swipeStamp(edge: HorizontalEdge) -> some View {
+        let decision = SwipeGestureResolver.decision(forHorizontalTranslation: dragOffset.width)
+        let isLeadingStamp = edge == .leading
+        let matchesEdge = (isLeadingStamp && (decision == .like || decision == .love))
+            || (!isLeadingStamp && (decision == .dislike || decision == .hate))
+        if matchesEdge {
+            let isIntense = decision == .love || decision == .hate
+            let label = isLeadingStamp ? (decision == .love ? "LOVE" : "LIKE") : (decision == .hate ? "HATE" : "NOPE")
+            let tint: Color = isLeadingStamp ? .green : .red
+            Text(label)
+                .font(isIntense ? .largeTitle.bold() : .title2.bold())
+                .foregroundStyle(tint)
+                .padding(.horizontal, VCSpacing.md)
+                .padding(.vertical, VCSpacing.xs)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(tint, lineWidth: isIntense ? 5 : 3)
+                )
+                .rotationEffect(.degrees(isLeadingStamp ? -15 : 15))
+                .padding(VCSpacing.lg)
+        }
+    }
+
+    /// Settles back to center after a committed swipe (unlike
+    /// `SwipeDiscoveryView`'s card stack, there's no next card to fly toward
+    /// — the outfit stays on screen while the user optionally adds a
+    /// comment, with the sentiment banner above confirming what was
+    /// recorded and offering "Change" to re-swipe).
+    private func dragGesture(viewModel: RateCombinationViewModel) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                dragOffset = value.translation
+            }
+            .onEnded { value in
+                let decision = SwipeGestureResolver.decision(forHorizontalTranslation: value.translation.width)
+                withAnimation(vcMotion(VCMotion.gesture, reduceMotion: reduceMotion)) {
+                    dragOffset = .zero
+                }
+                if let sentiment = SwipeGestureResolver.sentiment(for: decision) {
+                    viewModel.sentiment = sentiment
+                }
+            }
+    }
+
+    private func sentimentIcon(_ sentiment: SwipeSentiment) -> String {
+        switch sentiment {
+        case .love: return "heart.fill"
+        case .like: return "hand.thumbsup.fill"
+        case .dislike: return "hand.thumbsdown.fill"
+        case .hate: return "xmark.circle.fill"
+        }
+    }
+
+    private func sentimentLabel(_ sentiment: SwipeSentiment) -> String {
+        switch sentiment {
+        case .love: return "Loved it"
+        case .like: return "Liked it"
+        case .dislike: return "Disliked it"
+        case .hate: return "Hated it"
+        }
+    }
+
+    // MARK: - Image
+
     /// Mirrors `CombinationDetailView.CombinationDetailPage.image`'s pattern
-    /// — the saved flatlay render, so the user sees the whole outfit while
-    /// rating it overall.
+    /// — the saved flatlay render when there is one, falling back to the
+    /// per-item flatlay `CombinationDetailPage` also shows full-screen.
     @ViewBuilder
     private var combinationImage: some View {
-        if hasRenderedImage {
-            CachedWardrobeImage(assetName: imageAssetName) { image in
-                ZoomableImageContainer {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                }
-                .frame(maxWidth: .infinity)
-                .clipShape(VCRadius.shape(VCRadius.card))
+        if combination.hasRenderedImage {
+            CachedWardrobeImage(assetName: combination.imageAssetName) { image in
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity)
+                    .clipShape(VCRadius.shape(VCRadius.card))
             } placeholder: {
-                Label("Couldn't load this image", systemImage: "photo.badge.exclamationmark")
-                    .foregroundStyle(.secondary)
+                itemFlatlay
             }
         } else {
             itemFlatlay
         }
     }
 
-    /// No generated render yet — same per-slot flatlay
-    /// `CombinationDetailPage.itemFlatlay` shows full-screen, condensed to
-    /// fit this form's image section.
     private var itemFlatlay: some View {
         VStack(spacing: 8) {
-            ForEach(flatlayItems) { item in
+            ForEach(items) { item in
                 HStack {
                     thumbnail(for: item)
 
@@ -375,9 +250,6 @@ private struct RateCombinationQuestionsView: View {
         .premiumCard(radius: VCRadius.prominent, material: .regularMaterial)
     }
 
-    /// Same rendering rule `CombinationDetailPage.thumbnail(for:)` uses: an
-    /// ingested item's real isolated photo, or a flat color swatch (Ghost
-    /// Elements have no photo).
     @ViewBuilder
     private func thumbnail(for item: WardrobeItem) -> some View {
         CachedWardrobeImage(assetName: item.imageAssetName, thumbnailSize: CGSize(width: 44, height: 44)) { image in
@@ -397,161 +269,6 @@ private struct RateCombinationQuestionsView: View {
                     }
                 }
         }
-    }
-}
-
-private struct WearAgainTriStateRow: View {
-    @Binding var wearAgain: WearAgainAnswer
-
-    var body: some View {
-        Picker("Wear again?", selection: $wearAgain) {
-            ForEach(WearAgainAnswer.allCases) { answer in
-                Text(answer.label).tag(answer)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .padding(.vertical, 4)
-    }
-}
-
-/// "What would you change?" checklist (Level 3, Stylist Intelligence Engine
-/// ADR) — a plain multi-select list of toggleable rows, one per
-/// `OutfitChangeReason`. `.tooFormal`/`.tooCasual` are mutually exclusive;
-/// `onToggle` (`RateCombinationViewModel.toggleChangeReason`) enforces that.
-private struct ChangeReasonChecklist: View {
-    let selection: Set<OutfitChangeReason>
-    let onToggle: (OutfitChangeReason) -> Void
-
-    var body: some View {
-        ForEach(OutfitChangeReason.allCases) { reason in
-            Button {
-                onToggle(reason)
-            } label: {
-                HStack {
-                    Text(reason.label)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if selection.contains(reason) {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.tint)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// "Why did you like this?" chips (Analytics & Insights, Phase 3) — same
-/// plain toggleable-row style as `ChangeReasonChecklist`, its positive-side
-/// counterpart.
-private struct LikeReasonChecklist: View {
-    let selection: Set<OutfitLikeReason>
-    let onToggle: (OutfitLikeReason) -> Void
-
-    var body: some View {
-        ForEach(OutfitLikeReason.allCases) { reason in
-            Button {
-                onToggle(reason)
-            } label: {
-                HStack {
-                    Text(reason.label)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if selection.contains(reason) {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.tint)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Single-select occasion tag (Analytics & Insights, Phase 3) — a plain
-/// segmented picker with a "None" option, since unlike Wear Again this
-/// question has no sensible non-nil default.
-private struct OccasionPicker: View {
-    @Binding var selection: OutfitOccasion?
-
-    var body: some View {
-        Picker("Occasion", selection: $selection) {
-            Text("Not sure").tag(OutfitOccasion?.none)
-            ForEach(OutfitOccasion.allCases) { occasion in
-                Text(occasion.label).tag(OutfitOccasion?.some(occasion))
-            }
-        }
-        .pickerStyle(.menu)
-    }
-}
-
-/// Yes/No chip pair for "Would you buy something similar?" — deliberately
-/// not a `Toggle` (which forces a false default); `nil` means genuinely
-/// unanswered, distinct from "No."
-private struct TriStateChip: View {
-    @Binding var selection: Bool?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            chip("Yes", isSelected: selection == true) { selection = selection == true ? nil : true }
-            chip("No", isSelected: selection == false) { selection = selection == false ? nil : false }
-        }
-    }
-
-    private func chip(_ title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.thinMaterial), in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// Single-select replacement-suggestion chip (Analytics & Insights, Phase 3)
-/// — same toggleable-row style as `ChangeReasonChecklist`, but single-select
-/// (picking a new one replaces the old, matching Favorite/Weakest's
-/// single-choice picker style rather than a checklist).
-private struct ReplacementSuggestionChecklist: View {
-    let selection: ReplacementSuggestion?
-    let onSelect: (ReplacementSuggestion?) -> Void
-
-    var body: some View {
-        ForEach(ReplacementSuggestion.allCases) { suggestion in
-            Button {
-                onSelect(selection == suggestion ? nil : suggestion)
-            } label: {
-                HStack {
-                    Text(suggestion.label)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if selection == suggestion {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.tint)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct FavoriteWeakestPicker: View {
-    let items: [WardrobeItem]
-    let selection: UUID?
-    let onSelect: (UUID?) -> Void
-
-    var body: some View {
-        Picker("Piece", selection: Binding(get: { selection }, set: onSelect)) {
-            Text("None").tag(UUID?.none)
-            ForEach(items, id: \.id) { item in
-                Text(item.slot.rawValue.capitalized).tag(UUID?.some(item.id))
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
     }
 }
 

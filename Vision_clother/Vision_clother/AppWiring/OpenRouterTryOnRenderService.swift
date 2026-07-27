@@ -93,7 +93,7 @@ final class OpenRouterTryOnRenderService: TryOnRenderService {
 
         let proxyHeaders: [String: String]
         do {
-            proxyHeaders = try await ProxyAuthHeaders.current()
+            proxyHeaders = try await ProxyAuthHeaders.current(requestID: requestID)
         } catch {
             AppLog.error(.tryOn, "[\(requestID)] renderTryOn: missing auth header — \(String(describing: error))")
             onUpdate(.failed(.missingAPIKey))
